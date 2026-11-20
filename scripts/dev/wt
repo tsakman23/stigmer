@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+# Create and finish per-task worktrees. See CONTRIBUTING.md.
+set -euo pipefail
+
+root="$(git rev-parse --show-toplevel)"
+cd "$root"
+pattern='^(feat|fix|refactor|test|docs|chore|ci)/m[0-9]+-t[0-9]{2}-[a-z0-9]+(-[a-z0-9]+)*$'
+
+die() { echo "wt: $*" >&2; exit 1; }
+milestone() {
+  local b; b="$(git branch --show-current)"
+  [[ "$b" == milestone/* ]] || die "run from the main checkout on a milestone/* branch (on '$b')"
+  echo "$b"
+}
+slug() { echo "${1//\//-}"; }
+
+cmd="${1:-}"; branch="${2:-}"
+[[ -n "$cmd" && -n "$branch" ]] || die "usage: wt new|finish <type>/m<N>-t<NN>-<slug>"
+[[ "$branch" =~ $pattern ]] || die "branch '$branch' does not match $pattern"
+dir=".worktrees/$(slug "$branch")"
+
+case "$cmd" in
+  new)
+    base="$(milestone)"
+    [[ -z "$(git status --porcelain)" ]] || die "main checkout is dirty"
+    git worktree add -b "$branch" "$dir" "$base"
+    echo "worktree: $root/$dir (from $base)"
+    ;;
+  finish)
+    base="$(milestone)"
+    [[ -d "$dir" ]] || die "no worktree at $dir"
+    [[ -z "$(git -C "$dir" status --porcelain)" ]] || die "worktree $dir has uncommitted changes"
+    git merge-base --is-ancestor "$base" "$branch" || git -C "$dir" rebase "$base"
+    git merge --ff-only "$branch"
+    git worktree remove "$dir"
+    git branch -d "$branch"
+    echo "merged $branch into $base; worktree and branch removed"
+    ;;
+  *) die "unknown command '$cmd'" ;;
+esac

@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+# List (default) or remove (--apply) stale worktrees and fully merged task branches.
+# Never touches main, milestone/*, dirty worktrees or unmerged work.
+set -euo pipefail
+cd "$(git rev-parse --show-toplevel)"
+
+apply=0; [[ "${1:-}" == "--apply" ]] && apply=1
+task='^(feat|fix|refactor|test|docs|chore|ci)/m[0-9]+-t[0-9]{2}-'
+act() { if (( apply )); then "$@"; else echo "would run: $*"; fi; }
+
+git fetch --prune --quiet 2>/dev/null || true
+if (( apply )); then git worktree prune -v; else git worktree prune --dry-run -v; fi
+
+targets=(main $(git for-each-ref --format='%(refname:short)' 'refs/heads/milestone/*'))
+
+# Worktrees whose branch is merged into main or a milestone branch.
+while read -r path branch; do
+  [[ "$branch" =~ $task ]] || continue
+  [[ "$path" == */.worktrees/* ]] || continue
+  for t in "${targets[@]}"; do
+    if git merge-base --is-ancestor "$branch" "$t" 2>/dev/null; then
+      if [[ -z "$(git -C "$path" status --porcelain)" ]]; then
+        act git worktree remove "$path"
+      else
+        echo "skip (dirty): $path"
+      fi
+      break
+    fi
+  done
+done < <(git worktree list --porcelain | awk '/^worktree /{p=$2} /^branch /{sub("refs/heads/","",$2); print p, $2}')
+
+# Local task branches fully merged and not checked out anywhere.
+checked_out="$(git worktree list --porcelain | awk '/^branch /{sub("refs/heads/","",$2); print $2}')"
+for b in $(git for-each-ref --format='%(refname:short)' 'refs/heads/'); do
+  [[ "$b" =~ $task ]] || continue
+  grep -qx "$b" <<<"$checked_out" && continue
+  for t in "${targets[@]}"; do
+    if git merge-base --is-ancestor "$b" "$t" 2>/dev/null; then act git branch -d "$b"; break; fi
+  done
+done
