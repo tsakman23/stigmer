@@ -1,9 +1,7 @@
-//! stigmer-core: placeholder until later M0 tasks fill it in.
+//! stigmer-core: domain types and validation rules. No I/O, no async.
 
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn smoke() {
-        assert_eq!(1 + 1, 2);
-    }
-}
+mod error;
+mod ids;
+
+pub use error::CoreError;
+pub use ids::{BoardId, MessageId, Principal};
