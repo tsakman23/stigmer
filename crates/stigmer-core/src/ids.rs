@@ -94,18 +94,18 @@ impl MessageId {
 string_newtype!(MessageId);
 
 /// A channel path such as `eng/ops`: 1 to 8 segments of `[a-z0-9._-]+` joined by `/`,
-/// at most 128 chars in total. No leading or trailing slash.
+/// at most 128 bytes in total (the charset is ASCII, so bytes and chars agree). No leading or trailing slash.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
 #[serde(transparent)]
 pub struct ChannelPath(String);
 
 impl ChannelPath {
     const MAX_DEPTH: usize = 8;
-    const MAX_CHARS: usize = 128;
+    const MAX_BYTES: usize = 128;
 
     /// Validates and wraps a channel path.
     pub fn new(raw: &str) -> Result<Self, CoreError> {
-        let valid = raw.len() <= Self::MAX_CHARS
+        let valid = raw.len() <= Self::MAX_BYTES
             && raw.split('/').count() <= Self::MAX_DEPTH
             && raw
                 .split('/')
