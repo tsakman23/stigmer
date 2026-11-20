@@ -32,7 +32,7 @@ macro_rules! string_newtype {
 }
 
 /// True when every char is in `[a-z0-9._-]`.
-fn is_slug_char(c: char) -> bool {
+pub(crate) fn is_slug_char(c: char) -> bool {
     c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '.' | '_' | '-')
 }
 
@@ -92,6 +92,32 @@ impl MessageId {
     }
 }
 string_newtype!(MessageId);
+
+/// A channel path such as `eng/ops`: 1 to 8 segments of `[a-z0-9._-]+` joined by `/`,
+/// at most 128 chars in total. No leading or trailing slash.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
+#[serde(transparent)]
+pub struct ChannelPath(String);
+
+impl ChannelPath {
+    const MAX_DEPTH: usize = 8;
+    const MAX_CHARS: usize = 128;
+
+    /// Validates and wraps a channel path.
+    pub fn new(raw: &str) -> Result<Self, CoreError> {
+        let valid = raw.len() <= Self::MAX_CHARS
+            && raw.split('/').count() <= Self::MAX_DEPTH
+            && raw
+                .split('/')
+                .all(|seg| !seg.is_empty() && seg.chars().all(is_slug_char));
+        if valid {
+            Ok(Self(raw.to_owned()))
+        } else {
+            Err(CoreError::BadChannel(raw.to_owned()))
+        }
+    }
+}
+string_newtype!(ChannelPath);
 
 /// Identifies who wrote a message: a person or an agent (`[a-z0-9._-]{1,64}`).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
@@ -183,6 +209,44 @@ mod tests {
                 .unwrap()
                 .as_str(),
             "bob"
+        );
+    }
+
+    #[test]
+    fn channel_path_rejects_uppercase_empty_segment_and_depth_9() {
+        assert!(ChannelPath::new("a/b/c.d_e-f/0").is_ok());
+        assert!(ChannelPath::new("a/b/c/d/e/f/g/h").is_ok());
+        for bad in [
+            "Eng",
+            "a//b",
+            "",
+            "/a",
+            "a/",
+            "a/b/c/d/e/f/g/h/i",
+            "a b",
+            "a/B",
+        ] {
+            assert!(
+                matches!(ChannelPath::new(bad), Err(CoreError::BadChannel(_))),
+                "{bad}"
+            );
+        }
+    }
+
+    #[test]
+    fn channel_path_total_length_limit_is_128() {
+        assert!(ChannelPath::new(&"a".repeat(128)).is_ok());
+        assert!(ChannelPath::new(&"a".repeat(129)).is_err());
+    }
+
+    #[test]
+    fn channel_path_deserialize_validates() {
+        assert!(serde_json::from_str::<ChannelPath>("\"a//b\"").is_err());
+        assert_eq!(
+            serde_json::from_str::<ChannelPath>("\"eng/ops\"")
+                .unwrap()
+                .as_str(),
+            "eng/ops"
         );
     }
 }
