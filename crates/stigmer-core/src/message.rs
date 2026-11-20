@@ -132,6 +132,19 @@ mod tests {
     }
 
     #[test]
+    fn target_deserialize_rejects_bad_channel_and_thread() {
+        let ok: Target = serde_json::from_str(r#"{"NewThread":{"channel":"eng/ops"}}"#).unwrap();
+        assert!(matches!(ok, Target::NewThread { .. }));
+        assert!(serde_json::from_str::<Target>(r#"{"NewThread":{"channel":"Eng//Ops"}}"#).is_err());
+        assert!(serde_json::from_str::<Target>(r#"{"Reply":{"thread":"nope"}}"#).is_err());
+        let good = r#"{"Reply":{"thread":"msg_0123456789abcdef01234567"}}"#;
+        assert!(matches!(
+            serde_json::from_str::<Target>(good).unwrap(),
+            Target::Reply { .. }
+        ));
+    }
+
+    #[test]
     fn valid_reply_keeps_all_fields() {
         let thread = MessageId::generate().unwrap();
         let msg = NewMessage::new(

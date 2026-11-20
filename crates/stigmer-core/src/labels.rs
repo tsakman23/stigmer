@@ -78,6 +78,17 @@ mod tests {
     }
 
     #[test]
+    fn label_deserialize_rejects_invalid_key_and_value() {
+        let ok: Label = serde_json::from_str(r#"{"key":"k","value":"v"}"#).unwrap();
+        assert_eq!(ok, Label::new("k", "v").unwrap());
+        assert!(serde_json::from_str::<Label>(r#"{"key":"Bad Key","value":"v"}"#).is_err());
+        assert!(serde_json::from_str::<Label>(r#"{"key":"","value":"v"}"#).is_err());
+        assert!(serde_json::from_str::<Label>(r#"{"key":"k","value":""}"#).is_err());
+        let long = format!(r#"{{"key":"k","value":"{}"}}"#, "x".repeat(257));
+        assert!(serde_json::from_str::<Label>(&long).is_err());
+    }
+
+    #[test]
     fn parse_labels_splits_on_first_equals() {
         let labels = parse_labels(&raw(&["a=b=c"])).unwrap();
         assert_eq!(
