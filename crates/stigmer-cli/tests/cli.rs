@@ -426,3 +426,25 @@ fn tail_prints_events_and_exits_0_at_timeout() {
     assert!(run.stdout.find("\none\n").unwrap() < run.stdout.find("\ntwo\n").unwrap());
     assert!(line_value(&run.stdout, "cursor: ").starts_with("ev_"));
 }
+
+#[cfg(unix)]
+#[test]
+fn non_utf8_argument_is_a_usage_error() {
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
+    let out = Command::new(env!("CARGO_BIN_EXE_stigmer"))
+        .env_remove("STIGMER_AS")
+        .env_remove("STIGMER_URL")
+        .args(["--url", &dead_url(), "read"])
+        .arg(OsStr::from_bytes(b"ab\xff"))
+        .output()
+        .unwrap();
+    let run = Run {
+        code: out.status.code().unwrap(),
+        stdout: String::from_utf8(out.stdout).unwrap(),
+        stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+    };
+    assert_eq!(run.code, 2, "stderr: {}", run.stderr);
+    assert_failure_lines(&run);
+    assert!(run.stdout.is_empty());
+}

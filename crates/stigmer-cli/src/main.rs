@@ -192,7 +192,7 @@ fn usage_failure(err: &clap::Error) -> ExitCode {
         _ => joined.strip_prefix("error: ").unwrap_or(&joined),
     };
     // Parsing failed, so --json is looked for in the raw arguments.
-    let json = std::env::args().any(|arg| arg == "--json");
+    let json = std::env::args_os().any(|arg| arg == "--json");
     CliError::usage(message, "run: stigmer --help").print(json);
     Exit::Usage.into()
 }
