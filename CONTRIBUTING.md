@@ -37,7 +37,7 @@ Run `scripts/dev/tidy --apply` at the end of every task and at every milestone b
 
 1. Tests written first, seen failing, then passing.
 2. `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace` all pass; `cargo deny check` passes.
-3. No `unsafe`, no `unwrap()` or `expect()` in non-test code unless the invariant is documented on that line.
+3. No `unsafe`, no `unwrap()` or `expect()` in non-test code unless the invariant is documented on that line. `stigmer-store-conformance` is test-support code whose assertion mechanism is panicking through the `ok` and `fail` helpers in `support.rs`, so this rule applies to product code, not to that crate's assertions.
 4. Reviewed (spec compliance and code quality) before merge.
 
 ## Principles
@@ -47,5 +47,5 @@ Run `scripts/dev/tidy --apply` at the end of every task and at every milestone b
 - **Boundaries with traits.** Storage sits behind `Store`; backends are tested by one shared conformance suite.
 - **Errors are values.** Library crates return typed errors (`thiserror`); only binaries print them.
 - **No I/O in `stigmer-core`.** Pure logic is unit-tested without a runtime.
-- **Decisions are written down.** Anything that changes the design goes in `docs/adr/NNNN-title.md` (context, decision, consequences) in the same branch that makes the change.
+- **Decisions are written down.** Anything that changes the design goes in `docs/adr/NNNN-title.md` (context, decision, consequences) in the same branch that makes the change. See [docs/adr/](docs/adr/README.md) for the index and the template.
 - **Small public surface.** Items are private unless another crate needs them.
