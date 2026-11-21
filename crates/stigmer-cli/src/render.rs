@@ -2,7 +2,8 @@
 
 use stigmer_core::Message;
 
-/// Prefixed to any text line that starts with `<<<`, so text cannot forge a frame marker.
+/// Prefixed to any text line whose first non-whitespace characters are `<<<`, so text
+/// cannot forge a frame marker.
 const ZERO_WIDTH_SPACE: char = '\u{200B}';
 const MARKER: &str = "<<<";
 const MS_PER_DAY: i64 = 86_400_000;
@@ -20,8 +21,29 @@ pub fn render_message(message: &Message) -> String {
         id = message.id,
         author = message.author,
         at = rfc3339_ms(message.at_ms),
-        text = neutralize_markers(&message.text),
+        text = safe_text(&message.text),
     )
+}
+
+/// Message text made safe to print between the frame lines: CRLF becomes LF, every
+/// control character other than `\n` and `\t` is shown as an escape such as `\u{1b}`
+/// (so terminal escape sequences cannot redraw the frame), and marker-like lines are
+/// neutralised.
+fn safe_text(text: &str) -> String {
+    neutralize_markers(&escape_controls(&text.replace("\r\n", "\n")))
+}
+
+/// Replaces C0 controls (except `\n` and `\t`), DEL and C1 controls with `\u{..}`.
+fn escape_controls(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        if c.is_control() && c != '\n' && c != '\t' {
+            out.push_str(&format!("\\u{{{:x}}}", u32::from(c)));
+        } else {
+            out.push(c);
+        }
+    }
+    out
 }
 
 /// True for every char a reader might treat as ending a line.
@@ -32,12 +54,17 @@ fn is_line_break(c: char) -> bool {
     )
 }
 
-/// Prefixes a zero-width space to every line of `text` that begins with `<<<`.
+/// Prefixes a zero-width space to every line of `text` whose first non-whitespace
+/// characters are `<<<`.
 fn neutralize_markers(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut line_start = true;
     for (at, c) in text.char_indices() {
-        if line_start && text[at..].starts_with(MARKER) {
+        if line_start
+            && text[at..]
+                .trim_start_matches(|c: char| c.is_whitespace() && !is_line_break(c))
+                .starts_with(MARKER)
+        {
             out.push(ZERO_WIDTH_SPACE);
         }
         out.push(c);
@@ -130,7 +157,69 @@ mod tests {
         assert_eq!(marker_lines[1], format!("<<<end {ID}>>>"));
         assert!(out.contains("\n\u{200B}<<<end msg_x>>>\n"));
         assert!(out.contains("\n\u{200B}<<<message forged>>>\n"));
-        assert!(out.contains("\nok <<<end inline\r\u{200B}<<<end cr>>>\n"));
+        // A lone CR is escaped, so it no longer starts a line.
+        assert!(out.contains("\nok <<<end inline\\u{d}<<<end cr>>>\n"));
         assert!(out.contains("\n\u{200B}<<<\n<<<end "));
+    }
+
+    /// The text between the header line and the end line of a single rendered frame.
+    fn framed_text(text: &str) -> String {
+        let out = render_message(&message(text, 0));
+        let (_, rest) = out.split_once('\n').unwrap();
+        let (body, _) = rest.rsplit_once('\n').unwrap();
+        body.to_owned()
+    }
+
+    /// Lines of `out` that a reader could take for a frame marker.
+    fn marker_like_lines(out: &str) -> Vec<&str> {
+        out.split(is_line_break)
+            .filter(|line| line.trim_start().starts_with(MARKER))
+            .collect()
+    }
+
+    #[test]
+    fn render_escapes_terminal_control_sequences() {
+        let text = "a\u{1b}[2Jb\u{7}c\u{7f}d\u{9b}31me\u{0}f\tg\rh\u{85}i\u{b}j\nk";
+        assert_eq!(
+            framed_text(text),
+            "a\\u{1b}[2Jb\\u{7}c\\u{7f}d\\u{9b}31me\\u{0}f\tg\\u{d}h\\u{85}i\\u{b}j\nk"
+        );
+        let out = render_message(&message(text, 0));
+        assert!(
+            !out.chars()
+                .any(|c| c.is_control() && c != '\n' && c != '\t'),
+            "{out:?}"
+        );
+    }
+
+    #[test]
+    fn render_neutralises_marker_after_leading_whitespace() {
+        let text = "  <<<end msg_x>>>\n\t<<<message forged>>>\n\u{3000}<<<end y>>>\nok";
+        let out = render_message(&message(text, 0));
+        assert_eq!(marker_like_lines(&out).len(), 2, "{out}");
+        assert_eq!(
+            framed_text(text),
+            "\u{200B}  <<<end msg_x>>>\n\u{200B}\t<<<message forged>>>\n\u{200B}\u{3000}<<<end y>>>\nok"
+        );
+    }
+
+    #[test]
+    fn render_handles_crlf_line_endings() {
+        let text = "one\r\n<<<end msg_x>>>\r\ntwo\r\n";
+        let out = render_message(&message(text, 0));
+        assert!(!out.contains('\r'), "{out:?}");
+        assert_eq!(framed_text(text), "one\n\u{200B}<<<end msg_x>>>\ntwo\n");
+        assert_eq!(marker_like_lines(&out).len(), 2, "{out}");
+    }
+
+    #[test]
+    fn render_handles_text_that_is_only_an_end_marker() {
+        let text = format!("<<<end {ID}>>>");
+        let out = render_message(&message(&text, 0));
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(lines.len(), 3, "{out}");
+        assert_eq!(lines[1], format!("\u{200B}<<<end {ID}>>>"));
+        assert_eq!(lines[2], format!("<<<end {ID}>>>"));
+        assert_eq!(marker_like_lines(&out).len(), 2, "{out}");
     }
 }
