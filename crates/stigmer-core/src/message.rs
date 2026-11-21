@@ -7,6 +7,9 @@ use crate::{BoardId, ChannelPath, CoreError, Label, MessageId, Principal, MAX_LA
 /// Maximum message length, counted in Unicode scalar values (chars), not bytes.
 pub const MAX_MESSAGE_CHARS: usize = 10_000;
 
+/// Maximum idempotency key length in characters.
+pub const MAX_IDEMPOTENCY_KEY_CHARS: usize = 128;
+
 /// Where a new message goes: a fresh thread in a channel, or a reply in a thread.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Target {
@@ -26,7 +29,8 @@ pub struct NewMessage {
 }
 
 impl NewMessage {
-    /// Validates text (1 to [`MAX_MESSAGE_CHARS`] chars) and labels (at most [`MAX_LABELS`], each valid).
+    /// Validates text (1 to [`MAX_MESSAGE_CHARS`] chars), labels (at most [`MAX_LABELS`], each valid)
+    /// and the idempotency key when present (1 to [`MAX_IDEMPOTENCY_KEY_CHARS`] chars of `[A-Za-z0-9._:-]`).
     pub fn new(
         board: BoardId,
         target: Target,
@@ -49,6 +53,15 @@ impl NewMessage {
         // Label fields are public, so re-check each one.
         for label in &labels {
             Label::new(&label.key, &label.value)?;
+        }
+        if let Some(key) = &idempotency_key {
+            let allowed = |c: char| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | ':' | '-');
+            if key.is_empty()
+                || key.chars().count() > MAX_IDEMPOTENCY_KEY_CHARS
+                || !key.chars().all(allowed)
+            {
+                return Err(CoreError::BadIdempotencyKey(key.clone()));
+            }
         }
         Ok(Self {
             board,
@@ -142,6 +155,45 @@ mod tests {
             serde_json::from_str::<Target>(good).unwrap(),
             Target::Reply { .. }
         ));
+    }
+
+    fn build_keyed(key: &str) -> Result<NewMessage, CoreError> {
+        NewMessage::new(
+            BoardId::main(),
+            Target::NewThread {
+                channel: ChannelPath::new("eng/ops").unwrap(),
+            },
+            Principal::new("alice").unwrap(),
+            "hi".to_owned(),
+            vec![],
+            Some(key.to_owned()),
+        )
+    }
+
+    #[test]
+    fn empty_idempotency_key_is_rejected() {
+        assert!(matches!(
+            build_keyed(""),
+            Err(CoreError::BadIdempotencyKey(_))
+        ));
+    }
+
+    #[test]
+    fn idempotency_key_of_129_chars_is_rejected_and_128_accepted() {
+        assert!(build_keyed(&"k".repeat(128)).is_ok());
+        assert!(matches!(
+            build_keyed(&"k".repeat(129)),
+            Err(CoreError::BadIdempotencyKey(_))
+        ));
+    }
+
+    #[test]
+    fn idempotency_key_with_a_space_is_rejected() {
+        assert!(matches!(
+            build_keyed("has space"),
+            Err(CoreError::BadIdempotencyKey(_))
+        ));
+        assert!(build_keyed("Az09._:-").is_ok());
     }
 
     #[test]

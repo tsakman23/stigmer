@@ -19,6 +19,8 @@ pub enum CoreError {
     BadPrincipal(String),
     #[error("invalid id: {0}")]
     BadId(String),
+    #[error("invalid idempotency key: {0}")]
+    BadIdempotencyKey(String),
     #[error("invalid cursor: {0}")]
     BadCursor(String),
     #[error("could not gather randomness: {0}")]
