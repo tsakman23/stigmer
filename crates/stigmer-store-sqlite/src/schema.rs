@@ -1,0 +1,80 @@
+//! Schema migrations, tracked with `PRAGMA user_version`.
+//!
+//! `MIGRATIONS[i]` takes the schema from version `i` to `i + 1`. Append new migrations;
+//! never edit one that has shipped.
+
+use rusqlite::{Connection, TransactionBehavior};
+use stigmer_core::{BoardId, GENESIS_HASH};
+use stigmer_store::StoreError;
+
+use crate::backend;
+
+/// Ordered migration scripts, each applied in its own transaction.
+pub(crate) const MIGRATIONS: &[&str] = &[
+    // 1: boards, messages, labels and the event log.
+    "CREATE TABLE boards (
+        id TEXT PRIMARY KEY,
+        head_seq INTEGER NOT NULL,
+        head_hash TEXT NOT NULL
+    );
+    CREATE TABLE messages (
+        id TEXT PRIMARY KEY,
+        board_id TEXT NOT NULL REFERENCES boards(id),
+        channel TEXT NOT NULL,
+        thread_id TEXT NOT NULL,
+        author TEXT NOT NULL,
+        text TEXT NOT NULL,
+        at_ms INTEGER NOT NULL
+    );
+    CREATE TABLE labels (
+        message_id TEXT NOT NULL REFERENCES messages(id),
+        key TEXT NOT NULL,
+        value TEXT NOT NULL
+    );
+    CREATE TABLE events (
+        board_id TEXT NOT NULL REFERENCES boards(id),
+        seq INTEGER NOT NULL,
+        kind TEXT NOT NULL,
+        actor TEXT NOT NULL,
+        message_id TEXT NOT NULL,
+        thread_id TEXT NOT NULL,
+        channel TEXT NOT NULL,
+        at_ms INTEGER NOT NULL,
+        hash TEXT NOT NULL,
+        PRIMARY KEY (board_id, seq)
+    );",
+];
+
+/// Brings the database up to the latest schema and makes sure board `main` exists.
+pub(crate) fn migrate(conn: &mut Connection) -> Result<(), StoreError> {
+    loop {
+        // Read the version inside the write transaction so two processes cannot both apply a step.
+        let tx = conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(backend)?;
+        let version: i64 = tx
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .map_err(backend)?;
+        let applied = usize::try_from(version)
+            .map_err(|_| StoreError::Backend(format!("invalid schema version {version}")))?;
+        if applied > MIGRATIONS.len() {
+            return Err(StoreError::Backend(format!(
+                "database schema version {applied} is newer than this build supports ({})",
+                MIGRATIONS.len()
+            )));
+        }
+        let Some(sql) = MIGRATIONS.get(applied) else {
+            break;
+        };
+        tx.execute_batch(sql).map_err(backend)?;
+        tx.pragma_update(None, "user_version", version + 1)
+            .map_err(backend)?;
+        tx.commit().map_err(backend)?;
+    }
+    conn.execute(
+        "INSERT OR IGNORE INTO boards (id, head_seq, head_hash) VALUES (?1, 0, ?2)",
+        (BoardId::main().as_str(), GENESIS_HASH),
+    )
+    .map_err(backend)?;
+    Ok(())
+}

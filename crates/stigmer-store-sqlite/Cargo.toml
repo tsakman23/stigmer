@@ -7,3 +7,14 @@ publish.workspace = true
 
 [lints]
 workspace = true
+
+[dependencies]
+rusqlite = { version = "0.43.0", features = ["bundled"] }
+stigmer-core = { path = "../stigmer-core", version = "0.0.0" }
+stigmer-store = { path = "../stigmer-store", version = "0.0.0" }
+tokio = { version = "1.54.1", features = ["rt"] }
+
+[dev-dependencies]
+stigmer-store-conformance = { path = "../stigmer-store-conformance", version = "0.0.0" }
+tempfile = "3.27.0"
+tokio = { version = "1.54.1", features = ["macros", "rt-multi-thread"] }
