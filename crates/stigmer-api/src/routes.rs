@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::body::Bytes;
-use axum::extract::rejection::{BytesRejection, QueryRejection};
+use axum::extract::rejection::{BytesRejection, PathRejection, QueryRejection};
 use axum::extract::{DefaultBodyLimit, Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::routing::get;
@@ -67,12 +67,17 @@ pub fn router<S: Store, A: Authorize>(
         .route("/v1/boards/{board}/events", get(read_events_route::<S, A>))
         .route("/v1/boards/{board}/threads/{id}", get(read_thread::<S, A>))
         .fallback(unknown_route)
+        .method_not_allowed_fallback(wrong_method)
         .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
         .with_state(state)
 }
 
 async fn unknown_route() -> ApiError {
     ApiError::not_found("no such route")
+}
+
+async fn wrong_method() -> ApiError {
+    ApiError::new(ErrorCode::MethodNotAllowed, "method not allowed")
 }
 
 async fn healthz() -> &'static str {
@@ -121,6 +126,11 @@ pub(crate) fn query_or_400<T>(query: Result<Query<T>, QueryRejection>) -> Result
         .map_err(|e| ApiError::invalid_input(e.body_text()))
 }
 
+pub(crate) fn path_or_400<T>(path: Result<Path<T>, PathRejection>) -> Result<T, ApiError> {
+    path.map(|Path(p)| p)
+        .map_err(|e| ApiError::invalid_input(e.body_text()))
+}
+
 pub(crate) fn parse_limit(raw: Option<&str>, default: u32) -> Result<u32, ApiError> {
     match raw {
         None => Ok(default),
@@ -132,11 +142,11 @@ pub(crate) fn parse_limit(raw: Option<&str>, default: u32) -> Result<u32, ApiErr
 
 async fn post_message<S: Store, A: Authorize>(
     State(state): State<AppState<S, A>>,
-    Path(board): Path<String>,
+    path: Result<Path<String>, PathRejection>,
     headers: HeaderMap,
     body: Result<Bytes, BytesRejection>,
 ) -> Result<(StatusCode, Json<Posted>), ApiError> {
-    let board = require_main_board(&board)?;
+    let board = require_main_board(&path_or_400(path)?)?;
     let who = principal_header(&headers)?
         .ok_or_else(|| ApiError::invalid_input("X-Stigmer-As header is required"))?;
     let key = headers
@@ -189,11 +199,11 @@ struct ChannelsQuery {
 
 async fn read_channels<S: Store, A: Authorize>(
     State(state): State<AppState<S, A>>,
-    Path(board): Path<String>,
+    path: Result<Path<String>, PathRejection>,
     headers: HeaderMap,
     query: Result<Query<ChannelsQuery>, QueryRejection>,
 ) -> Result<Json<ChannelsResponse>, ApiError> {
-    let board = require_main_board(&board)?;
+    let board = require_main_board(&path_or_400(path)?)?;
     let who = reader(&headers)?;
     let q = query_or_400(query)?;
     let prefix = q
@@ -213,9 +223,10 @@ async fn read_channels<S: Store, A: Authorize>(
 
 async fn read_thread<S: Store, A: Authorize>(
     State(state): State<AppState<S, A>>,
-    Path((board, id)): Path<(String, String)>,
+    path: Result<Path<(String, String)>, PathRejection>,
     headers: HeaderMap,
 ) -> Result<Json<Thread>, ApiError> {
+    let (board, id) = path_or_400(path)?;
     let board = require_main_board(&board)?;
     let who = reader(&headers)?;
     let id = MessageId::new(&id)?;
@@ -238,11 +249,11 @@ struct EventsQuery {
 
 async fn read_events_route<S: Store, A: Authorize>(
     State(state): State<AppState<S, A>>,
-    Path(board): Path<String>,
+    path: Result<Path<String>, PathRejection>,
     headers: HeaderMap,
     query: Result<Query<EventsQuery>, QueryRejection>,
 ) -> Result<Json<EventsResponse>, ApiError> {
-    let board = require_main_board(&board)?;
+    let board = require_main_board(&path_or_400(path)?)?;
     let who = reader(&headers)?;
     let q = query_or_400(query)?;
     let after = q

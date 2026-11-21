@@ -35,6 +35,7 @@ impl ApiError {
             ErrorCode::InvalidInput | ErrorCode::InvalidCursor => StatusCode::BAD_REQUEST,
             ErrorCode::TooLarge => StatusCode::PAYLOAD_TOO_LARGE,
             ErrorCode::NotFound => StatusCode::NOT_FOUND,
+            ErrorCode::MethodNotAllowed => StatusCode::METHOD_NOT_ALLOWED,
             ErrorCode::Conflict => StatusCode::CONFLICT,
             ErrorCode::Forbidden => StatusCode::FORBIDDEN,
             ErrorCode::Internal => StatusCode::INTERNAL_SERVER_ERROR,

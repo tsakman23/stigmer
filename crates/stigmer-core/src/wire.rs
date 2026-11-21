@@ -39,6 +39,7 @@ pub enum ErrorCode {
     TooLarge,
     NotFound,
     InvalidCursor,
+    MethodNotAllowed,
     Conflict,
     Forbidden,
     Internal,
@@ -83,6 +84,10 @@ mod tests {
         assert_eq!(
             serde_json::to_string(&body).unwrap(),
             r#"{"error":{"code":"invalid_cursor","message":"nope"}}"#
+        );
+        assert_eq!(
+            serde_json::to_string(&ErrorCode::MethodNotAllowed).unwrap(),
+            r#""method_not_allowed""#
         );
         let back: ErrorBody = serde_json::from_str(&serde_json::to_string(&body).unwrap()).unwrap();
         assert_eq!(back, body);

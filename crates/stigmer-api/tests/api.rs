@@ -564,3 +564,68 @@ async fn dropping_the_request_cancels_the_wait() {
     let (status, _) = events(&h.app, "").await;
     assert_eq!(status, StatusCode::OK);
 }
+
+async fn assert_error_body(app: &Router, req: Request<Body>, status: StatusCode, code: &str) {
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), status);
+    let ctype = resp
+        .headers()
+        .get("content-type")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_owned();
+    assert!(ctype.starts_with("application/json"), "{ctype}");
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    let body: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(body["error"]["code"], code);
+    assert!(body["error"]["message"].is_string());
+}
+
+#[tokio::test]
+async fn wrong_method_on_messages_route_returns_405_error_body() {
+    let h = harness().await;
+    assert_error_body(
+        &h.app,
+        get_req("/v1/boards/main/messages"),
+        StatusCode::METHOD_NOT_ALLOWED,
+        "method_not_allowed",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn wrong_method_on_events_route_returns_405_error_body() {
+    let h = harness().await;
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri("/v1/boards/main/events")
+        .body(Body::empty())
+        .unwrap();
+    assert_error_body(
+        &h.app,
+        req,
+        StatusCode::METHOD_NOT_ALLOWED,
+        "method_not_allowed",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn invalid_utf8_path_segment_returns_400_error_body() {
+    let h = harness().await;
+    assert_error_body(
+        &h.app,
+        get_req("/v1/boards/main/threads/%FF"),
+        StatusCode::BAD_REQUEST,
+        "invalid_input",
+    )
+    .await;
+    assert_error_body(
+        &h.app,
+        get_req("/v1/boards/%FF/events"),
+        StatusCode::BAD_REQUEST,
+        "invalid_input",
+    )
+    .await;
+}
