@@ -43,7 +43,9 @@ impl From<Exit> for ExitCode {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CliError {
     pub exit: Exit,
-    /// Machine-readable kind: an API error code, or `usage`, `unavailable`, `network`, `timeout`.
+    /// Machine-readable kind: an API error code, or `usage`, `unavailable`, `network`,
+    /// `request_timeout` (an HTTP request took too long, exit 1) or `timeout` (a wait saw no
+    /// event, exit 3).
     pub code: &'static str,
     pub message: String,
     pub next: String,

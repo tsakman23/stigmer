@@ -201,6 +201,16 @@ struct WaitOutput<'a> {
     cursor: Option<&'a Cursor>,
 }
 
+/// The error of a wait that saw no matching event within `timeout` (exit 3).
+pub fn timed_out(timeout: Duration, resume: String) -> CliError {
+    CliError::new(
+        Exit::Timeout,
+        "timeout",
+        format!("no matching events within {}s", timeout.as_secs()),
+        resume,
+    )
+}
+
 /// `wait`: blocks until matching events arrive (exit 0) or `timeout` passes (exit 3).
 pub fn wait(ctx: &Ctx, args: FeedArgs, timeout: Duration) -> Result<Exit, CliError> {
     let (filter, after) = args.parse()?;
@@ -224,12 +234,7 @@ pub fn wait(ctx: &Ctx, args: FeedArgs, timeout: Duration) -> Result<Exit, CliErr
         if !ctx.json {
             print_out(&tail)?;
         }
-        return Err(CliError::new(
-            Exit::Timeout,
-            "timeout",
-            format!("no matching events within {}s", timeout.as_secs()),
-            resume,
-        ));
+        return Err(timed_out(timeout, resume));
     }
     let messages = events
         .iter()

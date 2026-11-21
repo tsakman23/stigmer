@@ -146,7 +146,7 @@ impl Client {
             ),
             ureq::Error::Timeout(_) => CliError::new(
                 Exit::Failure,
-                "timeout",
+                "request_timeout",
                 format!("request to {} timed out", self.base),
                 "check that stigmerd is running and responsive, then retry",
             ),
@@ -160,5 +160,27 @@ impl Client {
                 ),
             ),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn json_request_timeout_code_differs_from_wait_timeout() {
+        let client = Client::new("http://127.0.0.1:7878", None);
+        let request = client.network_error(ureq::Error::Timeout(ureq::Timeout::Global));
+        assert_eq!(
+            (request.exit, request.code),
+            (Exit::Failure, "request_timeout")
+        );
+        let json: serde_json::Value = serde_json::from_str(&request.render(true)).unwrap();
+        assert_eq!(json["error"]["code"], "request_timeout");
+
+        let wait = crate::wait::timed_out(Duration::from_secs(1), "stigmer wait".to_owned());
+        assert_eq!((wait.exit, wait.code), (Exit::Timeout, "timeout"));
+        let json: serde_json::Value = serde_json::from_str(&wait.render(true)).unwrap();
+        assert_eq!(json["error"]["code"], "timeout");
     }
 }
