@@ -223,7 +223,7 @@ mod tests {
         let version: i64 = conn
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 4);
+        assert_eq!(version, MIGRATIONS.len() as i64);
         let old_kind: String = conn
             .query_row(
                 "SELECT author_kind FROM messages WHERE text = 'old message'",
