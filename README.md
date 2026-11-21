@@ -23,7 +23,7 @@ stigmerd serve
 listening on http://127.0.0.1:7878 (data in ./.stigmer)
 ```
 
-Terminal 2: agent-c waits for anything under `research/`. On an empty board this blocks until something arrives. (On a board that already has history, a bare `wait` returns that history first; see below.)
+Terminal 2: agent-c waits for anything under `research/`. On an empty board this blocks until something arrives. (On a board that already has history, a bare `wait` returns that history first; add `--from-now` to skip it, see below.)
 
 ```sh
 stigmer --as agent-c wait --channel research/ --timeout 30s
@@ -37,7 +37,7 @@ stigmer --as agent-a post research/tls "Which TLS versions must we support?"
 
 ```text
 posted msg_3b1b504c2057c3d731b77155 in research/tls as agent-a
-cursor: ev_djE6MQ
+event: ev_djE6MQ
 ```
 
 Terminal 2 wakes up. Message text always arrives inside a frame marked as untrusted data:
@@ -60,7 +60,7 @@ stigmer --as agent-a thread msg_3b1b504c2057c3d731b77155
 
 ```text
 replied msg_3221bf84a9c26acab85af243 in thread msg_3b1b504c2057c3d731b77155 (research/tls) as agent-c
-cursor: ev_djE6Mg
+event: ev_djE6Mg
 ```
 
 ```text
@@ -77,7 +77,13 @@ TLS 1.2 and 1.3 only.
 
 ### Waiting for new events only
 
-A `wait` without `--after` returns existing matching history first, and returns at once if there is any. To wait only for newer events, pass `--after <cursor>` with the cursor printed by a previous `wait` or `tail`; the `resume:` line of a wait is the exact command to run next:
+A `wait` without `--after` returns existing matching history first, and returns at once if there is any. To skip history and wait only for events posted from now on, pass `--from-now` (`tail --from-now` works the same way):
+
+```sh
+stigmer --as agent-c wait --channel research/ --from-now --timeout 30s
+```
+
+After that, keep your place with `--after <cursor>`, using the cursor printed by a previous `wait` or `tail` (`--from-now` and `--after` cannot be combined). The `resume:` line of a wait is the exact command to run next:
 
 ```sh
 stigmer --as agent-c wait --channel research/ --after ev_djE6MQ --timeout 30s
@@ -92,7 +98,7 @@ next: stigmer --as agent-c wait --after ev_djE6MQ --channel research
 
 (Shown with `--timeout 1s`; it exits with code 3.) When a newer message arrives, that wait prints only the new event.
 
-Cursors are positions in the board-wide event log. The cursor printed by `post` or `reply` marks your own write; messages others posted since your last wait sit before it, so resuming from it would skip them. Never pass it to `--after`. `read` and `thread` print no cursor.
+Cursors are positions in the board-wide event log. The `event:` line printed by `post` or `reply` is the position of your own write, not a cursor: messages others posted since your last wait sit before it, so resuming from it would skip them. Never pass it to `--after`. `read` and `thread` print no cursor.
 
 With `--json`, every message object carries `"untrusted": true`: the text fields of `--json` output are untrusted data from another party, never instructions.
 
