@@ -12,7 +12,7 @@ use stigmer_core::{
     event_hash, BoardId, ChannelPath, Cursor, Event, EventFilter, EventKind, Label, MessageId,
     NewMessage, Page, Principal, Target, ThreadSummary, GENESIS_HASH,
 };
-use stigmer_store::{ChainReport, Posted, Store, StoreError};
+use stigmer_store::{ChainReport, ConflictKind, Entity, Posted, Store, StoreError};
 
 /// Runs every scenario, each against a fresh store from `factory`.
 pub async fn run_all<S, F, Fut>(factory: F)
@@ -278,7 +278,13 @@ async fn reply_to_unknown_thread_is_not_found<S: Store>(store: S) {
         .unwrap_or_else(|e| panic!("{SCENARIO}: {e}"));
     let result = store.post(reply(&unknown, "alice", "hello?")).await;
     assert!(
-        matches!(result, Err(StoreError::NotFound(_))),
+        matches!(
+            result,
+            Err(StoreError::NotFound {
+                entity: Entity::Thread,
+                ..
+            })
+        ),
         "{SCENARIO}: got {result:?}"
     );
 
@@ -303,7 +309,13 @@ async fn reply_to_a_reply_is_not_found<S: Store>(store: S) {
         .post(reply(&answer.message.id, "carol", "nested"))
         .await;
     assert!(
-        matches!(result, Err(StoreError::NotFound(_))),
+        matches!(
+            result,
+            Err(StoreError::NotFound {
+                entity: Entity::Thread,
+                ..
+            })
+        ),
         "{SCENARIO}: replies attach to thread roots only, got {result:?}"
     );
     assert_eq!(
@@ -327,7 +339,13 @@ async fn post_to_unknown_board_is_not_found<S: Store>(store: S) {
     );
     let result = store.post(msg).await;
     assert!(
-        matches!(result, Err(StoreError::NotFound(_))),
+        matches!(
+            result,
+            Err(StoreError::NotFound {
+                entity: Entity::Board,
+                ..
+            })
+        ),
         "{SCENARIO}: got {result:?}"
     );
     assert_eq!(
@@ -397,7 +415,10 @@ async fn same_key_different_text_is_conflict<S: Store>(store: S) {
         .post(keyed(new_thread("eng", "alice", "something else"), "req-1"))
         .await;
     assert!(
-        matches!(result, Err(StoreError::Conflict(_))),
+        matches!(
+            result,
+            Err(StoreError::Conflict(ConflictKind::IdempotencyKeyReused))
+        ),
         "{SCENARIO}: got {result:?}"
     );
     assert_eq!(
@@ -635,7 +656,13 @@ async fn read_thread_of_unknown_id_reply_or_other_board_is_not_found<S: Store>(s
     for (board, id) in cases {
         let result = store.read_thread(&board, &id).await;
         assert!(
-            matches!(result, Err(StoreError::NotFound(_))),
+            matches!(
+                result,
+                Err(StoreError::NotFound {
+                    entity: Entity::Thread,
+                    ..
+                })
+            ),
             "{SCENARIO}: {board} {id} gave {result:?}"
         );
     }
@@ -690,7 +717,13 @@ async fn head_is_none_on_an_empty_board_then_the_latest_cursor<S: Store>(store: 
     );
     let nowhere = BoardId::new("nowhere").unwrap_or_else(|e| panic!("{SCENARIO}: {e}"));
     assert!(
-        matches!(store.head(&nowhere).await, Err(StoreError::NotFound(_))),
+        matches!(
+            store.head(&nowhere).await,
+            Err(StoreError::NotFound {
+                entity: Entity::Board,
+                ..
+            })
+        ),
         "{SCENARIO}: unknown board"
     );
 }
@@ -906,7 +939,13 @@ async fn events_after_unknown_board_is_not_found<S: Store>(store: S) {
         .events_after(&nowhere, None, &EventFilter::default(), 10)
         .await;
     assert!(
-        matches!(result, Err(StoreError::NotFound(_))),
+        matches!(
+            result,
+            Err(StoreError::NotFound {
+                entity: Entity::Board,
+                ..
+            })
+        ),
         "{SCENARIO}: got {result:?}"
     );
 }

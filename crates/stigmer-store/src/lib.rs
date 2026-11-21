@@ -1,5 +1,6 @@
 //! stigmer-store: the storage boundary every backend implements.
 
+use std::fmt;
 use std::future::Future;
 use std::time::Duration;
 
@@ -9,15 +10,48 @@ use stigmer_core::{BoardId, ChannelPath, Cursor, Event, MessageId, NewMessage};
 
 pub use stigmer_core::{EventFilter, Message, Page, Posted, Thread, ThreadSummary};
 
+/// The kind of thing a lookup did not find.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Entity {
+    Board,
+    Thread,
+    Message,
+}
+
+impl fmt::Display for Entity {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Entity::Board => "board",
+            Entity::Thread => "thread",
+            Entity::Message => "message",
+        })
+    }
+}
+
+/// Why a write conflicts with what is already stored.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConflictKind {
+    /// An idempotency key was sent again with a request that differs from the stored one.
+    IdempotencyKeyReused,
+}
+
+impl fmt::Display for ConflictKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            ConflictKind::IdempotencyKeyReused => "idempotency key reused with a different request",
+        })
+    }
+}
+
 /// Why a store operation failed.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum StoreError {
-    #[error("not found: {0}")]
-    NotFound(String),
+    #[error("not found: {entity} {id}")]
+    NotFound { entity: Entity, id: String },
     #[error("invalid cursor")]
     InvalidCursor,
     #[error("conflict: {0}")]
-    Conflict(String),
+    Conflict(ConflictKind),
     #[error("storage backend error: {0}")]
     Backend(String),
 }
@@ -99,16 +133,46 @@ pub trait Store: Send + Sync + 'static {
 mod tests {
     use super::*;
 
+    fn not_found(entity: Entity, id: &str) -> StoreError {
+        StoreError::NotFound {
+            entity,
+            id: id.into(),
+        }
+    }
+
+    #[test]
+    fn entity_names_are_lowercase_nouns() {
+        assert_eq!(Entity::Board.to_string(), "board");
+        assert_eq!(Entity::Thread.to_string(), "thread");
+        assert_eq!(Entity::Message.to_string(), "message");
+    }
+
+    #[test]
+    fn conflict_kind_explains_the_conflict() {
+        assert_eq!(
+            ConflictKind::IdempotencyKeyReused.to_string(),
+            "idempotency key reused with a different request"
+        );
+    }
+
     #[test]
     fn store_error_messages_name_the_problem() {
         assert_eq!(
-            StoreError::NotFound("thread msg_x".into()).to_string(),
+            not_found(Entity::Board, "brd_x").to_string(),
+            "not found: board brd_x"
+        );
+        assert_eq!(
+            not_found(Entity::Thread, "msg_x").to_string(),
             "not found: thread msg_x"
+        );
+        assert_eq!(
+            not_found(Entity::Message, "msg_y").to_string(),
+            "not found: message msg_y"
         );
         assert_eq!(StoreError::InvalidCursor.to_string(), "invalid cursor");
         assert_eq!(
-            StoreError::Conflict("key reused".into()).to_string(),
-            "conflict: key reused"
+            StoreError::Conflict(ConflictKind::IdempotencyKeyReused).to_string(),
+            "conflict: idempotency key reused with a different request"
         );
         assert_eq!(
             StoreError::Backend("disk full".into()).to_string(),

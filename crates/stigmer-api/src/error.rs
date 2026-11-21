@@ -55,7 +55,7 @@ impl From<CoreError> for ApiError {
 impl From<StoreError> for ApiError {
     fn from(err: StoreError) -> Self {
         match err {
-            StoreError::NotFound(_) => Self::not_found(err.to_string()),
+            StoreError::NotFound { .. } => Self::not_found(err.to_string()),
             StoreError::InvalidCursor => Self::new(ErrorCode::InvalidCursor, err.to_string()),
             StoreError::Conflict(_) => Self::new(ErrorCode::Conflict, err.to_string()),
             // Backend text may carry SQL or file paths; never send it to a client.

@@ -2,9 +2,9 @@
 
 use rusqlite::{Connection, OptionalExtension, Transaction};
 use stigmer_core::{BoardId, ChannelPath, Label, Message, MessageId, Principal};
-use stigmer_store::{Page, StoreError, Thread, ThreadSummary};
+use stigmer_store::{Entity, Page, StoreError, Thread, ThreadSummary};
 
-use crate::backend;
+use crate::{backend, not_found};
 
 const MAX_PAGE: u32 = 200;
 const PREVIEW_CHARS: i64 = 200;
@@ -30,7 +30,7 @@ pub(crate) fn read_channel(
         None => None,
         Some(before) => Some(
             thread_activity(&tx, board, before)?
-                .ok_or_else(|| StoreError::NotFound(format!("thread {before}")))?,
+                .ok_or_else(|| not_found(Entity::Thread, before))?,
         ),
     };
     let (before_at, before_id) = match &cursor {
@@ -127,7 +127,7 @@ pub(crate) fn read_thread(
             .map_err(backend)?;
         match rows.next().map_err(backend)? {
             Some(row) => message_from_row(&tx, row)?,
-            None => return Err(StoreError::NotFound(format!("thread {thread}"))),
+            None => return Err(not_found(Entity::Thread, thread)),
         }
     };
     let mut stmt = tx

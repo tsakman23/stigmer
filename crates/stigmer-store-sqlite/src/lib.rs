@@ -17,7 +17,7 @@ use std::time::Duration;
 use rusqlite::Connection;
 use stigmer_core::{BoardId, ChannelPath, Cursor, Event, MessageId, NewMessage};
 use stigmer_store::{
-    ChainReport, EventFilter, Page, Posted, Store, StoreError, Thread, ThreadSummary,
+    ChainReport, Entity, EventFilter, Page, Posted, Store, StoreError, Thread, ThreadSummary,
 };
 
 /// A `Store` backed by one SQLite database.
@@ -193,6 +193,14 @@ impl Store for SqliteStore {
                 .await
                 .unwrap_or(Ok(false))
         }
+    }
+}
+
+/// A `NotFound` error for the `entity` named by `id`.
+pub(crate) fn not_found(entity: Entity, id: impl Display) -> StoreError {
+    StoreError::NotFound {
+        entity,
+        id: id.to_string(),
     }
 }
 

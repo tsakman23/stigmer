@@ -7,9 +7,9 @@ use stigmer_core::{
     event_hash, BoardId, ChannelPath, Cursor, Event, EventKind, Label, Message, MessageId,
     NewMessage, Principal, Target, GENESIS_HASH,
 };
-use stigmer_store::{ChainReport, Posted, StoreError};
+use stigmer_store::{ChainReport, ConflictKind, Entity, Posted, StoreError};
 
-use crate::backend;
+use crate::{backend, not_found};
 
 /// Stores `msg` and appends its event in one `BEGIN IMMEDIATE` transaction.
 ///
@@ -28,13 +28,13 @@ pub(crate) fn post(conn: &mut Connection, msg: NewMessage) -> Result<Posted, Sto
         }
     }
 
-    let (head_seq, head_hash) = board_head(&tx, &msg.board)?
-        .ok_or_else(|| StoreError::NotFound(format!("board {}", msg.board)))?;
+    let (head_seq, head_hash) =
+        board_head(&tx, &msg.board)?.ok_or_else(|| not_found(Entity::Board, &msg.board))?;
     let (kind, channel, thread_id) = match msg.target {
         Target::NewThread { channel } => (EventKind::ThreadCreated, channel, id.clone()),
         Target::Reply { thread } => {
             let channel = thread_root_channel(&tx, &msg.board, &thread)?
-                .ok_or_else(|| StoreError::NotFound(format!("thread {thread}")))?;
+                .ok_or_else(|| not_found(Entity::Thread, &thread))?;
             (EventKind::MessageReplied, channel, thread)
         }
     };
@@ -191,9 +191,7 @@ fn replay(
         }
     };
     if !same_target || original.text != request.text || original.labels != request.labels {
-        return Err(StoreError::Conflict(
-            "idempotency key reused with a different request".into(),
-        ));
+        return Err(StoreError::Conflict(ConflictKind::IdempotencyKeyReused));
     }
     let mut stmt = tx
         .prepare(
@@ -224,7 +222,7 @@ pub(crate) fn verify_chain(
     // One read transaction, so the head and the events come from the same snapshot.
     let tx = conn.transaction().map_err(backend)?;
     let (head_seq, head_hash) =
-        board_head(&tx, board)?.ok_or_else(|| StoreError::NotFound(format!("board {board}")))?;
+        board_head(&tx, board)?.ok_or_else(|| not_found(Entity::Board, board))?;
 
     let mut stmt = tx
         .prepare(

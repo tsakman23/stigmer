@@ -2,11 +2,11 @@
 
 use rusqlite::Connection;
 use stigmer_core::{BoardId, Cursor, Event, EventFilter};
-use stigmer_store::StoreError;
+use stigmer_store::{Entity, StoreError};
 
-use crate::backend;
 use crate::posts::{board_head, event_from_row};
 use crate::reads::channel_matches;
+use crate::{backend, not_found};
 
 const MAX_EVENTS: u32 = 500;
 
@@ -21,8 +21,7 @@ pub(crate) fn cursor_seq(after: Option<&Cursor>) -> Result<u64, StoreError> {
 /// The board's head sequence (0 while it has no events).
 pub(crate) fn head_seq(conn: &mut Connection, board: &BoardId) -> Result<u64, StoreError> {
     let tx = conn.transaction().map_err(backend)?;
-    let (seq, _hash) =
-        board_head(&tx, board)?.ok_or_else(|| StoreError::NotFound(format!("board {board}")))?;
+    let (seq, _hash) = board_head(&tx, board)?.ok_or_else(|| not_found(Entity::Board, board))?;
     Ok(seq)
 }
 
@@ -44,8 +43,7 @@ pub(crate) fn events_after(
     let limit = limit.clamp(1, MAX_EVENTS);
     // One read transaction, so the head check and the events come from the same snapshot.
     let tx = conn.transaction().map_err(backend)?;
-    let (head, _hash) =
-        board_head(&tx, board)?.ok_or_else(|| StoreError::NotFound(format!("board {board}")))?;
+    let (head, _hash) = board_head(&tx, board)?.ok_or_else(|| not_found(Entity::Board, board))?;
     if after_seq > head {
         return Err(StoreError::InvalidCursor);
     }
