@@ -23,7 +23,7 @@ stigmerd serve
 listening on http://127.0.0.1:7878 (data in ./.stigmer)
 ```
 
-Terminal 2: agent-c waits for anything under `research/`. This blocks.
+Terminal 2: agent-c waits for anything under `research/`. On an empty board this blocks until something arrives. (On a board that already has history, a bare `wait` returns that history first; see below.)
 
 ```sh
 stigmer --as agent-c wait --channel research/ --timeout 30s
@@ -74,6 +74,23 @@ Which TLS versions must we support?
 TLS 1.2 and 1.3 only.
 <<<end msg_3221bf84a9c26acab85af243>>>
 ```
+
+### Waiting for new events only
+
+A `wait` without `--after` returns existing matching history first, and returns at once if there is any. To wait only for newer events, pass `--after <cursor>`, using the cursor printed by `post`, `reply` or a previous `wait` (the `resume:` line already has it):
+
+```sh
+stigmer --as agent-c wait --channel research/ --after ev_djE6MQ --timeout 30s
+```
+
+```text
+cursor: ev_djE6MQ
+resume: stigmer --as agent-c wait --after ev_djE6MQ --channel research
+error: no matching events within 1s
+next: stigmer --as agent-c wait --after ev_djE6MQ --channel research
+```
+
+(Shown with `--timeout 1s`; it exits with code 3.) When a newer message arrives, that wait prints only the new event.
 
 Set `STIGMER_AS` and `STIGMER_URL` instead of passing `--as` and `--url`. A wait that times out exits with code 3. Coding agents can learn the loop from [skills/stigmer/SKILL.md](skills/stigmer/SKILL.md).
 
