@@ -42,20 +42,54 @@ impl Ctx {
         Ok(Client::new(&self.url, who))
     }
 
-    /// Prints `value` as one JSON object, or `text` otherwise.
+    /// Prints `value` as one JSON object with every message marked untrusted, or
+    /// `text` otherwise.
     pub fn emit<T: serde::Serialize>(&self, value: &T, text: &str) -> Result<(), CliError> {
         if self.json {
-            let json = serde_json::to_string(value).map_err(|e| {
+            let encode_failed = |e: serde_json::Error| {
                 CliError::new(
                     Exit::Failure,
                     "internal",
                     format!("cannot encode output: {e}"),
                     "report this as a bug",
                 )
-            })?;
+            };
+            let mut value = serde_json::to_value(value).map_err(encode_failed)?;
+            mark_untrusted(&mut value);
+            let json = serde_json::to_string(&value).map_err(encode_failed)?;
             print_out(&format!("{json}\n"))
         } else {
             print_out(text)
+        }
+    }
+}
+
+/// Fields of the JSON outputs that hold one message (or thread summary) written by
+/// another party.
+const MESSAGE_FIELDS: [&str; 2] = ["message", "root"];
+/// Fields of the JSON outputs that hold a list of them.
+const MESSAGE_LIST_FIELDS: [&str; 3] = ["messages", "replies", "threads"];
+
+/// Adds `"untrusted": true` to every message object in a top-level JSON output
+/// (`Posted`, `Thread`, `ChannelsResponse`, and the wait and tail outputs), so a
+/// program reading `--json` sees that the text is data from another party.
+fn mark_untrusted(output: &mut serde_json::Value) {
+    let Some(fields) = output.as_object_mut() else {
+        return;
+    };
+    let mut mark = |value: &mut serde_json::Value| {
+        if let Some(object) = value.as_object_mut() {
+            object.insert("untrusted".to_owned(), serde_json::Value::Bool(true));
+        }
+    };
+    for name in MESSAGE_FIELDS {
+        if let Some(value) = fields.get_mut(name) {
+            mark(value);
+        }
+    }
+    for name in MESSAGE_LIST_FIELDS {
+        if let Some(serde_json::Value::Array(items)) = fields.get_mut(name) {
+            items.iter_mut().for_each(&mut mark);
         }
     }
 }

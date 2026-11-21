@@ -448,3 +448,64 @@ fn non_utf8_argument_is_a_usage_error() {
     assert_failure_lines(&run);
     assert!(run.stdout.is_empty());
 }
+
+fn assert_untrusted(message: &Value, context: &str) {
+    assert!(
+        message.is_object(),
+        "{context}: not a message object: {message}"
+    );
+    assert_eq!(message["untrusted"], true, "{context}: {message}");
+}
+
+#[test]
+fn json_output_marks_every_message_untrusted() {
+    let url = server();
+    let posted = post_json(&url, "alice", "eng", "hello");
+    assert_untrusted(&posted["message"], "post");
+    let root = id_of(&posted);
+
+    let reply = stigmer(&url, &["--as", "bob", "--json", "reply", &root, "hi back"]);
+    assert_eq!(reply.code, 0, "stderr: {}", reply.stderr);
+    let reply: Value = serde_json::from_str(&reply.stdout).unwrap();
+    assert_untrusted(&reply["message"], "reply");
+
+    let thread = stigmer(&url, &["--json", "thread", &root]);
+    assert_eq!(thread.code, 0, "stderr: {}", thread.stderr);
+    let thread: Value = serde_json::from_str(&thread.stdout).unwrap();
+    assert_untrusted(&thread["root"], "thread root");
+    assert_eq!(thread["replies"].as_array().unwrap().len(), 1);
+    for message in thread["replies"].as_array().unwrap() {
+        assert_untrusted(message, "thread reply");
+    }
+
+    let read = stigmer(&url, &["--json", "read", "eng"]);
+    assert_eq!(read.code, 0, "stderr: {}", read.stderr);
+    let read: Value = serde_json::from_str(&read.stdout).unwrap();
+    assert_eq!(read["threads"].as_array().unwrap().len(), 1);
+    for summary in read["threads"].as_array().unwrap() {
+        assert_untrusted(summary, "read summary");
+    }
+
+    let wait = stigmer(&url, &["--json", "wait", "--channel", "eng"]);
+    assert_eq!(wait.code, 0, "stderr: {}", wait.stderr);
+    let wait: Value = serde_json::from_str(&wait.stdout).unwrap();
+    assert_eq!(wait["messages"].as_array().unwrap().len(), 2);
+    for message in wait["messages"].as_array().unwrap() {
+        assert_untrusted(message, "wait");
+    }
+
+    let tail = stigmer(
+        &url,
+        &["--json", "tail", "--channel", "eng", "--timeout", "1s"],
+    );
+    assert_eq!(tail.code, 0, "stderr: {}", tail.stderr);
+    let items: Vec<Value> = tail
+        .stdout
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(items.len(), 2, "{}", tail.stdout);
+    for item in &items {
+        assert_untrusted(&item["message"], "tail");
+    }
+}
