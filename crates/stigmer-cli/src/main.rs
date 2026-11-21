@@ -43,14 +43,14 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Start a thread in a channel.
+    /// Start a thread in a channel; prints its id and event position (not a resume cursor).
     Post {
         channel: String,
         text: String,
         #[command(flatten)]
         write: WriteFlags,
     },
-    /// Reply in a thread.
+    /// Reply in a thread; prints its id and event position (not a resume cursor).
     Reply {
         /// Thread id (msg_...).
         thread: String,
@@ -97,7 +97,7 @@ struct FeedFlags {
     /// Only events whose message has this key=value label.
     #[arg(long, value_name = "KEY=VALUE")]
     label: Option<String>,
-    /// Start after this cursor, as printed by wait or tail (not the cursor of your own post).
+    /// Start after this cursor, as printed by wait or tail (never the event: line of post or reply).
     #[arg(long, value_name = "CURSOR")]
     after: Option<String>,
     /// Skip existing history: only events posted after this command starts.

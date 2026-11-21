@@ -85,14 +85,15 @@ fn assert_failure_lines(run: &Run) {
 }
 
 #[test]
-fn post_prints_message_id_and_cursor() {
+fn post_prints_message_id_and_event_position() {
     let url = server();
     let run = stigmer(&url, &["--as", "alice", "post", "eng/ops", "hello"]);
     assert_eq!(run.code, 0, "stderr: {}", run.stderr);
     let first = run.stdout.lines().next().unwrap();
     assert!(first.starts_with("posted msg_"), "{first}");
     assert!(first.ends_with(" in eng/ops as alice"), "{first}");
-    assert!(line_value(&run.stdout, "cursor: ").starts_with("ev_"));
+    assert!(line_value(&run.stdout, "event: ").starts_with("ev_"));
+    assert!(!run.stdout.contains("cursor:"), "{}", run.stdout);
 }
 
 #[test]
@@ -238,7 +239,8 @@ fn reply_read_and_thread_show_the_conversation() {
         first.ends_with(&format!(" in thread {root} (eng/ops) as bob")),
         "{first}"
     );
-    assert!(line_value(&reply.stdout, "cursor: ").starts_with("ev_"));
+    assert!(line_value(&reply.stdout, "event: ").starts_with("ev_"));
+    assert!(!reply.stdout.contains("cursor:"), "{}", reply.stdout);
 
     let read = stigmer(&url, &["read", "eng"]);
     assert_eq!(read.code, 0, "stderr: {}", read.stderr);

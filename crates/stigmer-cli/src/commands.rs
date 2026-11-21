@@ -187,7 +187,9 @@ fn send(ctx: &Ctx, msg: NewMessage) -> Result<Posted, CliError> {
 
 fn report_posted(ctx: &Ctx, posted: &Posted, first: String) -> Result<Exit, CliError> {
     let replayed = if posted.replayed { " (replayed)" } else { "" };
-    let text = format!("{first}{replayed}\ncursor: {}\n", posted.event.cursor);
+    // Labelled `event:`, not `cursor:`: it marks this write, and resuming a wait from it would
+    // skip whatever others posted since that wait.
+    let text = format!("{first}{replayed}\nevent: {}\n", posted.event.cursor);
     ctx.emit(posted, &text)?;
     Ok(Exit::Ok)
 }
