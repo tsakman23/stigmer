@@ -301,9 +301,7 @@ fn event_from_row(row: &rusqlite::Row<'_>) -> Result<Option<Event>, StoreError> 
 }
 
 fn parse_kind(raw: &str) -> Option<EventKind> {
-    [EventKind::ThreadCreated, EventKind::MessageReplied]
-        .into_iter()
-        .find(|kind| kind.as_str() == raw)
+    EventKind::from_name(raw)
 }
 
 /// The board's head `(seq, hash)`, or `None` if the board does not exist.

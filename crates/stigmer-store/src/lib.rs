@@ -6,7 +6,7 @@ use thiserror::Error;
 
 use stigmer_core::{BoardId, NewMessage};
 
-pub use stigmer_core::{Message, Posted};
+pub use stigmer_core::{EventFilter, Message, Page, Posted, Thread, ThreadSummary};
 
 /// Why a store operation failed.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]

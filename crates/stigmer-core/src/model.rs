@@ -26,6 +26,44 @@ pub struct Posted {
     pub replayed: bool,
 }
 
+/// One page request for a channel read. `before` is the thread id of the last item of the
+/// previous page; `limit` is clamped by the store to 1..=200.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Page {
+    pub limit: u32,
+    pub before: Option<MessageId>,
+}
+
+/// A thread as listed in a channel read.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ThreadSummary {
+    pub thread_id: MessageId,
+    pub channel: ChannelPath,
+    /// The first 200 characters of the root message text.
+    pub root_text_preview: String,
+    /// Number of replies, not counting the root.
+    pub reply_count: u32,
+    /// Time of the latest message in the thread, root included.
+    pub last_at_ms: i64,
+}
+
+/// A thread root and its replies, replies in event order.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Thread {
+    pub root: Message,
+    pub replies: Vec<Message>,
+}
+
+/// Narrows an event feed. Unset fields match everything.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EventFilter {
+    /// Matches whole path segments: `research` matches `research/tls` but not `research2`.
+    pub channel_prefix: Option<ChannelPath>,
+    pub thread: Option<MessageId>,
+    /// Matches events whose message carries exactly this label.
+    pub label: Option<Label>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -74,6 +112,44 @@ mod tests {
             event,
             replayed: false,
         }
+    }
+
+    #[test]
+    fn read_types_roundtrip_through_json() {
+        let posted = sample();
+        let thread = Thread {
+            root: posted.message.clone(),
+            replies: vec![],
+        };
+        let json = serde_json::to_string(&thread).unwrap();
+        assert_eq!(serde_json::from_str::<Thread>(&json).unwrap(), thread);
+
+        let summary = ThreadSummary {
+            thread_id: posted.message.id.clone(),
+            channel: posted.message.channel.clone(),
+            root_text_preview: "hello".to_owned(),
+            reply_count: 0,
+            last_at_ms: posted.message.at_ms,
+        };
+        let json = serde_json::to_string(&summary).unwrap();
+        assert_eq!(
+            serde_json::from_str::<ThreadSummary>(&json).unwrap(),
+            summary
+        );
+
+        let page = Page {
+            limit: 10,
+            before: Some(posted.message.id),
+        };
+        let json = serde_json::to_string(&page).unwrap();
+        assert_eq!(serde_json::from_str::<Page>(&json).unwrap(), page);
+
+        let filter = EventFilter::default();
+        assert_eq!(filter.channel_prefix, None);
+        assert_eq!(filter.thread, None);
+        assert_eq!(filter.label, None);
+        let json = serde_json::to_string(&filter).unwrap();
+        assert_eq!(serde_json::from_str::<EventFilter>(&json).unwrap(), filter);
     }
 
     #[test]

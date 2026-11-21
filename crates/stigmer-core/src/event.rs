@@ -81,6 +81,14 @@ pub enum EventKind {
 }
 
 impl EventKind {
+    /// Every kind, for parsing and exhaustive checks.
+    pub const ALL: &'static [EventKind] = &[EventKind::ThreadCreated, EventKind::MessageReplied];
+
+    /// The kind whose wire name is `name`, if any.
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::ALL.iter().copied().find(|kind| kind.as_str() == name)
+    }
+
     /// The wire name, also used as hash input.
     pub fn as_str(self) -> &'static str {
         match self {
@@ -129,6 +137,20 @@ pub fn event_hash(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn event_kind_all_lists_every_kind_and_parses_back() {
+        // Exhaustive match: adding a variant stops compiling here until ALL is revisited.
+        for kind in EventKind::ALL {
+            match kind {
+                EventKind::ThreadCreated | EventKind::MessageReplied => {}
+            }
+            assert_eq!(EventKind::from_name(kind.as_str()), Some(*kind));
+        }
+        assert_eq!(EventKind::ALL.len(), 2);
+        assert_eq!(EventKind::from_name("thread.deleted"), None);
+        assert_eq!(EventKind::from_name(""), None);
+    }
 
     #[test]
     fn cursor_roundtrips_seq() {
