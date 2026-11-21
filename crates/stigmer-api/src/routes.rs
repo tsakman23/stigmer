@@ -242,11 +242,23 @@ async fn read_thread<S: Store, A: Authorize>(
 #[derive(Deserialize)]
 struct EventsQuery {
     after: Option<String>,
+    from_now: Option<String>,
     channel: Option<String>,
     thread: Option<String>,
     label: Option<String>,
     timeout_s: Option<String>,
     limit: Option<String>,
+}
+
+/// Parses the `from_now` flag: absent or `false` is off, `true` is on.
+fn parse_from_now(raw: Option<&str>) -> Result<bool, ApiError> {
+    match raw {
+        None | Some("false") => Ok(false),
+        Some("true") => Ok(true),
+        Some(other) => Err(ApiError::invalid_input(format!(
+            "from_now must be true or false, got {other:?}"
+        ))),
+    }
 }
 
 async fn read_events_route<S: Store, A: Authorize>(
@@ -258,6 +270,12 @@ async fn read_events_route<S: Store, A: Authorize>(
     let board = require_main_board(&path_or_400(path)?)?;
     let who = reader(&headers)?;
     let q = query_or_400(query)?;
+    let from_now = parse_from_now(q.from_now.as_deref())?;
+    if from_now && q.after.is_some() {
+        return Err(ApiError::invalid_input(
+            "from_now and after are mutually exclusive; pass one or the other",
+        ));
+    }
     let after = q
         .after
         .map(|raw| {
@@ -284,6 +302,13 @@ async fn read_events_route<S: Store, A: Authorize>(
     state
         .authz
         .check(&who, Action::Read, filter.channel_prefix.as_ref())?;
+    // `from_now` is `after=<head>`, with the head read once here; on an empty board it is no
+    // cursor at all, since nothing existed to skip.
+    let after = if from_now {
+        state.store.head(&board).await?
+    } else {
+        after
+    };
     let response = read_events(
         &*state.store,
         state.shutdown.clone(),

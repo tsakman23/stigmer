@@ -565,6 +565,72 @@ async fn dropping_the_request_cancels_the_wait() {
     assert_eq!(status, StatusCode::OK);
 }
 
+#[tokio::test]
+async fn from_now_skips_history_and_returns_only_new_events() {
+    let h = harness().await;
+    post_to(&h.app, "eng", "old one").await;
+    let old = post_to(&h.app, "eng", "old two").await;
+
+    // Without a wait the request returns nothing, positioned at the current head.
+    let (status, body) = events(&h.app, "?from_now=true").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["events"], json!([]));
+    assert_eq!(body["cursor"], old["event"]["cursor"]);
+
+    let app = h.app.clone();
+    let waiter = tokio::spawn(async move { events(&app, "?from_now=true&timeout_s=10").await });
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let fresh = post_to(&h.app, "eng", "new").await;
+    let (status, body) = tokio::time::timeout(Duration::from_secs(3), waiter)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["timed_out"], false);
+    assert_eq!(body["events"].as_array().unwrap().len(), 1, "{body}");
+    assert_eq!(body["events"][0]["message_id"], fresh["message"]["id"]);
+    assert_eq!(body["cursor"], fresh["event"]["cursor"]);
+}
+
+#[tokio::test]
+async fn from_now_with_after_is_400_invalid_input() {
+    let h = harness().await;
+    let posted = post_to(&h.app, "eng", "one").await;
+    let after = posted["event"]["cursor"].as_str().unwrap();
+    let (status, body) = events(&h.app, &format!("?from_now=true&after={after}")).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["error"]["code"], "invalid_input");
+    let message = body["error"]["message"].as_str().unwrap();
+    assert!(
+        message.contains("from_now") && message.contains("after"),
+        "{message}"
+    );
+    let (status, body) = events(&h.app, "?from_now=yes").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["error"]["code"], "invalid_input");
+}
+
+#[tokio::test]
+async fn from_now_on_empty_board_returns_the_first_event() {
+    let h = harness().await;
+    let (_, body) = events(&h.app, "?from_now=true").await;
+    assert_eq!(
+        body,
+        json!({"events": [], "cursor": null, "timed_out": false})
+    );
+    let app = h.app.clone();
+    let waiter = tokio::spawn(async move { events(&app, "?from_now=true&timeout_s=10").await });
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let first = post_to(&h.app, "eng", "first").await;
+    let (_, body) = tokio::time::timeout(Duration::from_secs(3), waiter)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(body["events"].as_array().unwrap().len(), 1, "{body}");
+    assert_eq!(body["events"][0]["seq"], 1);
+    assert_eq!(body["cursor"], first["event"]["cursor"]);
+}
+
 async fn assert_error_body(app: &Router, req: Request<Body>, status: StatusCode, code: &str) {
     let resp = app.clone().oneshot(req).await.unwrap();
     assert_eq!(resp.status(), status);

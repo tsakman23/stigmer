@@ -28,6 +28,11 @@ pub struct ChannelsResponse {
 
 /// Response of an event feed read. `cursor` is where to resume; `timed_out` is true when a
 /// blocking read gave up (or the server is shutting down) with nothing to return.
+///
+/// The read starts after the `after` query cursor, or with `from_now=true` after the board's
+/// head as it stood when the request arrived (from the beginning on an empty board); the two
+/// are mutually exclusive. `cursor` is the last returned event's cursor, else the starting
+/// cursor (`after` or the resolved head), else the board's head, else null.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EventsResponse {
     pub events: Vec<Event>,
