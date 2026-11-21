@@ -4,14 +4,17 @@ mod client;
 mod commands;
 mod exit;
 mod render;
+mod wait;
 
 use std::process::ExitCode;
+use std::time::Duration;
 
 use clap::error::ErrorKind;
 use clap::{Parser, Subcommand};
 
 use crate::commands::{Ctx, WriteArgs};
 use crate::exit::{CliError, Exit};
+use crate::wait::FeedArgs;
 
 #[derive(Parser)]
 #[command(
@@ -65,6 +68,49 @@ enum Command {
         /// Thread id (msg_...).
         id: String,
     },
+    /// Block until a matching event arrives; prints it, a cursor and a resume command.
+    Wait {
+        #[command(flatten)]
+        feed: FeedFlags,
+        /// Give up after this long (30s, 5m, 1h or plain seconds); exit 3.
+        #[arg(long, default_value = "5m", value_parser = wait::parse_timeout)]
+        timeout: Duration,
+    },
+    /// Print matching events as they arrive (one JSON object per line with --json).
+    Tail {
+        #[command(flatten)]
+        feed: FeedFlags,
+        /// Stop after this long (30s, 5m, 1h or plain seconds); runs until killed if unset.
+        #[arg(long, value_parser = wait::parse_timeout)]
+        timeout: Option<Duration>,
+    },
+}
+
+#[derive(clap::Args)]
+struct FeedFlags {
+    /// Only events under this channel prefix.
+    #[arg(long)]
+    channel: Option<String>,
+    /// Only events in this thread.
+    #[arg(long)]
+    thread: Option<String>,
+    /// Only events whose message has this key=value label.
+    #[arg(long, value_name = "KEY=VALUE")]
+    label: Option<String>,
+    /// Start after this cursor (printed by post, reply, wait and tail).
+    #[arg(long, value_name = "CURSOR")]
+    after: Option<String>,
+}
+
+impl From<FeedFlags> for FeedArgs {
+    fn from(flags: FeedFlags) -> Self {
+        Self {
+            channel: flags.channel,
+            thread: flags.thread,
+            label: flags.label,
+            after: flags.after,
+        }
+    }
 }
 
 #[derive(clap::Args)]
@@ -110,6 +156,8 @@ fn main() -> ExitCode {
         } => commands::reply(&ctx, &thread, write.with_text(text)),
         Command::Read { prefix } => commands::read(&ctx, &prefix),
         Command::Thread { id } => commands::thread(&ctx, &id),
+        Command::Wait { feed, timeout } => wait::wait(&ctx, feed.into(), timeout),
+        Command::Tail { feed, timeout } => wait::tail(&ctx, feed.into(), timeout),
     };
     match outcome {
         Ok(exit) => exit.into(),
@@ -130,11 +178,21 @@ fn usage_failure(err: &clap::Error) -> ExitCode {
         let _ = err.print();
         return ExitCode::SUCCESS;
     }
+    // clap's message is the paragraph before the usage block, sometimes over several lines.
     let rendered = err.to_string();
-    let first = rendered.lines().next().unwrap_or("invalid arguments");
-    let message = first.strip_prefix("error: ").unwrap_or(first);
+    let paragraph: Vec<&str> = rendered
+        .lines()
+        .take_while(|line| !line.trim().is_empty())
+        .map(str::trim)
+        .collect();
+    let joined = paragraph.join(" ");
+    let message = match err.kind() {
+        // clap renders the whole help here; its first line is the about text.
+        ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand => "a command is required",
+        _ => joined.strip_prefix("error: ").unwrap_or(&joined),
+    };
     // Parsing failed, so --json is looked for in the raw arguments.
     let json = std::env::args().any(|arg| arg == "--json");
-    CliError::usage(message, "see: stigmer --help").print(json);
+    CliError::usage(message, "run: stigmer --help").print(json);
     Exit::Usage.into()
 }

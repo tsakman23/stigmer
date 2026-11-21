@@ -5,7 +5,8 @@ use std::time::Duration;
 
 use serde::de::DeserializeOwned;
 use stigmer_core::{
-    ChannelPath, ChannelsResponse, ErrorBody, MessageId, PostRequest, Posted, Principal, Thread,
+    ChannelPath, ChannelsResponse, Cursor, ErrorBody, EventFilter, EventsResponse, MessageId,
+    PostRequest, Posted, Principal, Thread,
 };
 use ureq::http::Response;
 use ureq::{Agent, Body, RequestBuilder};
@@ -14,6 +15,8 @@ use crate::exit::{CliError, Exit};
 
 /// Time limit for requests that do not wait for events.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+/// How much longer than its server-side wait an events request may take.
+const WAIT_GRACE: Duration = Duration::from_secs(10);
 /// The only board in M0.
 const BOARD: &str = "main";
 
@@ -69,6 +72,36 @@ impl Client {
     /// A thread root and its replies.
     pub fn thread(&self, id: &MessageId) -> Result<Thread, CliError> {
         let request = self.identify(self.agent.get(self.url(&format!("threads/{id}"))));
+        self.finish(request.call())
+    }
+
+    /// Events after `after` matching `filter`; with `timeout_s > 0` the server holds the
+    /// request until a matching event lands or the timeout passes.
+    pub fn events(
+        &self,
+        filter: &EventFilter,
+        after: Option<&Cursor>,
+        timeout_s: u64,
+    ) -> Result<EventsResponse, CliError> {
+        let mut request = self
+            .identify(self.agent.get(self.url("events")))
+            .query("timeout_s", timeout_s.to_string());
+        if let Some(after) = after {
+            request = request.query("after", after.as_str());
+        }
+        if let Some(channel) = &filter.channel_prefix {
+            request = request.query("channel", channel.as_str());
+        }
+        if let Some(thread) = &filter.thread {
+            request = request.query("thread", thread.as_str());
+        }
+        if let Some(label) = &filter.label {
+            request = request.query("label", format!("{}={}", label.key, label.value));
+        }
+        let request = request
+            .config()
+            .timeout_global(Some(Duration::from_secs(timeout_s) + WAIT_GRACE))
+            .build();
         self.finish(request.call())
     }
 

@@ -316,3 +316,113 @@ fn unknown_thread_exits_4() {
     assert_eq!(run.code, 4, "stderr: {}", run.stderr);
     assert_failure_lines(&run);
 }
+
+#[test]
+fn wait_returns_exit_3_on_timeout() {
+    let url = server();
+    let empty = stigmer(&url, &["wait", "--timeout", "1s"]);
+    assert_eq!(empty.code, 3, "stderr: {}", empty.stderr);
+    assert!(
+        !empty.stdout.contains("cursor:"),
+        "no cursor on an empty board"
+    );
+    assert_eq!(line_value(&empty.stdout, "resume: "), "stigmer wait");
+    assert_failure_lines(&empty);
+
+    post_json(&url, "alice", "eng", "hello");
+    let other = stigmer(
+        &url,
+        &["--as", "bob", "wait", "--channel", "ops/", "--timeout", "1"],
+    );
+    assert_eq!(other.code, 3, "stderr: {}", other.stderr);
+    let cursor = line_value(&other.stdout, "cursor: ");
+    assert!(cursor.starts_with("ev_"));
+    assert_eq!(
+        line_value(&other.stdout, "resume: "),
+        format!("stigmer --as bob wait --after {cursor} --channel ops")
+    );
+}
+
+#[test]
+fn wait_prints_frame_and_resume_line() {
+    let url = server();
+    let root = id_of(&post_json(&url, "alice", "eng", "anyone on call?"));
+    let run = stigmer(
+        &url,
+        &["--as", "bob", "wait", "--channel", "eng", "--timeout", "5s"],
+    );
+    assert_eq!(run.code, 0, "stderr: {}", run.stderr);
+    assert!(run.stdout.contains(&format!(
+        "thread.created in eng by alice (thread {root})\n<<<message {root} from alice at "
+    )));
+    assert!(run.stdout.contains("\nanyone on call?\n"));
+    assert!(run.stdout.contains(&format!("<<<end {root}>>>")));
+    let cursor = line_value(&run.stdout, "cursor: ").to_owned();
+    assert_eq!(
+        line_value(&run.stdout, "resume: "),
+        format!("stigmer --as bob wait --after {cursor} --channel eng")
+    );
+
+    // Blocked on the resume cursor, the waiter wakes when a reply lands.
+    let waiter = {
+        let url = url.clone();
+        let cursor = cursor.clone();
+        std::thread::spawn(move || {
+            stigmer(
+                &url,
+                &[
+                    "--as",
+                    "bob",
+                    "wait",
+                    "--after",
+                    &cursor,
+                    "--channel",
+                    "eng",
+                    "--timeout",
+                    "20s",
+                ],
+            )
+        })
+    };
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    let reply = stigmer(&url, &["--as", "carol", "reply", &root, "me"]);
+    assert_eq!(reply.code, 0, "stderr: {}", reply.stderr);
+    let woke = waiter.join().unwrap();
+    assert_eq!(woke.code, 0, "stderr: {}", woke.stderr);
+    assert!(woke
+        .stdout
+        .contains(&format!("message.replied in eng by carol (thread {root})")));
+    assert!(woke.stdout.contains("\nme\n"));
+    assert_ne!(line_value(&woke.stdout, "cursor: "), cursor);
+
+    let json = stigmer(&url, &["--json", "wait", "--thread", &root]);
+    assert_eq!(json.code, 0, "stderr: {}", json.stderr);
+    let body: Value = serde_json::from_str(&json.stdout).unwrap();
+    assert_eq!(body["events"].as_array().unwrap().len(), 2);
+    assert_eq!(body["messages"][1]["text"], "me");
+    assert_eq!(body["cursor"], line_value(&woke.stdout, "cursor: "));
+}
+
+#[test]
+fn wait_with_a_bad_cursor_exits_5() {
+    let run = stigmer(&dead_url(), &["wait", "--after", "ev_garbage"]);
+    assert_eq!(run.code, 5, "stderr: {}", run.stderr);
+    assert_failure_lines(&run);
+    let run = stigmer(&dead_url(), &["wait", "--timeout", "5x"]);
+    assert_eq!(run.code, 2, "stderr: {}", run.stderr);
+}
+
+#[test]
+fn tail_prints_events_and_exits_0_at_timeout() {
+    let url = server();
+    let first = id_of(&post_json(&url, "alice", "eng", "one"));
+    let second = id_of(&post_json(&url, "alice", "eng/ops", "two"));
+    post_json(&url, "alice", "other", "not shown");
+    let run = stigmer(&url, &["tail", "--channel", "eng", "--timeout", "1s"]);
+    assert_eq!(run.code, 0, "stderr: {}", run.stderr);
+    assert!(run.stdout.contains(&format!("<<<end {first}>>>")));
+    assert!(run.stdout.contains(&format!("<<<end {second}>>>")));
+    assert!(!run.stdout.contains("not shown"));
+    assert!(run.stdout.find("\none\n").unwrap() < run.stdout.find("\ntwo\n").unwrap());
+    assert!(line_value(&run.stdout, "cursor: ").starts_with("ev_"));
+}

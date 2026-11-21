@@ -34,7 +34,7 @@ impl Ctx {
     }
 
     /// A client acting as `who`, or as the optional `--as` identity when `who` is None.
-    fn client(&self, who: Option<Principal>) -> Result<Client, CliError> {
+    pub fn client(&self, who: Option<Principal>) -> Result<Client, CliError> {
         let who = match who {
             Some(who) => Some(who),
             None => self.who.as_deref().map(principal).transpose()?,
@@ -43,7 +43,7 @@ impl Ctx {
     }
 
     /// Prints `value` as one JSON object, or `text` otherwise.
-    fn emit<T: serde::Serialize>(&self, value: &T, text: &str) -> Result<(), CliError> {
+    pub fn emit<T: serde::Serialize>(&self, value: &T, text: &str) -> Result<(), CliError> {
         if self.json {
             let json = serde_json::to_string(value).map_err(|e| {
                 CliError::new(
@@ -100,7 +100,7 @@ fn core_hint(err: &CoreError) -> &'static str {
             "pass at most 32 labels as --label key=value"
         }
         CoreError::BadIdempotencyKey(_) => "keys are 1 to 128 characters of [A-Za-z0-9._:-]",
-        _ => "fix the arguments; see: stigmer --help",
+        _ => "fix the arguments; run: stigmer --help",
     }
 }
 
@@ -152,7 +152,7 @@ pub fn post(ctx: &Ctx, channel_arg: &str, args: WriteArgs) -> Result<Exit, CliEr
     report_posted(ctx, &posted, first)
 }
 
-fn message_id(raw: &str) -> Result<MessageId, CliError> {
+pub fn message_id(raw: &str) -> Result<MessageId, CliError> {
     MessageId::new(raw).map_err(|e| {
         CliError::invalid(
             &e,

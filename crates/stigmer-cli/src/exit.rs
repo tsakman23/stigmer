@@ -83,7 +83,7 @@ impl CliError {
             ErrorCode::InvalidInput => (
                 Exit::Invalid,
                 "invalid_input",
-                "fix the input; see: stigmer --help",
+                "fix the input; run: stigmer --help",
             ),
             ErrorCode::TooLarge => (
                 Exit::Invalid,
