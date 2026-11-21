@@ -9,5 +9,16 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+axum = "0.8.9"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
 stigmer-core = { path = "../stigmer-core", version = "0.0.0" }
+stigmer-store = { path = "../stigmer-store", version = "0.0.0" }
 thiserror = "2.0.21"
+tokio = { version = "1.54.1", features = ["sync", "time"] }
+
+[dev-dependencies]
+http-body-util = "0.1"
+stigmer-store-sqlite = { path = "../stigmer-store-sqlite", version = "0.0.0" }
+tokio = { version = "1.54.1", features = ["macros", "rt-multi-thread"] }
+tower = { version = "0.5", features = ["util"] }
