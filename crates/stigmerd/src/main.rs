@@ -3,7 +3,7 @@
 use std::future::IntoFuture;
 use std::io::Write;
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Arc;
 use std::time::Duration;
@@ -65,12 +65,7 @@ async fn serve(data_dir: PathBuf, bind: SocketAddr) -> Result<(), Failure> {
     let signals = Signals::install()
         .map_err(|e| Failure::Runtime(format!("cannot register signal handlers: {e}")))?;
 
-    std::fs::create_dir_all(&data_dir).map_err(|e| {
-        Failure::Runtime(format!(
-            "cannot create data dir {}: {e}",
-            data_dir.display()
-        ))
-    })?;
+    create_data_dir(&data_dir)?;
     let db_path = data_dir.join("stigmer.db");
     let store = SqliteStore::open(&db_path).await.map_err(|e| {
         Failure::Runtime(format!("cannot open database {}: {e}", db_path.display()))
@@ -119,6 +114,40 @@ async fn serve(data_dir: PathBuf, bind: SocketAddr) -> Result<(), Failure> {
             }
         } => Ok(()),
     }
+}
+
+/// Creates the data directory, private to the owner (0700) on unix. An existing
+/// directory keeps its mode; a warning goes to stderr if others can access it.
+fn create_data_dir(data_dir: &Path) -> Result<(), Failure> {
+    let mut builder = std::fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+    builder.create(data_dir).map_err(|e| {
+        Failure::Runtime(format!(
+            "cannot create data dir {}: {e}",
+            data_dir.display()
+        ))
+    })?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(data_dir)
+            .map_err(|e| {
+                Failure::Runtime(format!("cannot read data dir {}: {e}", data_dir.display()))
+            })?
+            .permissions()
+            .mode();
+        if mode & 0o077 != 0 {
+            eprintln!(
+                "stigmerd: warning: data dir {} is accessible by group or others (mode {:o}); consider: chmod 700 {}",
+                data_dir.display(),
+                mode & 0o777,
+                data_dir.display()
+            );
+        }
+    }
+    Ok(())
 }
 
 /// Shutdown signal streams, registered up front so a signal that arrives during

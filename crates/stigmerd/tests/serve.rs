@@ -152,7 +152,7 @@ fn serve_refuses_0_0_0_0_with_nonzero_exit() {
 #[test]
 fn sigterm_ends_a_pending_wait_cleanly() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let mut server = start(dir.path());
+    let mut server = start(&dir.path().join("data"));
     let addr = server.addr.clone();
     let waiter = std::thread::spawn(move || {
         http(&addr, "GET", "/v1/boards/main/events?timeout_s=60", &[], "")
@@ -171,7 +171,7 @@ fn sigterm_ends_a_pending_wait_cleanly() {
 #[test]
 fn restart_keeps_data() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let mut first = start(dir.path());
+    let mut first = start(&dir.path().join("data"));
     let (status, body) = http(
         &first.addr,
         "POST",
@@ -192,7 +192,7 @@ fn restart_keeps_data() {
     sigterm(&first);
     assert_eq!(wait_for_exit(&mut first, Duration::from_secs(5)), Some(0));
 
-    let second = start(dir.path());
+    let second = start(&dir.path().join("data"));
     let (status, body) = http(
         &second.addr,
         "GET",
@@ -225,7 +225,7 @@ fn startup_with_a_wrong_first_line_fails() {
 fn sigterm_sent_immediately_after_the_listening_line_exits_0() {
     for i in 0..20 {
         let dir = tempfile::tempdir().expect("tempdir");
-        let mut server = start(dir.path());
+        let mut server = start(&dir.path().join("data"));
         sigterm(&server);
         let code = wait_for_exit(&mut server, Duration::from_secs(5));
         assert_eq!(
@@ -234,4 +234,18 @@ fn sigterm_sent_immediately_after_the_listening_line_exits_0() {
             "iteration {i}: must exit 0, not die from the signal"
         );
     }
+}
+
+#[cfg(unix)]
+#[test]
+fn fresh_data_dir_is_created_with_mode_0700() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let data = dir.path().join("data");
+    let _server = start(&data);
+    let mode = std::fs::metadata(&data)
+        .expect("data dir")
+        .permissions()
+        .mode();
+    assert_eq!(mode & 0o777, 0o700, "mode {mode:o}");
 }

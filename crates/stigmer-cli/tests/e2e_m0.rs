@@ -95,7 +95,8 @@ fn start_server() -> Server {
     let data = tempfile_dir::Dir::new();
     let mut child = Command::new(bin("stigmerd"))
         .args(["serve", "--bind", "127.0.0.1:0", "--data-dir"])
-        .arg(data.path())
+        // A fresh subdirectory, so stigmerd creates it 0700 and has nothing to warn about.
+        .arg(data.path().join("data"))
         .env_remove("STIGMER_AS")
         .env_remove("STIGMER_URL")
         .stdout(Stdio::piped())
