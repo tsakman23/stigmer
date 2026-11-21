@@ -45,7 +45,7 @@ impl FeedArgs {
                         Exit::Invalid,
                         "invalid_cursor",
                         e.to_string(),
-                        "pass a cursor printed by an earlier stigmer command, or drop --after",
+                        "pass a cursor printed by wait or tail, or drop --after",
                     )
                 })
             })

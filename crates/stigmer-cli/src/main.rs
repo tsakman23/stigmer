@@ -97,7 +97,7 @@ struct FeedFlags {
     /// Only events whose message has this key=value label.
     #[arg(long, value_name = "KEY=VALUE")]
     label: Option<String>,
-    /// Start after this cursor (printed by post, reply, wait and tail).
+    /// Start after this cursor, as printed by wait or tail (not the cursor of your own post).
     #[arg(long, value_name = "CURSOR")]
     after: Option<String>,
 }

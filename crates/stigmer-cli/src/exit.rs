@@ -95,7 +95,7 @@ impl CliError {
             ErrorCode::InvalidCursor => (
                 Exit::Invalid,
                 "invalid_cursor",
-                "pass a cursor printed by an earlier stigmer command, or drop --after",
+                "pass a cursor printed by wait or tail, or drop --after",
             ),
             ErrorCode::NotFound => (
                 Exit::NotFound,
