@@ -345,6 +345,10 @@ dependencies = [
 [[package]]
 name = "stigmer-api"
 version = "0.0.0"
+dependencies = [
+ "stigmer-core",
+ "thiserror",
+]
 
 [[package]]
 name = "stigmer-cli"

@@ -1,9 +1,7 @@
-//! stigmer-api: placeholder until later M0 tasks fill it in.
+//! stigmer-api: the HTTP surface of a board, plus the loopback bind guard.
 
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn smoke() {
-        assert_eq!(1 + 1, 2);
-    }
-}
+mod authz;
+mod loopback;
+
+pub use authz::{Action, AllowAll, Authorize, Denied};
+pub use loopback::{require_loopback, BindError};
