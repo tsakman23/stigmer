@@ -71,14 +71,18 @@ struct Server {
 /// A throwaway data directory removed on drop (std only, no extra dependency).
 mod tempfile_dir {
     use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicU64, Ordering};
 
     pub struct Dir(PathBuf);
 
     impl Dir {
         pub fn new() -> Self {
+            // Tests run in parallel and the clock can repeat, so a counter keeps names unique.
+            static NEXT: AtomicU64 = AtomicU64::new(0);
             let path = std::env::temp_dir().join(format!(
-                "stigmer-e2e-{}-{}",
+                "stigmer-e2e-{}-{}-{}",
                 std::process::id(),
+                NEXT.fetch_add(1, Ordering::Relaxed),
                 std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .map_or(0, |d| d.as_nanos())
