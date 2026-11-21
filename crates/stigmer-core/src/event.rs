@@ -1,4 +1,7 @@
 //! Events and the hash chain.
+//!
+//! Each board's events form a sha256 chain over event metadata (sequence, kind, actor,
+//! message id, thread id, channel, time). Labels and message bodies are outside the chain.
 
 use std::fmt;
 
@@ -11,7 +14,8 @@ use crate::{ChannelPath, CoreError, MessageId, Principal};
 /// Previous-hash value for the first event in a chain: 64 zeros.
 pub const GENESIS_HASH: &str = "0000000000000000000000000000000000000000000000000000000000000000";
 
-/// Version of the event hash input format. Bump if `event_hash` ever changes.
+/// Version of the event hash input format. Bump if `event_hash` changes once boards exist
+/// in the wild (nothing is released yet, so adding `thread_id` stayed version 1).
 pub const HASH_VERSION: u32 = 1;
 
 /// An opaque position in the event log: `ev_` + base64url(no padding) of `v1:{seq}`.
@@ -112,18 +116,25 @@ pub struct Event {
     pub hash: String,
 }
 
-/// Lowercase hex sha256 of `{prev}:{seq}:{kind}:{actor}:{message_id}:{channel}:{at_ms}`.
+/// Lowercase hex sha256 of
+/// `{prev}:{seq}:{kind}:{actor}:{message_id}:{thread_id}:{channel}:{at_ms}`.
+///
+/// The chain covers event metadata, including the thread an event belongs to. It does not
+/// cover labels or message bodies: it proves the order and identity of events, not the
+/// historical content of messages.
+#[allow(clippy::too_many_arguments)]
 pub fn event_hash(
     prev: &str,
     seq: u64,
     kind: EventKind,
     actor: &Principal,
     message_id: &MessageId,
+    thread_id: &MessageId,
     channel: &ChannelPath,
     at_ms: i64,
 ) -> String {
     let input = format!(
-        "{prev}:{seq}:{}:{actor}:{message_id}:{channel}:{at_ms}",
+        "{prev}:{seq}:{}:{actor}:{message_id}:{thread_id}:{channel}:{at_ms}",
         kind.as_str()
     );
     let digest = Sha256::digest(input.as_bytes());
@@ -203,12 +214,14 @@ mod tests {
 
     const MSG: &str = "msg_0123456789abcdef01234567";
 
+    #[allow(clippy::too_many_arguments)]
     fn hash_with(
         prev: &str,
         seq: u64,
         kind: EventKind,
         actor: &str,
         msg: &str,
+        thread: &str,
         channel: &str,
         at_ms: i64,
     ) -> String {
@@ -218,6 +231,7 @@ mod tests {
             kind,
             &Principal::new(actor).unwrap(),
             &MessageId::new(msg).unwrap(),
+            &MessageId::new(thread).unwrap(),
             &ChannelPath::new(channel).unwrap(),
             at_ms,
         )
@@ -229,6 +243,7 @@ mod tests {
             1,
             EventKind::ThreadCreated,
             "alice",
+            MSG,
             MSG,
             "eng/ops",
             1_700_000_000_000,
@@ -248,6 +263,7 @@ mod tests {
                 EventKind::ThreadCreated,
                 "alice",
                 MSG,
+                MSG,
                 "eng/ops",
                 1_700_000_000_000,
             ),
@@ -256,6 +272,7 @@ mod tests {
                 2,
                 EventKind::ThreadCreated,
                 "alice",
+                MSG,
                 MSG,
                 "eng/ops",
                 1_700_000_000_000,
@@ -266,6 +283,7 @@ mod tests {
                 EventKind::MessageReplied,
                 "alice",
                 MSG,
+                MSG,
                 "eng/ops",
                 1_700_000_000_000,
             ),
@@ -274,6 +292,7 @@ mod tests {
                 1,
                 EventKind::ThreadCreated,
                 "bob",
+                MSG,
                 MSG,
                 "eng/ops",
                 1_700_000_000_000,
@@ -284,6 +303,7 @@ mod tests {
                 EventKind::ThreadCreated,
                 "alice",
                 other_msg,
+                MSG,
                 "eng/ops",
                 1_700_000_000_000,
             ),
@@ -293,6 +313,17 @@ mod tests {
                 EventKind::ThreadCreated,
                 "alice",
                 MSG,
+                other_msg,
+                "eng/ops",
+                1_700_000_000_000,
+            ),
+            hash_with(
+                GENESIS_HASH,
+                1,
+                EventKind::ThreadCreated,
+                "alice",
+                MSG,
+                MSG,
                 "eng/dev",
                 1_700_000_000_000,
             ),
@@ -301,6 +332,7 @@ mod tests {
                 1,
                 EventKind::ThreadCreated,
                 "alice",
+                MSG,
                 MSG,
                 "eng/ops",
                 1_700_000_000_001,
@@ -323,6 +355,7 @@ mod tests {
             EventKind::MessageReplied,
             "bob",
             MSG,
+            MSG,
             "eng/ops",
             1_700_000_000_500,
         );
@@ -333,6 +366,7 @@ mod tests {
             EventKind::MessageReplied,
             "bob",
             MSG,
+            MSG,
             "eng/ops",
             1_700_000_000_500,
         );
@@ -342,10 +376,11 @@ mod tests {
     #[test]
     fn event_hash_format_is_pinned() {
         // sha256 of exactly:
-        // 0000000000000000000000000000000000000000000000000000000000000000:1:thread.created:alice:msg_0123456789abcdef01234567:eng/ops:1700000000000
+        // 0000000000000000000000000000000000000000000000000000000000000000:1:thread.created:alice:msg_0123456789abcdef01234567:msg_0123456789abcdef01234567:eng/ops:1700000000000
+        // (computed with: printf %s '<that string>' | shasum -a 256)
         assert_eq!(
             base(),
-            "9b7ba6cec6253a7c7f25af56396d37e38325689136dc82dd746e5334db73987b"
+            "d7e7990e6146ff14ab397b777f4ab99859656aa0ec8a1380fd4eaac513d4aa51"
         );
     }
 

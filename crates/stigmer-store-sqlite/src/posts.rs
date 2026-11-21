@@ -42,7 +42,16 @@ pub(crate) fn post(conn: &mut Connection, msg: NewMessage) -> Result<Posted, Sto
         .checked_add(1)
         .ok_or_else(|| StoreError::Backend("event sequence overflow".into()))?;
     let at_ms = now_ms()?;
-    let hash = event_hash(&head_hash, seq, kind, &msg.author, &id, &channel, at_ms);
+    let hash = event_hash(
+        &head_hash,
+        seq,
+        kind,
+        &msg.author,
+        &id,
+        &thread_id,
+        &channel,
+        at_ms,
+    );
     let seq_sql = i64::try_from(seq).map_err(backend)?;
 
     tx.execute(
@@ -243,6 +252,7 @@ pub(crate) fn verify_chain(
             event.kind,
             &event.actor,
             &event.message_id,
+            &event.thread_id,
             &event.channel,
             event.at_ms,
         );

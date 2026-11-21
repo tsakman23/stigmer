@@ -138,6 +138,7 @@ fn expected_hash(prev: &str, posted: &Posted) -> String {
         e.kind,
         &e.actor,
         &e.message_id,
+        &e.thread_id,
         &e.channel,
         e.at_ms,
     )

@@ -82,3 +82,28 @@ async fn chain_detects_a_deleted_last_event() {
         }
     );
 }
+
+#[tokio::test]
+async fn chain_detects_a_changed_thread_id() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = store_with_four_events(&dir).await;
+
+    // Move event 3 into the thread of event 1; only thread_id changes.
+    let changed = tamper(
+        &dir,
+        "UPDATE events SET thread_id = (
+             SELECT message_id FROM events WHERE board_id = 'main' AND seq = 1)
+          WHERE board_id = 'main' AND seq = 3",
+        [],
+    );
+    assert_eq!(changed, 1);
+
+    assert_eq!(
+        store.verify_chain(&BoardId::main()).await.unwrap(),
+        ChainReport {
+            valid: false,
+            checked: 3,
+            first_bad_seq: Some(3),
+        }
+    );
+}

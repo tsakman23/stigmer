@@ -115,6 +115,7 @@ mod tests {
             EventKind::ThreadCreated,
             &author,
             &id,
+            &id,
             &channel,
             1_000,
         );
