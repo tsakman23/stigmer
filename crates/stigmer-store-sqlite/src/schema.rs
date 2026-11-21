@@ -52,6 +52,11 @@ pub(crate) const MIGRATIONS: &[&str] = &[
     "CREATE INDEX messages_thread ON messages (board_id, thread_id);
     CREATE INDEX labels_message ON labels (message_id);
     CREATE INDEX events_message ON events (board_id, message_id);",
+    // 4: the kind of principal that wrote each message. Every M0 author is a self-declared
+    // local name, so existing rows and new posts are 'local'. See docs/design.md section 12,
+    // call 8: M1 maps local principals to real principals with an explicit migration command.
+    // Kept out of the wire format and the core types.
+    "ALTER TABLE messages ADD COLUMN author_kind TEXT NOT NULL DEFAULT 'local';",
 ];
 
 /// Brings the database up to the latest schema and makes sure board `main` exists.
@@ -100,11 +105,14 @@ mod tests {
     use super::MIGRATIONS;
     use crate::SqliteStore;
 
-    /// Builds a real version 1 database holding one message and its valid event.
-    fn write_v1_database(path: &std::path::Path) {
+    /// Builds a real database at schema `version` holding one message and its valid event.
+    fn write_old_database(path: &std::path::Path, version: usize) {
         let conn = Connection::open(path).unwrap();
-        conn.execute_batch(MIGRATIONS[0]).unwrap();
-        conn.pragma_update(None, "user_version", 1).unwrap();
+        for sql in &MIGRATIONS[..version] {
+            conn.execute_batch(sql).unwrap();
+        }
+        conn.pragma_update(None, "user_version", version as i64)
+            .unwrap();
 
         let id = MessageId::generate().unwrap();
         let author = Principal::new("alice").unwrap();
@@ -142,7 +150,7 @@ mod tests {
     async fn v1_database_upgrades_to_v2_and_keeps_working() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("board.db");
-        write_v1_database(&path);
+        write_old_database(&path, 1);
 
         let store = SqliteStore::open(&path).await.unwrap();
 
@@ -197,6 +205,59 @@ mod tests {
         let retry = store.post(keyed()).await.unwrap();
         assert!(retry.replayed);
         assert_eq!(retry.message, first.message);
+
+        let report = store.verify_chain(&BoardId::main()).await.unwrap();
+        assert!(report.valid);
+        assert_eq!(report.checked, 2);
+    }
+
+    #[tokio::test]
+    async fn v3_database_upgrades_to_v4_and_marks_authors_local() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("board.db");
+        write_old_database(&path, 3);
+
+        let store = SqliteStore::open(&path).await.unwrap();
+
+        let conn = Connection::open(&path).unwrap();
+        let version: i64 = conn
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, 4);
+        let old_kind: String = conn
+            .query_row(
+                "SELECT author_kind FROM messages WHERE text = 'old message'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(old_kind, "local");
+
+        let keyed = || {
+            NewMessage::new(
+                BoardId::main(),
+                Target::NewThread {
+                    channel: ChannelPath::new("eng").unwrap(),
+                },
+                Principal::new("alice").unwrap(),
+                "new message".to_owned(),
+                vec![],
+                Some("req-1".to_owned()),
+            )
+            .unwrap()
+        };
+        let first = store.post(keyed()).await.unwrap();
+        assert!(!first.replayed);
+        assert_eq!(first.event.seq, 2);
+        assert!(store.post(keyed()).await.unwrap().replayed);
+        let new_kind: String = conn
+            .query_row(
+                "SELECT author_kind FROM messages WHERE id = ?1",
+                [first.message.id.as_str()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(new_kind, "local");
 
         let report = store.verify_chain(&BoardId::main()).await.unwrap();
         assert!(report.valid);

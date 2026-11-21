@@ -259,6 +259,25 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn new_posts_are_stored_with_author_kind_local() {
+        let store = SqliteStore::open_memory().await.unwrap();
+        let msg = NewMessage::new(
+            BoardId::main(),
+            stigmer_core::Target::NewThread {
+                channel: ChannelPath::new("eng").unwrap(),
+            },
+            stigmer_core::Principal::new("alice").unwrap(),
+            "hello".to_owned(),
+            vec![],
+            None,
+        )
+        .unwrap();
+        store.post(msg).await.unwrap();
+        let kind: String = query(&store, "SELECT author_kind FROM messages");
+        assert_eq!(kind, "local");
+    }
+
+    #[tokio::test]
     async fn open_refuses_a_schema_newer_than_this_build() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("board.db");

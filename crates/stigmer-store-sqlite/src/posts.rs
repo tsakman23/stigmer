@@ -11,6 +11,10 @@ use stigmer_store::{ChainReport, ConflictKind, Entity, Posted, StoreError};
 
 use crate::{backend, not_found};
 
+/// `messages.author_kind` of every M0 post: the author is a self-declared local name
+/// (docs/design.md section 12, call 8).
+const LOCAL_AUTHOR_KIND: &str = "local";
+
 /// Stores `msg` and appends its event in one `BEGIN IMMEDIATE` transaction.
 ///
 /// When `msg.idempotency_key` matches an earlier post by the same author on the same board, that
@@ -55,14 +59,16 @@ pub(crate) fn post(conn: &mut Connection, msg: NewMessage) -> Result<Posted, Sto
     let seq_sql = i64::try_from(seq).map_err(backend)?;
 
     tx.execute(
-        "INSERT INTO messages (id, board_id, channel, thread_id, author, text, at_ms, idempotency_key)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        "INSERT INTO messages
+             (id, board_id, channel, thread_id, author, author_kind, text, at_ms, idempotency_key)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
         (
             id.as_str(),
             msg.board.as_str(),
             channel.as_str(),
             thread_id.as_str(),
             msg.author.as_str(),
+            LOCAL_AUTHOR_KIND,
             &msg.text,
             at_ms,
             &msg.idempotency_key,
