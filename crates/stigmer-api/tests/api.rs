@@ -629,3 +629,60 @@ async fn invalid_utf8_path_segment_returns_400_error_body() {
     )
     .await;
 }
+
+fn with_host(mut req: Request<Body>, host: &str) -> Request<Body> {
+    req.headers_mut().insert("host", host.parse().unwrap());
+    req
+}
+
+#[tokio::test]
+async fn foreign_host_is_rejected_with_403_error_body() {
+    let h = harness().await;
+    let post = with_host(
+        post_req(Some("alice"), None, json!({"channel": "eng", "text": "x"})),
+        "attacker.example",
+    );
+    assert_error_body(&h.app, post, StatusCode::FORBIDDEN, "forbidden").await;
+    let get = with_host(
+        get_req("/v1/boards/main/channels?prefix=eng"),
+        "attacker.example:7878",
+    );
+    assert_error_body(&h.app, get, StatusCode::FORBIDDEN, "forbidden").await;
+}
+
+#[tokio::test]
+async fn localhost_and_loopback_hosts_are_accepted() {
+    let h = harness().await;
+    for host in ["localhost:7878", "127.0.0.1:1234", "[::1]:80", "LOCALHOST"] {
+        let req = with_host(get_req("/v1/boards/main/channels?prefix=eng"), host);
+        let (status, _) = call(&h.app, req).await;
+        assert_eq!(status, StatusCode::OK, "host {host}");
+    }
+}
+
+#[tokio::test]
+async fn foreign_origin_is_rejected() {
+    let h = harness().await;
+    let mut req = with_host(
+        post_req(Some("alice"), None, json!({"channel": "eng", "text": "x"})),
+        "127.0.0.1:7878",
+    );
+    req.headers_mut()
+        .insert("origin", "http://attacker.example".parse().unwrap());
+    assert_error_body(&h.app, req, StatusCode::FORBIDDEN, "forbidden").await;
+
+    let mut ok = with_host(get_req("/healthz"), "127.0.0.1:7878");
+    ok.headers_mut()
+        .insert("origin", "http://localhost:7878".parse().unwrap());
+    let (status, _) = call(&h.app, ok).await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn healthz_also_enforces_host() {
+    let h = harness().await;
+    for path in ["/healthz", "/readyz"] {
+        let req = with_host(get_req(path), "attacker.example");
+        assert_error_body(&h.app, req, StatusCode::FORBIDDEN, "forbidden").await;
+    }
+}

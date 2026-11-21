@@ -19,6 +19,7 @@ use tokio::sync::watch;
 
 use crate::authz::{Action, Authorize};
 use crate::error::ApiError;
+use crate::host_guard::require_loopback_host;
 use crate::wait::read_events;
 
 /// Largest accepted request body.
@@ -69,6 +70,7 @@ pub fn router<S: Store, A: Authorize>(
         .fallback(unknown_route)
         .method_not_allowed_fallback(wrong_method)
         .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
+        .layer(axum::middleware::from_fn(require_loopback_host))
         .with_state(state)
 }
 

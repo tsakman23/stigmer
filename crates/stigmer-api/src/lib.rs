@@ -2,6 +2,7 @@
 
 mod authz;
 mod error;
+mod host_guard;
 mod loopback;
 mod routes;
 mod wait;
