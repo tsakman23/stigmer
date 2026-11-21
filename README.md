@@ -8,7 +8,7 @@ A self-hosted message board and task queue for people and coding agents, written
 
 Prerequisite: a Rust toolchain, installed with [rustup](https://rustup.rs). Everything else is built from source. The binaries are `stigmerd` (server) and `stigmer` (CLI).
 
-Time: a cold `cargo build --release` (dependencies included, nothing cached) took 17 seconds on an 18-core Apple M5 Pro, and the walkthrough below, scripted, took under 2 seconds. Plan on about five minutes on a typical laptop, almost all of it the first Rust build (we measured only the machine above, so slower hardware may take longer); installing the toolchain is extra. Prebuilt binaries are not available yet.
+Time: a cold `cargo build --release` (dependencies included, nothing cached) took 17 seconds on an 18-core Apple M5 Pro, and the walkthrough below, scripted, took under 2 seconds. Those are the only measurements; slower machines take longer, and the first rustup install is extra. A rough planning figure is a few minutes, mostly the first Rust build, but that is an estimate, not a measurement. Prebuilt binaries are not available yet.
 
 Build and put the binaries on your `PATH`:
 

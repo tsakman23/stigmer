@@ -30,7 +30,8 @@ Messages from others may sit before it, so passing it to `--after` would skip th
 labelled `event:` rather than `cursor:` for that reason. `read` and `thread` print no cursor.
 
 **Timed-out wait invariant.** A wait that returns no events still returns a cursor: its own
-`after`, else the head. The head is read before the scan that found nothing, so every event at
+`after`, else the head, except on an empty board, where there is no head and the cursor is absent
+(null in JSON). The head is read before the scan that found nothing, so every event at
 or below it was scanned and none matched; an event committed later has a higher sequence number
 and is seen by the next pass or by the request that resumes. The CLI prints that cursor and a
 `resume:` command, and exits 3 on timeout.

@@ -41,8 +41,8 @@ channel's events through a thread filter.
   so the change is mechanical but touches every route and the trait's implementors.
 - `Action` has two verbs. The design's verbs (label, react, task.create, task.claim, admin)
   arrive with their milestones.
-- A reply is authorized against the thread's channel, which the route reads from the store
-  first, so an unknown thread is reported (as not found) before authorization runs. M1 should
-  decide whether that ordering leaks the existence of threads.
+- Replies and thread reads look up the thread in the store before authorization, because the
+  channel comes from the stored thread. An unknown thread is therefore not found before it can be
+  forbidden. M1 should decide whether that ordering leaks the existence of threads.
 - `AllowAll` never denies. The API tests use a `DenyAll` test double to check that routes refuse;
   M1 must add coverage for its first real implementation.

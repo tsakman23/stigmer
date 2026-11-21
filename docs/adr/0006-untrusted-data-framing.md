@@ -23,8 +23,9 @@ Before printing, the text is made safe to sit between those lines:
 - Every control character other than newline and tab (C0, DEL and C1) is shown as an escape such
   as `\u{1b}`, so terminal escape sequences cannot act.
 - Any line whose first non-whitespace characters are `<<<` gets a zero-width space prefixed, so
-  text cannot forge a frame marker. Line breaks recognised for this include `\r`, vertical tab,
-  form feed, NEL and the Unicode line and paragraph separators.
+  text cannot forge a frame marker. `\r`, vertical tab, form feed and NEL are control characters,
+  so they are already escaped by the previous step; only the Unicode line and paragraph
+  separators (U+2028, U+2029) still reach this step as line breaks.
 
 With `--json`, the message objects in the output (post, thread, channel listing, wait and tail)
 carry `"untrusted": true`, so a program reading the output sees that the text is data from
