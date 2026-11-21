@@ -17,10 +17,10 @@ const PREVIEW_CHARS: usize = 80;
 const AS_HINT: &str = "export STIGMER_AS=<name> or pass --as <name>";
 
 /// Global options every command sees.
-pub struct Ctx {
-    pub url: String,
-    pub who: Option<String>,
-    pub json: bool,
+pub(crate) struct Ctx {
+    pub(crate) url: String,
+    pub(crate) who: Option<String>,
+    pub(crate) json: bool,
 }
 
 impl Ctx {
@@ -34,7 +34,7 @@ impl Ctx {
     }
 
     /// A client acting as `who`, or as the optional `--as` identity when `who` is None.
-    pub fn client(&self, who: Option<Principal>) -> Result<Client, CliError> {
+    pub(crate) fn client(&self, who: Option<Principal>) -> Result<Client, CliError> {
         let who = match who {
             Some(who) => Some(who),
             None => self.who.as_deref().map(principal).transpose()?,
@@ -44,7 +44,7 @@ impl Ctx {
 
     /// Prints `value` as one JSON object with every message marked untrusted, or
     /// `text` otherwise.
-    pub fn emit<T: serde::Serialize>(&self, value: &T, text: &str) -> Result<(), CliError> {
+    pub(crate) fn emit<T: serde::Serialize>(&self, value: &T, text: &str) -> Result<(), CliError> {
         if self.json {
             let encode_failed = |e: serde_json::Error| {
                 CliError::new(
@@ -95,7 +95,7 @@ fn mark_untrusted(output: &mut serde_json::Value) {
 }
 
 /// Writes to stdout and flushes, so a closed pipe is a reported failure, not a panic.
-pub fn print_out(text: &str) -> Result<(), CliError> {
+pub(crate) fn print_out(text: &str) -> Result<(), CliError> {
     let mut stdout = std::io::stdout().lock();
     stdout
         .write_all(text.as_bytes())
@@ -112,7 +112,7 @@ pub fn print_out(text: &str) -> Result<(), CliError> {
 
 /// Parses `raw` with a stigmer-core constructor; a rejection is an invalid-input error
 /// whose next step is `hint`.
-pub fn parse_arg<T>(
+pub(crate) fn parse_arg<T>(
     raw: &str,
     parse: impl FnOnce(&str) -> Result<T, CoreError>,
     hint: &str,
@@ -129,7 +129,7 @@ fn principal(raw: &str) -> Result<Principal, CliError> {
 }
 
 /// Parses a channel argument; one trailing `/` is allowed (`research/` is `research`).
-pub fn channel(raw: &str) -> Result<ChannelPath, CliError> {
+pub(crate) fn channel(raw: &str) -> Result<ChannelPath, CliError> {
     let trimmed = raw.strip_suffix('/').unwrap_or(raw);
     parse_arg(
         trimmed,
@@ -153,10 +153,10 @@ fn core_hint(err: &CoreError) -> String {
 }
 
 /// Text, labels and key of a write, validated by stigmer-core before any request.
-pub struct WriteArgs {
-    pub text: String,
-    pub labels: Vec<String>,
-    pub key: Option<String>,
+pub(crate) struct WriteArgs {
+    pub(crate) text: String,
+    pub(crate) labels: Vec<String>,
+    pub(crate) key: Option<String>,
 }
 
 fn validate(target: Target, author: Principal, args: WriteArgs) -> Result<NewMessage, CliError> {
@@ -189,7 +189,7 @@ fn report_posted(ctx: &Ctx, posted: &Posted, first: String) -> Result<Exit, CliE
 }
 
 /// `post <channel> <text>`: starts a thread.
-pub fn post(ctx: &Ctx, channel_arg: &str, args: WriteArgs) -> Result<Exit, CliError> {
+pub(crate) fn post(ctx: &Ctx, channel_arg: &str, args: WriteArgs) -> Result<Exit, CliError> {
     let author = ctx.author("post")?;
     let target = Target::NewThread {
         channel: channel(channel_arg)?,
@@ -200,7 +200,7 @@ pub fn post(ctx: &Ctx, channel_arg: &str, args: WriteArgs) -> Result<Exit, CliEr
     report_posted(ctx, &posted, first)
 }
 
-pub fn message_id(raw: &str) -> Result<MessageId, CliError> {
+pub(crate) fn message_id(raw: &str) -> Result<MessageId, CliError> {
     parse_arg(
         raw,
         MessageId::new,
@@ -209,7 +209,7 @@ pub fn message_id(raw: &str) -> Result<MessageId, CliError> {
 }
 
 /// `reply <thread> <text>`: answers in a thread.
-pub fn reply(ctx: &Ctx, thread_arg: &str, args: WriteArgs) -> Result<Exit, CliError> {
+pub(crate) fn reply(ctx: &Ctx, thread_arg: &str, args: WriteArgs) -> Result<Exit, CliError> {
     let author = ctx.author("reply")?;
     let target = Target::Reply {
         thread: message_id(thread_arg)?,
@@ -224,7 +224,7 @@ pub fn reply(ctx: &Ctx, thread_arg: &str, args: WriteArgs) -> Result<Exit, CliEr
 }
 
 /// `read <channel-prefix>`: one line per thread.
-pub fn read(ctx: &Ctx, prefix_arg: &str) -> Result<Exit, CliError> {
+pub(crate) fn read(ctx: &Ctx, prefix_arg: &str) -> Result<Exit, CliError> {
     let prefix = channel(prefix_arg)?;
     let listing = ctx.client(None)?.channels(&prefix)?;
     let text = if listing.threads.is_empty() {
@@ -269,7 +269,7 @@ fn summary_line(summary: &ThreadSummary) -> String {
 }
 
 /// `thread <id>`: every message framed, oldest first.
-pub fn thread(ctx: &Ctx, id_arg: &str) -> Result<Exit, CliError> {
+pub(crate) fn thread(ctx: &Ctx, id_arg: &str) -> Result<Exit, CliError> {
     let id = message_id(id_arg)?;
     let thread = ctx.client(None)?.thread(&id)?;
     let replies = u64::try_from(thread.replies.len()).unwrap_or(u64::MAX);

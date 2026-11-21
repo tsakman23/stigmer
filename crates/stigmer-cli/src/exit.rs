@@ -8,7 +8,7 @@ use stigmer_core::{CoreError, ErrorCode, ErrorDetail, MAX_MESSAGE_CHARS};
 
 /// The process exit status of a command.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Exit {
+pub(crate) enum Exit {
     Ok,
     /// Network error, server error, conflict or forbidden.
     Failure,
@@ -22,7 +22,7 @@ pub enum Exit {
 }
 
 impl Exit {
-    pub fn code(self) -> u8 {
+    fn code(self) -> u8 {
         match self {
             Exit::Ok => 0,
             Exit::Failure => 1,
@@ -47,18 +47,18 @@ pub(crate) fn too_long_hint() -> String {
 
 /// A failed command: what went wrong and what to try next.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CliError {
-    pub exit: Exit,
+pub(crate) struct CliError {
+    pub(crate) exit: Exit,
     /// Machine-readable kind: an API error code, or `usage`, `unavailable`, `network`,
     /// `request_timeout` (an HTTP request took too long, exit 1) or `timeout` (a wait saw no
     /// event, exit 3).
-    pub code: &'static str,
-    pub message: String,
-    pub next: String,
+    pub(crate) code: &'static str,
+    message: String,
+    next: String,
 }
 
 impl CliError {
-    pub fn new(
+    pub(crate) fn new(
         exit: Exit,
         code: &'static str,
         message: impl Into<String>,
@@ -72,12 +72,12 @@ impl CliError {
         }
     }
 
-    pub fn usage(message: impl Into<String>, next: impl Into<String>) -> Self {
+    pub(crate) fn usage(message: impl Into<String>, next: impl Into<String>) -> Self {
         Self::new(Exit::Usage, "usage", message, next)
     }
 
     /// A value rejected by stigmer-core's validation before any request was made.
-    pub fn invalid(err: &CoreError, next: impl Into<String>) -> Self {
+    pub(crate) fn invalid(err: &CoreError, next: impl Into<String>) -> Self {
         let code = match err {
             CoreError::TooLong { .. } => "too_large",
             _ => "invalid_input",
@@ -86,7 +86,7 @@ impl CliError {
     }
 
     /// An error the server answered with.
-    pub fn api(detail: ErrorDetail) -> Self {
+    pub(crate) fn api(detail: ErrorDetail) -> Self {
         let (exit, code, next): (Exit, &'static str, Cow<'static, str>) = match detail.code {
             ErrorCode::InvalidInput => (
                 Exit::Invalid,
@@ -129,7 +129,7 @@ impl CliError {
     }
 
     /// The report on stderr: two lines, or one JSON object with `--json`.
-    pub fn render(&self, json: bool) -> String {
+    pub(crate) fn render(&self, json: bool) -> String {
         if json {
             serde_json::json!({
                 "error": {"code": self.code, "message": self.message},
@@ -141,7 +141,7 @@ impl CliError {
         }
     }
 
-    pub fn print(&self, json: bool) {
+    pub(crate) fn print(&self, json: bool) {
         // Nothing useful is left to do if stderr itself cannot be written.
         let _ = writeln!(std::io::stderr(), "{}", self.render(json));
     }

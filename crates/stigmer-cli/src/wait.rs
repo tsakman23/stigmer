@@ -14,11 +14,11 @@ use crate::exit::{CliError, Exit};
 use crate::render::render_message;
 
 /// Filters and start position shared by `wait` and `tail`, as typed.
-pub struct FeedArgs {
-    pub channel: Option<String>,
-    pub thread: Option<String>,
-    pub label: Option<String>,
-    pub after: Option<String>,
+pub(crate) struct FeedArgs {
+    pub(crate) channel: Option<String>,
+    pub(crate) thread: Option<String>,
+    pub(crate) label: Option<String>,
+    pub(crate) after: Option<String>,
 }
 
 impl FeedArgs {
@@ -58,7 +58,7 @@ impl FeedArgs {
 
 /// Seconds to ask the server to wait with `remaining` left: rounded up, at most
 /// `MAX_WAIT_SECS`.
-pub fn chunk_secs(remaining: Duration) -> u64 {
+fn chunk_secs(remaining: Duration) -> u64 {
     let secs = remaining.as_secs();
     let secs = if remaining.subsec_nanos() > 0 {
         secs.saturating_add(1)
@@ -69,7 +69,7 @@ pub fn chunk_secs(remaining: Duration) -> u64 {
 }
 
 /// Parses `30s`, `5m`, `1h` or plain seconds.
-pub fn parse_timeout(raw: &str) -> Result<Duration, String> {
+pub(crate) fn parse_timeout(raw: &str) -> Result<Duration, String> {
     let bad = || format!("expected a duration like 30s, 5m, 1h or plain seconds, got {raw:?}");
     let (digits, unit_secs) = match raw.as_bytes().last() {
         Some(b's') => (&raw[..raw.len() - 1], 1),
@@ -88,7 +88,7 @@ pub fn parse_timeout(raw: &str) -> Result<Duration, String> {
 }
 
 /// The command that continues a wait from `after` with the same filters.
-pub fn resume_line(who: Option<&str>, after: Option<&Cursor>, filter: &EventFilter) -> String {
+fn resume_line(who: Option<&str>, after: Option<&Cursor>, filter: &EventFilter) -> String {
     let mut flags: Vec<(&str, String)> = Vec::new();
     if let Some(after) = after {
         flags.push(("--after", after.to_string()));
@@ -205,7 +205,7 @@ struct WaitOutput<'a> {
 }
 
 /// The error of a wait that saw no matching event within `timeout` (exit 3).
-pub fn timed_out(timeout: Duration, resume: String) -> CliError {
+pub(crate) fn timed_out(timeout: Duration, resume: String) -> CliError {
     CliError::new(
         Exit::Timeout,
         "timeout",
@@ -215,7 +215,7 @@ pub fn timed_out(timeout: Duration, resume: String) -> CliError {
 }
 
 /// `wait`: blocks until matching events arrive (exit 0) or `timeout` passes (exit 3).
-pub fn wait(ctx: &Ctx, args: FeedArgs, timeout: Duration) -> Result<Exit, CliError> {
+pub(crate) fn wait(ctx: &Ctx, args: FeedArgs, timeout: Duration) -> Result<Exit, CliError> {
     let (filter, after) = args.parse()?;
     let mut feed = Feed {
         client: ctx.client(None)?,
@@ -266,7 +266,7 @@ struct TailItem<'a> {
 
 /// `tail`: prints events as they arrive until killed, or until `timeout` passes (exit 0).
 /// With `--json` it prints one JSON object per event, one per line.
-pub fn tail(ctx: &Ctx, args: FeedArgs, timeout: Option<Duration>) -> Result<Exit, CliError> {
+pub(crate) fn tail(ctx: &Ctx, args: FeedArgs, timeout: Option<Duration>) -> Result<Exit, CliError> {
     let (filter, after) = args.parse()?;
     let mut feed = Feed {
         client: ctx.client(None)?,

@@ -20,7 +20,7 @@ const WAIT_GRACE: Duration = Duration::from_secs(10);
 /// The only board in M0.
 const BOARD: &str = "main";
 
-pub struct Client {
+pub(crate) struct Client {
     agent: Agent,
     base: String,
     who: Option<Principal>,
@@ -28,7 +28,7 @@ pub struct Client {
 
 impl Client {
     /// A client for the server at `base_url`, acting as `who` when given.
-    pub fn new(base_url: &str, who: Option<Principal>) -> Self {
+    pub(crate) fn new(base_url: &str, who: Option<Principal>) -> Self {
         let agent: Agent = Agent::config_builder()
             .http_status_as_error(false)
             .timeout_global(Some(REQUEST_TIMEOUT))
@@ -53,7 +53,7 @@ impl Client {
     }
 
     /// Posts a message. A replayed post (same idempotency key) comes back with `replayed` set.
-    pub fn post(&self, body: &PostRequest, key: Option<&str>) -> Result<Posted, CliError> {
+    pub(crate) fn post(&self, body: &PostRequest, key: Option<&str>) -> Result<Posted, CliError> {
         let mut request = self.identify(self.agent.post(self.url("messages")));
         if let Some(key) = key {
             request = request.header("Idempotency-Key", key);
@@ -62,7 +62,7 @@ impl Client {
     }
 
     /// Threads under a channel prefix, newest activity first.
-    pub fn channels(&self, prefix: &ChannelPath) -> Result<ChannelsResponse, CliError> {
+    pub(crate) fn channels(&self, prefix: &ChannelPath) -> Result<ChannelsResponse, CliError> {
         let request = self
             .identify(self.agent.get(self.url("channels")))
             .query("prefix", prefix.as_str());
@@ -70,14 +70,14 @@ impl Client {
     }
 
     /// A thread root and its replies.
-    pub fn thread(&self, id: &MessageId) -> Result<Thread, CliError> {
+    pub(crate) fn thread(&self, id: &MessageId) -> Result<Thread, CliError> {
         let request = self.identify(self.agent.get(self.url(&format!("threads/{id}"))));
         self.finish(request.call())
     }
 
     /// Events after `after` matching `filter`; with `timeout_s > 0` the server holds the
     /// request until a matching event lands or the timeout passes.
-    pub fn events(
+    pub(crate) fn events(
         &self,
         filter: &EventFilter,
         after: Option<&Cursor>,
