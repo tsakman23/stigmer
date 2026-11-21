@@ -1,0 +1,57 @@
+//! stigmer-store-conformance: the behaviour every `Store` backend must show.
+//!
+//! A backend's test calls [`run_all`] with a factory for fresh, empty stores. Each scenario
+//! panics with its name when the backend gets something wrong. Run it on a multi-thread
+//! tokio runtime: the concurrency scenario spawns tasks.
+//!
+//! This is test-support code: panics are its assertion mechanism, so it uses `panic!` and the
+//! `assert!` family where library code would return errors.
+
+mod events;
+mod idempotency;
+mod posts;
+mod reads;
+mod support;
+mod wait;
+
+use std::future::Future;
+
+use stigmer_store::Store;
+
+/// Runs every scenario, each against a fresh store from `factory`.
+pub async fn run_all<S, F, Fut>(factory: F)
+where
+    S: Store,
+    F: Fn() -> Fut,
+    Fut: Future<Output = S>,
+{
+    posts::first_post_creates_thread_with_event_seq_1(factory().await).await;
+    posts::reply_appends_event_seq_2_and_keeps_thread_id(factory().await).await;
+    posts::sequence_is_gapless_under_50_concurrent_posts(factory().await).await;
+    posts::reply_to_unknown_thread_is_not_found(factory().await).await;
+    posts::reply_to_a_reply_is_not_found(factory().await).await;
+    posts::post_to_unknown_board_is_not_found(factory().await).await;
+    idempotency::same_key_same_author_returns_original_and_replayed_true(factory().await).await;
+    idempotency::same_key_writes_exactly_one_event(factory().await).await;
+    idempotency::same_key_different_author_is_a_new_message(factory().await).await;
+    idempotency::same_key_different_text_is_conflict(factory().await).await;
+    reads::read_channel_lists_threads_newest_first_and_filters_by_prefix(factory().await).await;
+    reads::read_channel_matches_whole_path_segments_only(factory().await).await;
+    reads::read_channel_paginates_with_before_and_clamps_limit(factory().await).await;
+    reads::read_channel_preview_is_200_chars_not_bytes(factory().await).await;
+    reads::read_thread_returns_root_and_replies_in_order(factory().await).await;
+    reads::read_thread_of_unknown_id_reply_or_other_board_is_not_found(factory().await).await;
+    events::head_is_none_on_an_empty_board_then_the_latest_cursor(factory().await).await;
+    events::events_after_none_returns_from_start(factory().await).await;
+    events::events_after_resumes_after_a_cursor_and_clamps_limit(factory().await).await;
+    events::events_after_filters_by_channel_thread_and_label(factory().await).await;
+    events::events_after_future_cursor_is_invalid_cursor(factory().await).await;
+    events::events_after_malformed_cursor_is_invalid_cursor(factory().await).await;
+    events::events_after_unknown_board_is_not_found(factory().await).await;
+    wait::wait_past_returns_true_when_a_post_lands_during_the_wait(factory().await).await;
+    wait::wait_past_returns_false_on_timeout(factory().await).await;
+    wait::wait_past_does_not_wake_for_events_before_the_cursor(factory().await).await;
+    wait::wait_past_returns_true_at_once_when_head_is_already_past(factory().await).await;
+    wait::wait_past_future_cursor_is_invalid_cursor_without_waiting(factory().await).await;
+    wait::wait_past_is_not_woken_by_an_idempotent_replay(factory().await).await;
+}

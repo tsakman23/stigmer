@@ -1,0 +1,251 @@
+//! End-to-end tests that run the real stigmerd binary.
+
+use std::io::{BufRead, BufReader, Read, Write};
+use std::net::TcpStream;
+use std::path::Path;
+use std::process::{Child, Command, Stdio};
+use std::sync::mpsc;
+use std::time::{Duration, Instant};
+
+const STARTUP_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Kills the child on drop so a failing test cannot leak a server process.
+struct Server {
+    child: Child,
+    addr: String,
+}
+
+impl Drop for Server {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+fn start(data_dir: &Path) -> Server {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_stigmerd"));
+    cmd.args(["serve", "--bind", "127.0.0.1:0", "--data-dir"])
+        .arg(data_dir);
+    spawn_guarded(cmd, STARTUP_TIMEOUT)
+}
+
+/// Spawns the command under the Drop guard at once, then waits (bounded) for the
+/// listening line. A wrong or missing line fails the test without leaking the child.
+fn spawn_guarded(mut cmd: Command, wait: Duration) -> Server {
+    let mut child = cmd
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .expect("spawn child");
+    let stdout = child.stdout.take().expect("piped stdout");
+    let mut server = Server {
+        child,
+        addr: String::new(),
+    };
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut line = String::new();
+        let _ = BufReader::new(stdout).read_line(&mut line);
+        let _ = tx.send(line);
+    });
+    let line = rx
+        .recv_timeout(wait)
+        .unwrap_or_else(|_| panic!("no listening line within {wait:?}"));
+    server.addr = line
+        .strip_prefix("listening on http://")
+        .and_then(|rest| rest.split_whitespace().next())
+        .unwrap_or_else(|| panic!("unexpected first line: {line:?}"))
+        .to_owned();
+    server
+}
+
+/// Sends one HTTP/1.1 request and returns (status, body).
+fn http(
+    addr: &str,
+    method: &str,
+    path: &str,
+    headers: &[(&str, &str)],
+    body: &str,
+) -> (u16, String) {
+    let mut stream = TcpStream::connect(addr).expect("connect");
+    let mut req = format!("{method} {path} HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n");
+    for (k, v) in headers {
+        req.push_str(&format!("{k}: {v}\r\n"));
+    }
+    req.push_str(&format!("Content-Length: {}\r\n\r\n{body}", body.len()));
+    stream.write_all(req.as_bytes()).expect("write");
+    let mut raw = String::new();
+    stream.read_to_string(&mut raw).expect("read");
+    let (head, body) = raw.split_once("\r\n\r\n").expect("http response");
+    let status = head
+        .split_whitespace()
+        .nth(1)
+        .and_then(|s| s.parse().ok())
+        .expect("status code");
+    (status, chunked_decoded(head, body))
+}
+
+fn chunked_decoded(head: &str, body: &str) -> String {
+    if !head
+        .to_ascii_lowercase()
+        .contains("transfer-encoding: chunked")
+    {
+        return body.to_owned();
+    }
+    let mut out = String::new();
+    let mut rest = body;
+    while let Some((size, tail)) = rest.split_once("\r\n") {
+        let n = usize::from_str_radix(size.trim(), 16).unwrap_or(0);
+        if n == 0 || tail.len() < n {
+            break;
+        }
+        out.push_str(&tail[..n]);
+        rest = tail[n..].trim_start_matches("\r\n");
+    }
+    out
+}
+
+#[cfg(unix)]
+fn sigterm(server: &Server) {
+    let status = Command::new("kill")
+        .args(["-TERM", &server.child.id().to_string()])
+        .status()
+        .expect("run kill");
+    assert!(status.success());
+}
+
+#[cfg(unix)]
+fn wait_for_exit(server: &mut Server, within: Duration) -> Option<i32> {
+    let deadline = Instant::now() + within;
+    while Instant::now() < deadline {
+        if let Some(status) = server.child.try_wait().expect("try_wait") {
+            return status.code();
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    None
+}
+
+#[test]
+fn serve_starts_and_healthz_answers() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let server = start(&dir.path().join("data"));
+    let (status, _) = http(&server.addr, "GET", "/healthz", &[], "");
+    assert_eq!(status, 200);
+    assert!(dir.path().join("data").join("stigmer.db").exists());
+}
+
+#[test]
+fn serve_refuses_0_0_0_0_with_nonzero_exit() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let out = Command::new(env!("CARGO_BIN_EXE_stigmerd"))
+        .args(["serve", "--bind", "0.0.0.0:0", "--data-dir"])
+        .arg(dir.path())
+        .output()
+        .expect("run stigmerd");
+    assert_eq!(out.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("0.0.0.0"));
+    assert!(out.stdout.is_empty());
+}
+
+#[cfg(unix)]
+#[test]
+fn sigterm_ends_a_pending_wait_cleanly() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut server = start(&dir.path().join("data"));
+    let addr = server.addr.clone();
+    let waiter = std::thread::spawn(move || {
+        http(&addr, "GET", "/v1/boards/main/events?timeout_s=60", &[], "")
+    });
+    // Give the request time to reach the server and park.
+    std::thread::sleep(Duration::from_millis(500));
+    sigterm(&server);
+    let code = wait_for_exit(&mut server, Duration::from_secs(5));
+    assert_eq!(code, Some(0), "server must exit 0 within 5s of SIGTERM");
+    let (status, body) = waiter.join().expect("waiter thread");
+    assert_eq!(status, 200);
+    assert!(body.contains("\"timed_out\":true"), "body: {body}");
+}
+
+#[cfg(unix)]
+#[test]
+fn restart_keeps_data() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut first = start(&dir.path().join("data"));
+    let (status, body) = http(
+        &first.addr,
+        "POST",
+        "/v1/boards/main/messages",
+        &[
+            ("X-Stigmer-As", "alice"),
+            ("Content-Type", "application/json"),
+        ],
+        r#"{"channel":"eng","text":"survives restarts"}"#,
+    );
+    assert_eq!(status, 201, "body: {body}");
+    let id = body
+        .split("\"id\":\"")
+        .nth(1)
+        .and_then(|s| s.split('"').next())
+        .expect("message id in response")
+        .to_owned();
+    sigterm(&first);
+    assert_eq!(wait_for_exit(&mut first, Duration::from_secs(5)), Some(0));
+
+    let second = start(&dir.path().join("data"));
+    let (status, body) = http(
+        &second.addr,
+        "GET",
+        &format!("/v1/boards/main/threads/{id}"),
+        &[],
+        "",
+    );
+    assert_eq!(status, 200, "body: {body}");
+    assert!(body.contains("survives restarts"), "body: {body}");
+}
+
+#[test]
+#[should_panic(expected = "no listening line within")]
+fn startup_that_prints_nothing_fails_instead_of_hanging() {
+    let mut cmd = Command::new("sleep");
+    cmd.arg("30");
+    let _ = spawn_guarded(cmd, Duration::from_millis(300));
+}
+
+#[test]
+#[should_panic(expected = "unexpected first line")]
+fn startup_with_a_wrong_first_line_fails() {
+    let mut cmd = Command::new("echo");
+    cmd.arg("hello");
+    let _ = spawn_guarded(cmd, Duration::from_secs(5));
+}
+
+#[cfg(unix)]
+#[test]
+fn sigterm_sent_immediately_after_the_listening_line_exits_0() {
+    for i in 0..20 {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut server = start(&dir.path().join("data"));
+        sigterm(&server);
+        let code = wait_for_exit(&mut server, Duration::from_secs(5));
+        assert_eq!(
+            code,
+            Some(0),
+            "iteration {i}: must exit 0, not die from the signal"
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn fresh_data_dir_is_created_with_mode_0700() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let data = dir.path().join("data");
+    let _server = start(&data);
+    let mode = std::fs::metadata(&data)
+        .expect("data dir")
+        .permissions()
+        .mode();
+    assert_eq!(mode & 0o777, 0o700, "mode {mode:o}");
+}

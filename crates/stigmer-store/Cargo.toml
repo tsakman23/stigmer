@@ -1,0 +1,13 @@
+[package]
+name = "stigmer-store"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+stigmer-core = { path = "../stigmer-core", version = "0.0.0" }
+thiserror = "2.0.21"
