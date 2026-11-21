@@ -795,6 +795,36 @@ async fn post_landing_between_scan_and_return_is_not_skipped() {
     );
 }
 
+#[tokio::test]
+async fn unknown_query_parameter_on_events_is_400() {
+    let h = harness().await;
+    for (query, field) in [
+        ("?fromnow=true", "fromnow"),
+        ("?afte=ev_x", "afte"),
+        ("?bogus=1", "bogus"),
+    ] {
+        let (status, body) = events(&h.app, query).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{query}");
+        assert_eq!(body["error"]["code"], "invalid_input", "{query}");
+        let message = body["error"]["message"].as_str().unwrap();
+        assert!(message.contains(field), "{query}: {message}");
+    }
+}
+
+#[tokio::test]
+async fn unknown_query_parameter_on_channels_is_400() {
+    let h = harness().await;
+    let (status, body) = call_json(
+        &h.app,
+        get_req("/v1/boards/main/channels?prefix=eng&bogus=1"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["error"]["code"], "invalid_input");
+    let message = body["error"]["message"].as_str().unwrap();
+    assert!(message.contains("bogus"), "{message}");
+}
+
 async fn assert_error_body(app: &Router, req: Request<Body>, status: StatusCode, code: &str) {
     let resp = app.clone().oneshot(req).await.unwrap();
     assert_eq!(resp.status(), status);

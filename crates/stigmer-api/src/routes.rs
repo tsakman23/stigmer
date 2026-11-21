@@ -192,7 +192,10 @@ async fn post_message<S: Store, A: Authorize>(
     Ok((status, Json(posted)))
 }
 
+// Unknown parameters are rejected: a misspelled `after` or `from_now` must fail loudly, not
+// silently replay history.
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct ChannelsQuery {
     prefix: Option<String>,
     limit: Option<String>,
@@ -240,6 +243,7 @@ async fn read_thread<S: Store, A: Authorize>(
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct EventsQuery {
     after: Option<String>,
     from_now: Option<String>,
