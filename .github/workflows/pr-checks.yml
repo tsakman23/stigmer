@@ -1,0 +1,28 @@
+name: pr-checks
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  conventions:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+      - name: Branch name
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+        run: scripts/ci/check-branch-name.sh "$HEAD_REF"
+      - name: Commit messages
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: scripts/ci/check-commit-messages.sh "$BASE_SHA" "$HEAD_SHA"
