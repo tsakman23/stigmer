@@ -27,7 +27,8 @@ Run `scripts/dev/tidy --apply` at the end of every task and at every milestone b
 
 ## Commits
 
-- Conventional Commits: `type(scope): summary`, scope is the crate or area (`core`, `store`, `api`, `cli`, `server`, `docs`, `ci`). Summary is imperative, lowercase, no trailing period, at most 72 characters.
+- Conventional Commits: `type(scope): summary`. Types: `feat`, `fix`, `refactor`, `test`, `docs`, `chore`, `ci`, `perf`, `build`. The scope is optional and names the crate or area: `core`, `store`, `store-conformance`, `store-sqlite`, `api`, `server`, `cli`, `e2e`, `skill`, `workspace`, `docs`, `ci`. Summary is imperative, lowercase, no trailing period, at most 72 characters.
+- Pull requests are checked by `.github/workflows/pr-checks.yml`, which runs `scripts/ci/check-branch-name.sh` (branch names, as above) and `scripts/ci/check-commit-messages.sh` (every commit subject must match `^(feat|fix|refactor|test|docs|chore|ci|perf|build)(\([a-z0-9-]+\))?!?: .{1,72}$`). Run them locally before pushing.
 - One logical change per commit. Tests and the code they cover go in the same commit.
 - Task branches are rebased onto the milestone branch and fast-forward merged, so each milestone has a linear, readable history.
 - A milestone branch merges into `main` with a merge commit (`--no-ff`) so the milestone stays visible in history, then is tagged `v0.<N>.0`.
