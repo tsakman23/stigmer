@@ -37,7 +37,15 @@ fn built_bin_dir() -> &'static PathBuf {
     DIR.get_or_init(|| {
         let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
         let status = Command::new(cargo)
-            .args(["build", "-q", "-p", "stigmerd", "-p", "stigmer-cli"])
+            .args([
+                "build",
+                "-q",
+                "--locked",
+                "-p",
+                "stigmerd",
+                "-p",
+                "stigmer-cli",
+            ])
             .status()
             .expect("run cargo build");
         assert!(status.success(), "cargo build failed");
@@ -182,12 +190,16 @@ fn thread_id_from(line_source: &str) -> String {
 #[test]
 fn agent_c_wakes_on_agent_a_post_and_a_sees_the_reply() {
     let server = start_server();
-    let waiter = spawn(
+    let mut waiter = spawn(
         &server,
         "agent-c",
         &["wait", "--channel", "research/", "--timeout", "30s"],
     );
     std::thread::sleep(Duration::from_millis(500));
+    assert!(
+        waiter.0.try_wait().expect("try_wait").is_none(),
+        "the waiter must still be blocked before anything is posted"
+    );
 
     let posted = run(
         &server,
