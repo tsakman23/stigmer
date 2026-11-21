@@ -223,13 +223,19 @@ pub fn read(ctx: &Ctx, prefix_arg: &str) -> Result<Exit, CliError> {
     Ok(Exit::Ok)
 }
 
+/// `1 reply`, `2 replies`, `0 replies`.
+fn reply_count(n: u64) -> String {
+    if n == 1 {
+        "1 reply".to_owned()
+    } else {
+        format!("{n} replies")
+    }
+}
+
 /// `<id>  <channel>  <n> replies  "<preview>"`; the preview is quoted and escaped so
 /// it stays on one line.
 fn summary_line(summary: &ThreadSummary) -> String {
-    let replies = match summary.reply_count {
-        1 => "1 reply".to_owned(),
-        n => format!("{n} replies"),
-    };
+    let replies = reply_count(u64::from(summary.reply_count));
     let mut preview: String = summary
         .root_text_preview
         .chars()
@@ -253,11 +259,12 @@ fn summary_line(summary: &ThreadSummary) -> String {
 pub fn thread(ctx: &Ctx, id_arg: &str) -> Result<Exit, CliError> {
     let id = message_id(id_arg)?;
     let thread = ctx.client(None)?.thread(&id)?;
+    let replies = u64::try_from(thread.replies.len()).unwrap_or(u64::MAX);
     let mut text = format!(
-        "thread {} in {} ({} replies)\n",
+        "thread {} in {} ({})\n",
         thread.root.id,
         thread.root.channel,
-        thread.replies.len()
+        reply_count(replies)
     );
     for message in std::iter::once(&thread.root).chain(&thread.replies) {
         text.push('\n');

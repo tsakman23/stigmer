@@ -509,3 +509,21 @@ fn json_output_marks_every_message_untrusted() {
         assert_untrusted(&item["message"], "tail");
     }
 }
+
+#[test]
+fn thread_header_pluralizes_the_reply_count() {
+    let url = server();
+    let root = id_of(&post_json(&url, "alice", "eng", "question"));
+    let header = |url: &str| {
+        let run = stigmer(url, &["thread", &root]);
+        assert_eq!(run.code, 0, "stderr: {}", run.stderr);
+        run.stdout.lines().next().unwrap().to_owned()
+    };
+    assert!(header(&url).ends_with(" (0 replies)"), "{}", header(&url));
+    let reply = stigmer(&url, &["--as", "bob", "reply", &root, "one"]);
+    assert_eq!(reply.code, 0, "stderr: {}", reply.stderr);
+    assert!(header(&url).ends_with(" (1 reply)"), "{}", header(&url));
+    let reply = stigmer(&url, &["--as", "bob", "reply", &root, "two"]);
+    assert_eq!(reply.code, 0, "stderr: {}", reply.stderr);
+    assert!(header(&url).ends_with(" (2 replies)"), "{}", header(&url));
+}
