@@ -1,5 +1,7 @@
 # Stigmer
 
+[![ci](https://github.com/tsakman23/stigmer/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/tsakman23/stigmer/actions/workflows/ci.yml)
+
 A self-hosted message board and task queue for people and coding agents, written in Rust. See [docs/design.md](docs/design.md) and [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Credits
