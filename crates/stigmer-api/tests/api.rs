@@ -1,7 +1,8 @@
 //! HTTP API tests against an in-memory SQLite store.
 
+use std::future::Future;
 use std::net::SocketAddr;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use axum::body::Body;
@@ -11,7 +12,11 @@ use http_body_util::BodyExt;
 use serde_json::{json, Value};
 use stigmer_api::require_loopback;
 use stigmer_api::{router, Action, AllowAll, Authorize, Denied};
-use stigmer_core::{ChannelPath, Principal};
+use stigmer_core::{
+    BoardId, ChannelPath, Cursor, Event, EventFilter, MessageId, NewMessage, Page, Posted,
+    Principal, Target, Thread, ThreadSummary,
+};
+use stigmer_store::{ChainReport, Store, StoreError};
 use stigmer_store_sqlite::SqliteStore;
 use tokio::sync::watch;
 use tower::ServiceExt;
@@ -629,6 +634,165 @@ async fn from_now_on_empty_board_returns_the_first_event() {
     assert_eq!(body["events"].as_array().unwrap().len(), 1, "{body}");
     assert_eq!(body["events"][0]["seq"], 1);
     assert_eq!(body["cursor"], first["event"]["cursor"]);
+}
+
+#[tokio::test]
+async fn timed_out_wait_cursor_does_not_skip_later_events() {
+    let h = harness().await;
+    post_to(&h.app, "sales", "noise one").await;
+    let noise = post_to(&h.app, "sales", "noise two").await;
+    let (_, body) = events(&h.app, "?channel=eng&timeout_s=1").await;
+    assert_eq!(body["timed_out"], true);
+    assert_eq!(body["events"], json!([]));
+    // The examined noise is behind the cursor.
+    assert_eq!(body["cursor"], noise["event"]["cursor"]);
+    let resume = body["cursor"].as_str().unwrap().to_owned();
+
+    let signal = post_to(&h.app, "eng", "signal").await;
+    let (status, body) = events(&h.app, &format!("?after={resume}&channel=eng")).await;
+    assert_eq!(status, StatusCode::OK);
+    let returned = body["events"].as_array().unwrap();
+    assert_eq!(returned.len(), 1, "{body}");
+    assert_eq!(returned[0]["message_id"], signal["message"]["id"]);
+    assert_eq!(body["cursor"], signal["event"]["cursor"]);
+}
+
+#[tokio::test]
+async fn timed_out_wait_on_empty_board_has_null_cursor_and_resume_sees_first_event() {
+    let h = harness().await;
+    let (_, body) = events(&h.app, "?timeout_s=1").await;
+    assert_eq!(
+        body,
+        json!({"events": [], "cursor": null, "timed_out": true})
+    );
+    // A null cursor resumes with no `after`, from the beginning.
+    let first = post_to(&h.app, "eng", "first").await;
+    let (_, body) = events(&h.app, "").await;
+    let returned = body["events"].as_array().unwrap();
+    assert_eq!(returned.len(), 1, "{body}");
+    assert_eq!(returned[0]["message_id"], first["message"]["id"]);
+    assert_eq!(returned[0]["seq"], 1);
+}
+
+/// A store whose first events scan is followed, before the scan's result is returned, by a
+/// post of `racer`: a matching event landing between the wait's scan and whatever it does next.
+struct RacingStore {
+    inner: SqliteStore,
+    racer: Mutex<Option<NewMessage>>,
+}
+
+impl Store for RacingStore {
+    fn post(&self, msg: NewMessage) -> impl Future<Output = Result<Posted, StoreError>> + Send {
+        self.inner.post(msg)
+    }
+
+    fn verify_chain(
+        &self,
+        board: &BoardId,
+    ) -> impl Future<Output = Result<ChainReport, StoreError>> + Send {
+        self.inner.verify_chain(board)
+    }
+
+    fn read_channel(
+        &self,
+        board: &BoardId,
+        prefix: &ChannelPath,
+        page: Page,
+    ) -> impl Future<Output = Result<Vec<ThreadSummary>, StoreError>> + Send {
+        self.inner.read_channel(board, prefix, page)
+    }
+
+    fn read_thread(
+        &self,
+        board: &BoardId,
+        thread: &MessageId,
+    ) -> impl Future<Output = Result<Thread, StoreError>> + Send {
+        self.inner.read_thread(board, thread)
+    }
+
+    fn events_after(
+        &self,
+        board: &BoardId,
+        after: Option<&Cursor>,
+        filter: &EventFilter,
+        limit: u32,
+    ) -> impl Future<Output = Result<Vec<Event>, StoreError>> + Send {
+        let scan = self.inner.events_after(board, after, filter, limit);
+        async move {
+            let found = scan.await?;
+            let racer = self.racer.lock().unwrap().take();
+            if let Some(msg) = racer {
+                self.inner.post(msg).await?;
+            }
+            Ok(found)
+        }
+    }
+
+    fn head(
+        &self,
+        board: &BoardId,
+    ) -> impl Future<Output = Result<Option<Cursor>, StoreError>> + Send {
+        self.inner.head(board)
+    }
+
+    fn wait_past(
+        &self,
+        board: &BoardId,
+        after: Option<&Cursor>,
+        timeout: Duration,
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send {
+        self.inner.wait_past(board, after, timeout)
+    }
+}
+
+/// A router over a board holding one `sales` post, whose first events scan races an `eng` post.
+async fn racing_app() -> Router {
+    let message = |channel: &str, text: &str| {
+        NewMessage::new(
+            BoardId::main(),
+            Target::NewThread {
+                channel: ChannelPath::new(channel).unwrap(),
+            },
+            Principal::new("alice").unwrap(),
+            text.to_owned(),
+            vec![],
+            None,
+        )
+        .unwrap()
+    };
+    let inner = SqliteStore::open_memory().await.unwrap();
+    inner.post(message("sales", "noise")).await.unwrap();
+    let store = Arc::new(RacingStore {
+        inner,
+        racer: Mutex::new(Some(message("eng", "signal"))),
+    });
+    let (_tx, rx) = watch::channel(false);
+    router(store, AllowAll, rx)
+}
+
+#[tokio::test]
+async fn post_landing_between_scan_and_return_is_not_skipped() {
+    // A plain read whose scan finds nothing: the cursor must not move past the racing post.
+    let app = racing_app().await;
+    let (_, body) = events(&app, "?channel=eng").await;
+    assert_eq!(body["events"], json!([]));
+    let resume = body["cursor"].as_str().unwrap().to_owned();
+    let (_, body) = events(&app, &format!("?after={resume}&channel=eng")).await;
+    let returned = body["events"].as_array().unwrap();
+    assert_eq!(returned.len(), 1, "the racing post was skipped: {body}");
+    assert_eq!(returned[0]["seq"], 2);
+
+    // A wait wakes for the racing post at once instead of sleeping through it.
+    let app = racing_app().await;
+    let started = Instant::now();
+    let (_, body) = events(&app, "?channel=eng&timeout_s=2").await;
+    assert_eq!(body["timed_out"], false, "{body}");
+    assert_eq!(body["events"][0]["seq"], 2, "{body}");
+    assert!(
+        started.elapsed() < Duration::from_secs(1),
+        "{:?}",
+        started.elapsed()
+    );
 }
 
 async fn assert_error_body(app: &Router, req: Request<Body>, status: StatusCode, code: &str) {

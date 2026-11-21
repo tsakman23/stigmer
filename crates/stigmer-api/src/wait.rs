@@ -27,6 +27,14 @@ pub(crate) async fn read_events<S: Store>(
         // Read the head first: everything up to it is examined by the query below, so if the
         // query comes back empty the wait can start from here. Waiting from `after` instead
         // would return at once for every non-matching event already in the log.
+        //
+        // Invariant: a cursor returned without events (`after.or(head)` below) never lets a
+        // resume skip a matching event. `after` was the request's own start. `head` is read
+        // BEFORE the scan that found nothing, so every event at or below it was scanned and none
+        // matched. An event committed after this read has a higher sequence number: it is
+        // either seen by the next pass of this loop (`wait_past` returns at once because the
+        // head has moved) or returned to the request that resumes from `head`. Reading the head
+        // after the scan instead would let an event that lands between the two be skipped.
         let head = store.head(board).await?;
         let events = store
             .events_after(board, after.as_ref(), filter, limit)

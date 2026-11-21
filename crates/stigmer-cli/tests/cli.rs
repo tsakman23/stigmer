@@ -406,6 +406,30 @@ fn wait_prints_frame_and_resume_line() {
 }
 
 #[test]
+fn timed_out_wait_resume_line_sees_the_next_event() {
+    let url = server();
+    post_json(&url, "alice", "sales", "noise");
+    let timed_out = stigmer(
+        &url,
+        &["--as", "bob", "wait", "--channel", "eng", "--timeout", "1s"],
+    );
+    assert_eq!(timed_out.code, 3, "stderr: {}", timed_out.stderr);
+    let resume = line_value(&timed_out.stdout, "resume: ").to_owned();
+    let signal = id_of(&post_json(&url, "alice", "eng", "signal"));
+
+    // Run the printed command as is (its values need no shell quoting here).
+    let words: Vec<&str> = resume.split_whitespace().collect();
+    assert_eq!(words[0], "stigmer", "{resume}");
+    let mut args = words[1..].to_vec();
+    args.extend(["--timeout", "5s"]);
+    let resumed = stigmer(&url, &args);
+    assert_eq!(resumed.code, 0, "stderr: {}", resumed.stderr);
+    assert_eq!(resumed.stdout.matches("<<<message ").count(), 1);
+    assert!(resumed.stdout.contains(&format!("<<<end {signal}>>>")));
+    assert!(!resumed.stdout.contains("noise"), "{}", resumed.stdout);
+}
+
+#[test]
 fn wait_with_a_bad_cursor_exits_5() {
     let run = stigmer(&dead_url(), &["wait", "--after", "ev_garbage"]);
     assert_eq!(run.code, 5, "stderr: {}", run.stderr);
