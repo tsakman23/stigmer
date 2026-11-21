@@ -62,6 +62,8 @@ async fn main() -> ExitCode {
 
 async fn serve(data_dir: PathBuf, bind: SocketAddr) -> Result<(), Failure> {
     require_loopback(&bind).map_err(|e| Failure::Config(e.to_string()))?;
+    let signals = Signals::install()
+        .map_err(|e| Failure::Runtime(format!("cannot register signal handlers: {e}")))?;
 
     std::fs::create_dir_all(&data_dir).map_err(|e| {
         Failure::Runtime(format!(
@@ -94,7 +96,7 @@ async fn serve(data_dir: PathBuf, bind: SocketAddr) -> Result<(), Failure> {
 
     let (signalled_tx, signalled_rx) = oneshot::channel::<()>();
     let graceful = async move {
-        wait_for_signal().await;
+        signals.wait().await;
         // Ends every pending wait so the connections can drain.
         let _ = shutdown_tx.send(true);
         let _ = signalled_tx.send(());
@@ -119,24 +121,42 @@ async fn serve(data_dir: PathBuf, bind: SocketAddr) -> Result<(), Failure> {
     }
 }
 
+/// Shutdown signal streams, registered up front so a signal that arrives during
+/// startup is held and not left to its default (process-killing) disposition.
 #[cfg(unix)]
-async fn wait_for_signal() {
-    use tokio::signal::unix::{signal, SignalKind};
-    let (Ok(mut term), Ok(mut int)) = (
-        signal(SignalKind::terminate()),
-        signal(SignalKind::interrupt()),
-    ) else {
-        // Without handlers the process can only be killed; keep serving.
-        std::future::pending::<()>().await;
-        return;
-    };
-    tokio::select! {
-        _ = term.recv() => {}
-        _ = int.recv() => {}
+struct Signals {
+    term: tokio::signal::unix::Signal,
+    int: tokio::signal::unix::Signal,
+}
+
+#[cfg(unix)]
+impl Signals {
+    fn install() -> std::io::Result<Self> {
+        use tokio::signal::unix::{signal, SignalKind};
+        Ok(Self {
+            term: signal(SignalKind::terminate())?,
+            int: signal(SignalKind::interrupt())?,
+        })
+    }
+
+    async fn wait(mut self) {
+        tokio::select! {
+            _ = self.term.recv() => {}
+            _ = self.int.recv() => {}
+        }
     }
 }
 
 #[cfg(not(unix))]
-async fn wait_for_signal() {
-    let _ = tokio::signal::ctrl_c().await;
+struct Signals;
+
+#[cfg(not(unix))]
+impl Signals {
+    fn install() -> std::io::Result<Self> {
+        Ok(Self)
+    }
+
+    async fn wait(self) {
+        let _ = tokio::signal::ctrl_c().await;
+    }
 }
