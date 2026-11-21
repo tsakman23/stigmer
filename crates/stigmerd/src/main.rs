@@ -1,19 +1,142 @@
-//! stigmerd binary entry point.
+//! stigmerd: the Stigmer board server.
 
-fn banner() -> String {
-    format!("{} {}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"))
+use std::future::IntoFuture;
+use std::io::Write;
+use std::net::SocketAddr;
+use std::path::PathBuf;
+use std::process::ExitCode;
+use std::sync::Arc;
+use std::time::Duration;
+
+use clap::{Parser, Subcommand};
+use stigmer_api::{require_loopback, router, AllowAll};
+use stigmer_store_sqlite::SqliteStore;
+use tokio::sync::{oneshot, watch};
+
+/// How long in-flight requests get to finish after a shutdown signal.
+const DRAIN_LIMIT: Duration = Duration::from_secs(5);
+
+#[derive(Parser)]
+#[command(name = "stigmerd", version, about = "Stigmer board server")]
+struct Cli {
+    #[command(subcommand)]
+    command: Command,
 }
 
-fn main() {
-    println!("{}", banner());
+#[derive(Subcommand)]
+enum Command {
+    /// Serve the board over local HTTP.
+    Serve {
+        /// Directory holding the board database (created if missing).
+        #[arg(long, default_value = "./.stigmer")]
+        data_dir: PathBuf,
+        /// Address to listen on. Must be a loopback address.
+        #[arg(long, default_value = "127.0.0.1:7878")]
+        bind: SocketAddr,
+    },
 }
 
-#[cfg(test)]
-mod tests {
-    use super::banner;
+/// Why the server stopped without a clean shutdown; carries the process exit code.
+enum Failure {
+    /// The requested configuration is invalid.
+    Config(String),
+    /// Opening the database or binding the port failed.
+    Runtime(String),
+}
 
-    #[test]
-    fn banner_names_the_package() {
-        assert!(banner().starts_with("stigmerd "));
+#[tokio::main]
+async fn main() -> ExitCode {
+    let Command::Serve { data_dir, bind } = Cli::parse().command;
+    match serve(data_dir, bind).await {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(Failure::Config(msg)) => {
+            eprintln!("stigmerd: {msg}");
+            ExitCode::from(2)
+        }
+        Err(Failure::Runtime(msg)) => {
+            eprintln!("stigmerd: {msg}");
+            ExitCode::from(1)
+        }
     }
+}
+
+async fn serve(data_dir: PathBuf, bind: SocketAddr) -> Result<(), Failure> {
+    require_loopback(&bind).map_err(|e| Failure::Config(e.to_string()))?;
+
+    std::fs::create_dir_all(&data_dir).map_err(|e| {
+        Failure::Runtime(format!(
+            "cannot create data dir {}: {e}",
+            data_dir.display()
+        ))
+    })?;
+    let db_path = data_dir.join("stigmer.db");
+    let store = SqliteStore::open(&db_path).await.map_err(|e| {
+        Failure::Runtime(format!("cannot open database {}: {e}", db_path.display()))
+    })?;
+
+    let listener = tokio::net::TcpListener::bind(bind)
+        .await
+        .map_err(|e| Failure::Runtime(format!("cannot bind {bind}: {e}")))?;
+    let local = listener
+        .local_addr()
+        .map_err(|e| Failure::Runtime(format!("cannot read bound address: {e}")))?;
+
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    let app = router(Arc::new(store), AllowAll, shutdown_rx);
+
+    println!(
+        "listening on http://{local} (data in {})",
+        data_dir.display()
+    );
+    std::io::stdout()
+        .flush()
+        .map_err(|e| Failure::Runtime(format!("cannot write to stdout: {e}")))?;
+
+    let (signalled_tx, signalled_rx) = oneshot::channel::<()>();
+    let graceful = async move {
+        wait_for_signal().await;
+        // Ends every pending wait so the connections can drain.
+        let _ = shutdown_tx.send(true);
+        let _ = signalled_tx.send(());
+    };
+    let server = axum::serve(listener, app)
+        .with_graceful_shutdown(graceful)
+        .into_future();
+    tokio::pin!(server);
+
+    tokio::select! {
+        result = &mut server => {
+            result.map_err(|e| Failure::Runtime(format!("server error: {e}")))
+        }
+        () = async {
+            // Only start the drain clock once a signal has arrived.
+            if signalled_rx.await.is_ok() {
+                tokio::time::sleep(DRAIN_LIMIT).await;
+            } else {
+                std::future::pending::<()>().await;
+            }
+        } => Ok(()),
+    }
+}
+
+#[cfg(unix)]
+async fn wait_for_signal() {
+    use tokio::signal::unix::{signal, SignalKind};
+    let (Ok(mut term), Ok(mut int)) = (
+        signal(SignalKind::terminate()),
+        signal(SignalKind::interrupt()),
+    ) else {
+        // Without handlers the process can only be killed; keep serving.
+        std::future::pending::<()>().await;
+        return;
+    };
+    tokio::select! {
+        _ = term.recv() => {}
+        _ = int.recv() => {}
+    }
+}
+
+#[cfg(not(unix))]
+async fn wait_for_signal() {
+    let _ = tokio::signal::ctrl_c().await;
 }
