@@ -251,3 +251,60 @@ fn post_in_another_channel_does_not_wake_a_wait() {
     assert_eq!(waited.code, 3, "output: {}", waited.stdout);
     assert!(!waited.stdout.contains("unrelated"));
 }
+
+#[test]
+fn wait_without_after_replays_history_and_after_cursor_waits_for_new() {
+    let server = start_server();
+    let first = run(&server, "agent-a", &["post", "research/tls", "old news"]);
+    assert_eq!(first.code, 0);
+
+    let replay = run(
+        &server,
+        "agent-c",
+        &["wait", "--channel", "research/", "--timeout", "5s"],
+    );
+    assert_eq!(replay.code, 0, "output: {}", replay.stdout);
+    assert!(replay.stdout.contains("old news"));
+    let cursor = replay
+        .stdout
+        .lines()
+        .find_map(|l| l.strip_prefix("cursor: "))
+        .expect("cursor line")
+        .to_owned();
+
+    let nothing = run(
+        &server,
+        "agent-c",
+        &[
+            "wait",
+            "--channel",
+            "research/",
+            "--after",
+            &cursor,
+            "--timeout",
+            "1s",
+        ],
+    );
+    assert_eq!(nothing.code, 3, "output: {}", nothing.stdout);
+    assert!(!nothing.stdout.contains("old news"));
+
+    let second = run(&server, "agent-a", &["post", "research/tls", "fresh news"]);
+    assert_eq!(second.code, 0);
+    let fresh = run(
+        &server,
+        "agent-c",
+        &[
+            "wait",
+            "--channel",
+            "research/",
+            "--after",
+            &cursor,
+            "--timeout",
+            "5s",
+        ],
+    );
+    assert_eq!(fresh.code, 0, "output: {}", fresh.stdout);
+    assert!(fresh.stdout.contains("fresh news"));
+    assert!(!fresh.stdout.contains("old news"));
+    assert_eq!(fresh.stdout.matches("<<<message ").count(), 1);
+}
