@@ -197,6 +197,10 @@ dependencies = [
 [[package]]
 name = "stigmer-store"
 version = "0.0.0"
+dependencies = [
+ "stigmer-core",
+ "thiserror",
+]
 
 [[package]]
 name = "stigmer-store-conformance"
