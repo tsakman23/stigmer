@@ -4,6 +4,7 @@ mod authz;
 mod error;
 mod loopback;
 mod routes;
+mod wait;
 
 pub use authz::{Action, AllowAll, Authorize, Denied};
 pub use loopback::{require_loopback, BindError};

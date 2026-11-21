@@ -1,6 +1,7 @@
 //! Route handlers: thin glue that authorizes, then calls the store.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::body::Bytes;
 use axum::extract::rejection::{BytesRejection, QueryRejection};
@@ -10,18 +11,21 @@ use axum::routing::get;
 use axum::{Json, Router};
 use serde::Deserialize;
 use stigmer_core::{
-    BoardId, ChannelPath, ChannelsResponse, ErrorCode, MessageId, NewMessage, Page, PostRequest,
-    Posted, Principal, Target, Thread,
+    parse_labels, BoardId, ChannelPath, ChannelsResponse, Cursor, ErrorCode, EventFilter,
+    EventsResponse, MessageId, NewMessage, Page, PostRequest, Posted, Principal, Target, Thread,
 };
 use stigmer_store::Store;
 use tokio::sync::watch;
 
 use crate::authz::{Action, Authorize};
 use crate::error::ApiError;
+use crate::wait::read_events;
 
 /// Largest accepted request body.
 const MAX_BODY_BYTES: usize = 256 * 1024;
 const DEFAULT_CHANNEL_LIMIT: u32 = 50;
+const DEFAULT_EVENTS_LIMIT: u32 = 100;
+const MAX_TIMEOUT_S: u64 = 300;
 const ANONYMOUS: &str = "anonymous";
 
 pub(crate) struct AppState<S, A> {
@@ -60,6 +64,7 @@ pub fn router<S: Store, A: Authorize>(
             axum::routing::post(post_message::<S, A>),
         )
         .route("/v1/boards/{board}/channels", get(read_channels::<S, A>))
+        .route("/v1/boards/{board}/events", get(read_events_route::<S, A>))
         .route("/v1/boards/{board}/threads/{id}", get(read_thread::<S, A>))
         .fallback(unknown_route)
         .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
@@ -219,4 +224,62 @@ async fn read_thread<S: Store, A: Authorize>(
         .authz
         .check(&who, Action::Read, Some(&thread.root.channel))?;
     Ok(Json(thread))
+}
+
+#[derive(Deserialize)]
+struct EventsQuery {
+    after: Option<String>,
+    channel: Option<String>,
+    thread: Option<String>,
+    label: Option<String>,
+    timeout_s: Option<String>,
+    limit: Option<String>,
+}
+
+async fn read_events_route<S: Store, A: Authorize>(
+    State(state): State<AppState<S, A>>,
+    Path(board): Path<String>,
+    headers: HeaderMap,
+    query: Result<Query<EventsQuery>, QueryRejection>,
+) -> Result<Json<EventsResponse>, ApiError> {
+    let board = require_main_board(&board)?;
+    let who = reader(&headers)?;
+    let q = query_or_400(query)?;
+    let after = q
+        .after
+        .map(|raw| {
+            serde_json::from_value::<Cursor>(serde_json::Value::String(raw))
+                .map_err(|e| ApiError::new(ErrorCode::InvalidCursor, e.to_string()))
+        })
+        .transpose()?;
+    let filter = EventFilter {
+        channel_prefix: q.channel.as_deref().map(ChannelPath::new).transpose()?,
+        thread: q.thread.as_deref().map(MessageId::new).transpose()?,
+        label: match q.label {
+            Some(raw) => parse_labels(&[raw])?.into_iter().next(),
+            None => None,
+        },
+    };
+    let limit = parse_limit(q.limit.as_deref(), DEFAULT_EVENTS_LIMIT)?;
+    let timeout_s = match q.timeout_s.as_deref() {
+        None => 0,
+        Some(s) => s.parse::<u64>().map_err(|_| {
+            ApiError::invalid_input(format!("timeout_s must be a number, got {s:?}"))
+        })?,
+    };
+    let timeout = Duration::from_secs(timeout_s.min(MAX_TIMEOUT_S));
+    state
+        .authz
+        .check(&who, Action::Read, filter.channel_prefix.as_ref())?;
+    let response = read_events(
+        &*state.store,
+        state.shutdown.clone(),
+        &board,
+        after,
+        &filter,
+        limit,
+        timeout,
+    )
+    .await?;
+    Ok(Json(response))
 }
