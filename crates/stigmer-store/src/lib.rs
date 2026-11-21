@@ -73,12 +73,22 @@ pub struct ChainReport {
 /// Guarantees every backend must meet: a gapless per-board event sequence starting at 1,
 /// read-your-writes, and visibility in commit order. Verified by `stigmer-store-conformance`.
 ///
+/// Every `NotFound` names the entity that is missing, as each method states below; an unknown
+/// board is `Entity::Board` except where a method says otherwise.
+///
 /// Not object-safe on purpose: callers are generic over `S: Store`.
 pub trait Store: Send + Sync + 'static {
     /// Stores a new thread or a reply and appends its event to the board's chain, atomically.
+    ///
+    /// Errors: an unknown board is `NotFound` with `Entity::Board`. A reply whose target thread
+    /// does not exist on the board, or is a reply rather than a thread root, is `NotFound` with
+    /// `Entity::Thread`. An idempotency key the same author already used on this board with a
+    /// different request (other text, labels or target) is
+    /// `Conflict(ConflictKind::IdempotencyKeyReused)`; with the same request it is a replay.
     fn post(&self, msg: NewMessage) -> impl Future<Output = Result<Posted, StoreError>> + Send;
 
     /// Recomputes the board's hash chain from genesis and reports the first bad event.
+    /// An unknown board is `NotFound` with `Entity::Board`.
     fn verify_chain(
         &self,
         board: &BoardId,
@@ -86,6 +96,9 @@ pub trait Store: Send + Sync + 'static {
 
     /// Lists the threads of every channel under `prefix` (whole path segments), newest activity
     /// first. `page.before` is the thread id of the last item of the previous page.
+    ///
+    /// An unknown board is not an error: it has no threads, so the list is empty. A
+    /// `page.before` that is not a thread root on the board is `NotFound` with `Entity::Thread`.
     fn read_channel(
         &self,
         board: &BoardId,
@@ -93,8 +106,9 @@ pub trait Store: Send + Sync + 'static {
         page: Page,
     ) -> impl Future<Output = Result<Vec<ThreadSummary>, StoreError>> + Send;
 
-    /// Reads a thread root and its replies in event order. `NotFound` unless `thread` is a
-    /// thread root on `board`.
+    /// Reads a thread root and its replies in event order. `NotFound` with `Entity::Thread`
+    /// unless `thread` is a thread root on `board`: an id that does not exist, a reply's id, and
+    /// any id on an unknown board all report the thread, not the board.
     fn read_thread(
         &self,
         board: &BoardId,
@@ -103,7 +117,8 @@ pub trait Store: Send + Sync + 'static {
 
     /// Events with a sequence number greater than `after`'s (all events when `None`), oldest
     /// first, matching `filter`. `limit` is clamped to 1..=500. A cursor that does not decode or
-    /// lies beyond the board head is `InvalidCursor`, never an empty success.
+    /// lies beyond the board head is `InvalidCursor`, never an empty success. An unknown board is
+    /// `NotFound` with `Entity::Board` (a cursor that does not decode is `InvalidCursor` first).
     fn events_after(
         &self,
         board: &BoardId,
@@ -112,7 +127,8 @@ pub trait Store: Send + Sync + 'static {
         limit: u32,
     ) -> impl Future<Output = Result<Vec<Event>, StoreError>> + Send;
 
-    /// The cursor of the board's latest event, or `None` while it has no events.
+    /// The cursor of the board's latest event, or `None` while it has no events. An unknown
+    /// board is `NotFound` with `Entity::Board`.
     fn head(
         &self,
         board: &BoardId,
@@ -120,7 +136,9 @@ pub trait Store: Send + Sync + 'static {
 
     /// Waits up to `timeout` for the board head to move past `after` (`None` means before the
     /// first event). Returns `true` as soon as it has, `false` on timeout. A cursor beyond the
-    /// head is `InvalidCursor` at once. Dropping the future cancels the wait.
+    /// head is `InvalidCursor` at once. An unknown board is `NotFound` with `Entity::Board` (a
+    /// cursor that does not decode is `InvalidCursor` first). Dropping the future cancels the
+    /// wait.
     fn wait_past(
         &self,
         board: &BoardId,
