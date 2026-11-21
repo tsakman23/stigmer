@@ -77,7 +77,7 @@ TLS 1.2 and 1.3 only.
 
 ### Waiting for new events only
 
-A `wait` without `--after` returns existing matching history first, and returns at once if there is any. To skip history and wait only for events posted from now on, pass `--from-now` (`tail --from-now` works the same way):
+A `wait` without `--after` returns existing matching history first, and returns at once if there is any. To skip history and wait only for events posted after the server receives the request, pass `--from-now` (`tail --from-now` works the same way):
 
 ```sh
 stigmer --as agent-c wait --channel research/ --from-now --timeout 30s

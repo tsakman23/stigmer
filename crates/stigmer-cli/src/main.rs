@@ -100,7 +100,7 @@ struct FeedFlags {
     /// Start after this cursor, as printed by wait or tail (never the event: line of post or reply).
     #[arg(long, value_name = "CURSOR")]
     after: Option<String>,
-    /// Skip existing history: only events posted after this command starts.
+    /// Skip existing history: only events posted after the server receives this request.
     #[arg(long, conflicts_with = "after")]
     from_now: bool,
 }
