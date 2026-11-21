@@ -4,8 +4,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior};
 use stigmer_core::{
-    event_hash, BoardId, ChannelPath, Cursor, Event, EventKind, Message, MessageId, NewMessage,
-    Principal, Target, GENESIS_HASH,
+    event_hash, BoardId, ChannelPath, Cursor, Event, EventKind, Label, Message, MessageId,
+    NewMessage, Principal, Target, GENESIS_HASH,
 };
 use stigmer_store::{ChainReport, Posted, StoreError};
 
@@ -13,12 +13,20 @@ use crate::backend;
 
 /// Stores `msg` and appends its event in one `BEGIN IMMEDIATE` transaction.
 ///
-/// `msg.idempotency_key` is not persisted yet, so `replayed` is always false.
+/// When `msg.idempotency_key` matches an earlier post by the same author on the same board, that
+/// post is returned with `replayed: true` and nothing is written. The lookup runs in the same
+/// write transaction as the insert, so two racing retries cannot both insert.
 pub(crate) fn post(conn: &mut Connection, msg: NewMessage) -> Result<Posted, StoreError> {
     let id = MessageId::generate().map_err(backend)?;
     let tx = conn
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(backend)?;
+
+    if let Some(key) = &msg.idempotency_key {
+        if let Some(original) = find_keyed(&tx, &msg.board, &msg.author, key)? {
+            return replay(&tx, original, &msg);
+        }
+    }
 
     let (head_seq, head_hash) = board_head(&tx, &msg.board)?
         .ok_or_else(|| StoreError::NotFound(format!("board {}", msg.board)))?;
@@ -38,8 +46,8 @@ pub(crate) fn post(conn: &mut Connection, msg: NewMessage) -> Result<Posted, Sto
     let seq_sql = i64::try_from(seq).map_err(backend)?;
 
     tx.execute(
-        "INSERT INTO messages (id, board_id, channel, thread_id, author, text, at_ms)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        "INSERT INTO messages (id, board_id, channel, thread_id, author, text, at_ms, idempotency_key)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
         (
             id.as_str(),
             msg.board.as_str(),
@@ -48,6 +56,7 @@ pub(crate) fn post(conn: &mut Connection, msg: NewMessage) -> Result<Posted, Sto
             msg.author.as_str(),
             &msg.text,
             at_ms,
+            &msg.idempotency_key,
         ),
     )
     .map_err(backend)?;
@@ -106,6 +115,95 @@ pub(crate) fn post(conn: &mut Connection, msg: NewMessage) -> Result<Posted, Sto
         message,
         event,
         replayed: false,
+    })
+}
+
+/// The message `author` already posted on `board` under `key`, if any.
+fn find_keyed(
+    tx: &Transaction<'_>,
+    board: &BoardId,
+    author: &Principal,
+    key: &str,
+) -> Result<Option<Message>, StoreError> {
+    let row: Option<(String, String, String, i64)> = tx
+        .query_row(
+            "SELECT id, channel, thread_id, at_ms FROM messages
+             WHERE board_id = ?1 AND author = ?2 AND idempotency_key = ?3",
+            (board.as_str(), author.as_str(), key),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .optional()
+        .map_err(backend)?;
+    let Some((id, channel, thread_id, at_ms)) = row else {
+        return Ok(None);
+    };
+    let text: String = tx
+        .query_row("SELECT text FROM messages WHERE id = ?1", [&id], |row| {
+            row.get(0)
+        })
+        .map_err(backend)?;
+    let mut stmt = tx
+        .prepare("SELECT key, value FROM labels WHERE message_id = ?1 ORDER BY rowid")
+        .map_err(backend)?;
+    let labels = stmt
+        .query_map([&id], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(backend)?
+        .map(|pair| {
+            let (k, v) = pair.map_err(backend)?;
+            Label::new(&k, &v).map_err(backend)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(Some(Message {
+        id: MessageId::new(&id).map_err(backend)?,
+        board: board.clone(),
+        channel: ChannelPath::new(&channel).map_err(backend)?,
+        thread_id: MessageId::new(&thread_id).map_err(backend)?,
+        author: author.clone(),
+        text,
+        labels,
+        at_ms,
+    }))
+}
+
+/// Answers a retry: returns the stored post if `request` asks for the same thing, else a conflict.
+fn replay(
+    tx: &Transaction<'_>,
+    original: Message,
+    request: &NewMessage,
+) -> Result<Posted, StoreError> {
+    let same_target = match &request.target {
+        Target::NewThread { channel } => {
+            original.thread_id == original.id && original.channel == *channel
+        }
+        Target::Reply { thread } => {
+            original.thread_id == *thread && original.thread_id != original.id
+        }
+    };
+    if !same_target || original.text != request.text || original.labels != request.labels {
+        return Err(StoreError::Conflict(
+            "idempotency key reused with a different request".into(),
+        ));
+    }
+    let mut stmt = tx
+        .prepare(
+            "SELECT seq, kind, actor, message_id, thread_id, channel, at_ms, hash
+             FROM events WHERE board_id = ?1 AND message_id = ?2",
+        )
+        .map_err(backend)?;
+    let mut rows = stmt
+        .query((original.board.as_str(), original.id.as_str()))
+        .map_err(backend)?;
+    let event = match rows.next().map_err(backend)? {
+        Some(row) => event_from_row(row)?,
+        None => None,
+    }
+    .ok_or_else(|| StoreError::Backend(format!("message {} has no valid event", original.id)))?;
+    Ok(Posted {
+        message: original,
+        event,
+        replayed: true,
     })
 }
 

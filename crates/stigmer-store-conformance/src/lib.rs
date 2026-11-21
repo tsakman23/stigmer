@@ -26,6 +26,10 @@ where
     reply_to_unknown_thread_is_not_found(factory().await).await;
     reply_to_a_reply_is_not_found(factory().await).await;
     post_to_unknown_board_is_not_found(factory().await).await;
+    same_key_same_author_returns_original_and_replayed_true(factory().await).await;
+    same_key_writes_exactly_one_event(factory().await).await;
+    same_key_different_author_is_a_new_message(factory().await).await;
+    same_key_different_text_is_conflict(factory().await).await;
 }
 
 fn channel(raw: &str) -> ChannelPath {
@@ -76,6 +80,11 @@ fn reply(thread: &MessageId, author: &str, text: &str) -> NewMessage {
         text,
         vec![],
     )
+}
+
+fn keyed(mut msg: NewMessage, key: &str) -> NewMessage {
+    msg.idempotency_key = Some(key.to_owned());
+    msg
 }
 
 async fn post_ok<S: Store>(store: &S, msg: NewMessage, scenario: &str) -> Posted {
@@ -303,6 +312,76 @@ async fn post_to_unknown_board_is_not_found<S: Store>(store: S) {
     assert_eq!(
         verify_main(&store, SCENARIO).await,
         valid_chain(0),
+        "{SCENARIO}"
+    );
+}
+
+async fn same_key_same_author_returns_original_and_replayed_true<S: Store>(store: S) {
+    const SCENARIO: &str = "same_key_same_author_returns_original_and_replayed_true";
+    let msg = keyed(new_thread("eng", "alice", "deploy"), "req-1");
+    let first = post_ok(&store, msg.clone(), SCENARIO).await;
+    assert!(!first.replayed, "{SCENARIO}: first post is not a replay");
+    let second = post_ok(&store, msg, SCENARIO).await;
+    assert!(second.replayed, "{SCENARIO}: retry must be flagged");
+    assert_eq!(second.message, first.message, "{SCENARIO}");
+    assert_eq!(second.event, first.event, "{SCENARIO}");
+}
+
+async fn same_key_writes_exactly_one_event<S: Store>(store: S) {
+    const SCENARIO: &str = "same_key_writes_exactly_one_event";
+    let msg = keyed(new_thread("eng", "alice", "deploy"), "req-1");
+    for _ in 0..3 {
+        post_ok(&store, msg.clone(), SCENARIO).await;
+    }
+    assert_eq!(
+        verify_main(&store, SCENARIO).await,
+        valid_chain(1),
+        "{SCENARIO}"
+    );
+}
+
+async fn same_key_different_author_is_a_new_message<S: Store>(store: S) {
+    const SCENARIO: &str = "same_key_different_author_is_a_new_message";
+    let alice = post_ok(
+        &store,
+        keyed(new_thread("eng", "alice", "deploy"), "req-1"),
+        SCENARIO,
+    )
+    .await;
+    let bob = post_ok(
+        &store,
+        keyed(new_thread("eng", "bob", "deploy"), "req-1"),
+        SCENARIO,
+    )
+    .await;
+    assert!(!bob.replayed, "{SCENARIO}: keys are scoped per author");
+    assert_ne!(bob.message.id, alice.message.id, "{SCENARIO}");
+    assert_eq!(bob.event.seq, 2, "{SCENARIO}");
+    assert_eq!(
+        verify_main(&store, SCENARIO).await,
+        valid_chain(2),
+        "{SCENARIO}"
+    );
+}
+
+async fn same_key_different_text_is_conflict<S: Store>(store: S) {
+    const SCENARIO: &str = "same_key_different_text_is_conflict";
+    post_ok(
+        &store,
+        keyed(new_thread("eng", "alice", "deploy"), "req-1"),
+        SCENARIO,
+    )
+    .await;
+    let result = store
+        .post(keyed(new_thread("eng", "alice", "something else"), "req-1"))
+        .await;
+    assert!(
+        matches!(result, Err(StoreError::Conflict(_))),
+        "{SCENARIO}: got {result:?}"
+    );
+    assert_eq!(
+        verify_main(&store, SCENARIO).await,
+        valid_chain(1),
         "{SCENARIO}"
     );
 }

@@ -43,6 +43,11 @@ pub(crate) const MIGRATIONS: &[&str] = &[
         hash TEXT NOT NULL,
         PRIMARY KEY (board_id, seq)
     );",
+    // 2: idempotency keys, unique per board and author.
+    "ALTER TABLE messages ADD COLUMN idempotency_key TEXT;
+    CREATE UNIQUE INDEX messages_idempotency
+        ON messages (board_id, author, idempotency_key)
+        WHERE idempotency_key IS NOT NULL;",
 ];
 
 /// Brings the database up to the latest schema and makes sure board `main` exists.
