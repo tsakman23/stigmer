@@ -7,7 +7,7 @@ use serde::Serialize;
 use stigmer_core::{parse_labels, Cursor, Event, EventFilter, Message, MessageId, Thread};
 
 use crate::client::Client;
-use crate::commands::{channel, message_id, print_out, Ctx};
+use crate::commands::{channel, message_id, parse_arg, print_out, Ctx};
 use crate::exit::{CliError, Exit};
 use crate::render::render_message;
 
@@ -26,10 +26,13 @@ impl FeedArgs {
     /// Validates every argument before any request.
     fn parse(self) -> Result<(EventFilter, Option<Cursor>), CliError> {
         let label = match self.label {
-            Some(raw) => parse_labels(&[raw])
-                .map_err(|e| CliError::invalid(&e, "pass the label as --label key=value"))?
-                .into_iter()
-                .next(),
+            Some(raw) => parse_arg(
+                &raw,
+                |raw| parse_labels(&[raw.to_owned()]),
+                "pass the label as --label key=value",
+            )?
+            .into_iter()
+            .next(),
             None => None,
         };
         let filter = EventFilter {

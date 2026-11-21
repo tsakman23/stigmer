@@ -1,9 +1,10 @@
 //! Exit codes and the failure report every command ends with.
 
+use std::borrow::Cow;
 use std::io::Write;
 use std::process::ExitCode;
 
-use stigmer_core::{CoreError, ErrorCode, ErrorDetail};
+use stigmer_core::{CoreError, ErrorCode, ErrorDetail, MAX_MESSAGE_CHARS};
 
 /// The process exit status of a command.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -37,6 +38,11 @@ impl From<Exit> for ExitCode {
     fn from(exit: Exit) -> Self {
         ExitCode::from(exit.code())
     }
+}
+
+/// What to do about text over stigmer-core's length limit.
+pub(crate) fn too_long_hint() -> String {
+    format!("shorten the text to at most {MAX_MESSAGE_CHARS} characters")
 }
 
 /// A failed command: what went wrong and what to try next.
@@ -81,42 +87,42 @@ impl CliError {
 
     /// An error the server answered with.
     pub fn api(detail: ErrorDetail) -> Self {
-        let (exit, code, next) = match detail.code {
+        let (exit, code, next): (Exit, &'static str, Cow<'static, str>) = match detail.code {
             ErrorCode::InvalidInput => (
                 Exit::Invalid,
                 "invalid_input",
-                "fix the input; run: stigmer --help",
+                "fix the input; run: stigmer --help".into(),
             ),
-            ErrorCode::TooLarge => (
-                Exit::Invalid,
-                "too_large",
-                "shorten the text to at most 10000 characters",
-            ),
+            ErrorCode::TooLarge => (Exit::Invalid, "too_large", too_long_hint().into()),
             ErrorCode::InvalidCursor => (
                 Exit::Invalid,
                 "invalid_cursor",
-                "pass a cursor printed by wait or tail, or drop --after",
+                "pass a cursor printed by wait or tail, or drop --after".into(),
             ),
             ErrorCode::NotFound => (
                 Exit::NotFound,
                 "not_found",
-                "check the id; list threads with: stigmer read <channel>",
+                "check the id; list threads with: stigmer read <channel>".into(),
             ),
             ErrorCode::MethodNotAllowed => (
                 Exit::Failure,
                 "method_not_allowed",
-                "check that --url points at a stigmer server",
+                "check that --url points at a stigmer server".into(),
             ),
-            ErrorCode::Conflict => (Exit::Failure, "conflict", "retry with a different --key"),
+            ErrorCode::Conflict => (
+                Exit::Failure,
+                "conflict",
+                "retry with a different --key".into(),
+            ),
             ErrorCode::Forbidden => (
                 Exit::Failure,
                 "forbidden",
-                "check the identity passed with --as",
+                "check the identity passed with --as".into(),
             ),
             ErrorCode::Internal => (
                 Exit::Failure,
                 "internal",
-                "check the stigmerd logs, then retry",
+                "check the stigmerd logs, then retry".into(),
             ),
         };
         Self::new(exit, code, detail.message, next)
@@ -144,6 +150,7 @@ impl CliError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use stigmer_core::MAX_MESSAGE_CHARS;
 
     fn api(code: ErrorCode) -> CliError {
         CliError::api(ErrorDetail {
@@ -173,6 +180,14 @@ mod tests {
         assert_eq!(
             value,
             serde_json::json!({"error": {"code": "usage", "message": "bad"}, "next": "do this"})
+        );
+    }
+
+    #[test]
+    fn too_large_hint_quotes_the_core_limit() {
+        assert_eq!(
+            api(ErrorCode::TooLarge).next,
+            format!("shorten the text to at most {MAX_MESSAGE_CHARS} characters")
         );
     }
 

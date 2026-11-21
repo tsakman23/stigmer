@@ -4,11 +4,11 @@ use std::io::Write;
 
 use stigmer_core::{
     BoardId, ChannelPath, CoreError, MessageId, NewMessage, PostRequest, Posted, Principal, Target,
-    ThreadSummary,
+    ThreadSummary, MAX_IDEMPOTENCY_KEY_CHARS, MAX_LABELS,
 };
 
 use crate::client::Client;
-use crate::exit::{CliError, Exit};
+use crate::exit::{too_long_hint, CliError, Exit};
 use crate::render::render_message;
 
 /// Characters of a thread's root text shown by `read`.
@@ -110,31 +110,45 @@ pub fn print_out(text: &str) -> Result<(), CliError> {
         })
 }
 
+/// Parses `raw` with a stigmer-core constructor; a rejection is an invalid-input error
+/// whose next step is `hint`.
+pub fn parse_arg<T>(
+    raw: &str,
+    parse: impl FnOnce(&str) -> Result<T, CoreError>,
+    hint: &str,
+) -> Result<T, CliError> {
+    parse(raw).map_err(|e| CliError::invalid(&e, hint))
+}
+
 fn principal(raw: &str) -> Result<Principal, CliError> {
-    Principal::new(raw)
-        .map_err(|e| CliError::invalid(&e, "names are 1 to 64 characters of [a-z0-9._-]"))
+    parse_arg(
+        raw,
+        Principal::new,
+        "names are 1 to 64 characters of [a-z0-9._-]",
+    )
 }
 
 /// Parses a channel argument; one trailing `/` is allowed (`research/` is `research`).
 pub fn channel(raw: &str) -> Result<ChannelPath, CliError> {
     let trimmed = raw.strip_suffix('/').unwrap_or(raw);
-    ChannelPath::new(trimmed).map_err(|e| {
-        CliError::invalid(
-            &e,
-            "channels are 1 to 8 segments of [a-z0-9._-] joined by /, for example eng/ops",
-        )
-    })
+    parse_arg(
+        trimmed,
+        ChannelPath::new,
+        "channels are 1 to 8 segments of [a-z0-9._-] joined by /, for example eng/ops",
+    )
 }
 
-fn core_hint(err: &CoreError) -> &'static str {
+fn core_hint(err: &CoreError) -> String {
     match err {
-        CoreError::EmptyText => "pass the message text as an argument",
-        CoreError::TooLong { .. } => "shorten the text to at most 10000 characters",
+        CoreError::EmptyText => "pass the message text as an argument".to_owned(),
+        CoreError::TooLong { .. } => too_long_hint(),
         CoreError::TooManyLabels { .. } | CoreError::BadLabel(_) => {
-            "pass at most 32 labels as --label key=value"
+            format!("pass at most {MAX_LABELS} labels as --label key=value")
         }
-        CoreError::BadIdempotencyKey(_) => "keys are 1 to 128 characters of [A-Za-z0-9._:-]",
-        _ => "fix the arguments; run: stigmer --help",
+        CoreError::BadIdempotencyKey(_) => {
+            format!("keys are 1 to {MAX_IDEMPOTENCY_KEY_CHARS} characters of [A-Za-z0-9._:-]")
+        }
+        _ => "fix the arguments; run: stigmer --help".to_owned(),
     }
 }
 
@@ -187,12 +201,11 @@ pub fn post(ctx: &Ctx, channel_arg: &str, args: WriteArgs) -> Result<Exit, CliEr
 }
 
 pub fn message_id(raw: &str) -> Result<MessageId, CliError> {
-    MessageId::new(raw).map_err(|e| {
-        CliError::invalid(
-            &e,
-            "ids look like msg_ and 24 hex digits; list threads with: stigmer read <channel>",
-        )
-    })
+    parse_arg(
+        raw,
+        MessageId::new,
+        "ids look like msg_ and 24 hex digits; list threads with: stigmer read <channel>",
+    )
 }
 
 /// `reply <thread> <text>`: answers in a thread.
@@ -273,4 +286,29 @@ pub fn thread(ctx: &Ctx, id_arg: &str) -> Result<Exit, CliError> {
     }
     ctx.emit(&thread, &text)?;
     Ok(Exit::Ok)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use stigmer_core::MAX_MESSAGE_CHARS;
+
+    #[test]
+    fn hints_quote_the_core_limits() {
+        let too_long = CoreError::TooLong {
+            max: MAX_MESSAGE_CHARS,
+        };
+        assert_eq!(
+            core_hint(&too_long),
+            format!("shorten the text to at most {MAX_MESSAGE_CHARS} characters")
+        );
+        let labels_hint = format!("pass at most {MAX_LABELS} labels as --label key=value");
+        let too_many = CoreError::TooManyLabels { max: MAX_LABELS };
+        assert_eq!(core_hint(&too_many), labels_hint);
+        assert_eq!(core_hint(&CoreError::BadLabel("x".into())), labels_hint);
+        assert_eq!(
+            core_hint(&CoreError::BadIdempotencyKey("x".into())),
+            format!("keys are 1 to {MAX_IDEMPOTENCY_KEY_CHARS} characters of [A-Za-z0-9._:-]")
+        );
+    }
 }
