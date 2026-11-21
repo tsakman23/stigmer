@@ -48,6 +48,10 @@ pub(crate) const MIGRATIONS: &[&str] = &[
     CREATE UNIQUE INDEX messages_idempotency
         ON messages (board_id, author, idempotency_key)
         WHERE idempotency_key IS NOT NULL;",
+    // 3: indexes for thread reads and the event feed.
+    "CREATE INDEX messages_thread ON messages (board_id, thread_id);
+    CREATE INDEX labels_message ON labels (message_id);
+    CREATE INDEX events_message ON events (board_id, message_id);",
 ];
 
 /// Brings the database up to the latest schema and makes sure board `main` exists.
@@ -145,7 +149,17 @@ mod tests {
         let version: i64 = conn
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 2);
+        assert_eq!(version, MIGRATIONS.len() as i64);
+        for index in ["messages_thread", "labels_message", "events_message"] {
+            let found: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = ?1",
+                    [index],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(found, 1, "index {index}");
+        }
         let old_key: Option<String> = conn
             .query_row(
                 "SELECT idempotency_key FROM messages WHERE text = 'old message'",

@@ -4,7 +4,7 @@ use std::future::Future;
 
 use thiserror::Error;
 
-use stigmer_core::{BoardId, NewMessage};
+use stigmer_core::{BoardId, ChannelPath, MessageId, NewMessage};
 
 pub use stigmer_core::{EventFilter, Message, Page, Posted, Thread, ThreadSummary};
 
@@ -48,6 +48,23 @@ pub trait Store: Send + Sync + 'static {
         &self,
         board: &BoardId,
     ) -> impl Future<Output = Result<ChainReport, StoreError>> + Send;
+
+    /// Lists the threads of every channel under `prefix` (whole path segments), newest activity
+    /// first. `page.before` is the thread id of the last item of the previous page.
+    fn read_channel(
+        &self,
+        board: &BoardId,
+        prefix: &ChannelPath,
+        page: Page,
+    ) -> impl Future<Output = Result<Vec<ThreadSummary>, StoreError>> + Send;
+
+    /// Reads a thread root and its replies in event order. `NotFound` unless `thread` is a
+    /// thread root on `board`.
+    fn read_thread(
+        &self,
+        board: &BoardId,
+        thread: &MessageId,
+    ) -> impl Future<Output = Result<Thread, StoreError>> + Send;
 }
 
 #[cfg(test)]
@@ -90,5 +107,15 @@ mod tests {
         fn assert_send<T: Send>(_: T) {}
         assert_send(store.post(msg));
         assert_send(store.verify_chain(board));
+        let (prefix, thread) = (
+            ChannelPath::new("eng").unwrap(),
+            MessageId::generate().unwrap(),
+        );
+        let page = Page {
+            limit: 1,
+            before: None,
+        };
+        assert_send(store.read_channel(board, &prefix, page));
+        assert_send(store.read_thread(board, &thread));
     }
 }

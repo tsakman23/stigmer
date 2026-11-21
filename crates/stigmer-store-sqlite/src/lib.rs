@@ -3,6 +3,7 @@
 //! One connection behind a mutex; every database call runs on tokio's blocking pool.
 
 mod posts;
+mod reads;
 mod schema;
 
 use std::fmt::Display;
@@ -12,8 +13,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use rusqlite::Connection;
-use stigmer_core::{BoardId, NewMessage};
-use stigmer_store::{ChainReport, Posted, Store, StoreError};
+use stigmer_core::{BoardId, ChannelPath, MessageId, NewMessage};
+use stigmer_store::{ChainReport, Page, Posted, Store, StoreError, Thread, ThreadSummary};
 
 /// A `Store` backed by one SQLite database.
 pub struct SqliteStore {
@@ -97,6 +98,25 @@ impl Store for SqliteStore {
     ) -> impl Future<Output = Result<ChainReport, StoreError>> + Send {
         let board = board.clone();
         self.run(move |conn| posts::verify_chain(conn, &board))
+    }
+
+    fn read_channel(
+        &self,
+        board: &BoardId,
+        prefix: &ChannelPath,
+        page: Page,
+    ) -> impl Future<Output = Result<Vec<ThreadSummary>, StoreError>> + Send {
+        let (board, prefix) = (board.clone(), prefix.clone());
+        self.run(move |conn| reads::read_channel(conn, &board, &prefix, &page))
+    }
+
+    fn read_thread(
+        &self,
+        board: &BoardId,
+        thread: &MessageId,
+    ) -> impl Future<Output = Result<Thread, StoreError>> + Send {
+        let (board, thread) = (board.clone(), thread.clone());
+        self.run(move |conn| reads::read_thread(conn, &board, &thread))
     }
 }
 

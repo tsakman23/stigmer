@@ -11,4 +11,4 @@ workspace = true
 [dependencies]
 stigmer-core = { path = "../stigmer-core", version = "0.0.0" }
 stigmer-store = { path = "../stigmer-store", version = "0.0.0" }
-tokio = { version = "1.54.1", features = ["rt"] }
+tokio = { version = "1.54.1", features = ["rt", "time"] }
