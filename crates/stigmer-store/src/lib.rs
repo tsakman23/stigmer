@@ -28,7 +28,8 @@ pub struct ChainReport {
     pub valid: bool,
     /// Number of events examined.
     pub checked: u64,
-    /// The first sequence number whose event does not check out, if any.
+    /// The first sequence number whose event does not check out, if any. `None` together with
+    /// `valid == false` means only the board head disagreed with the events.
     pub first_bad_seq: Option<u64>,
 }
 
