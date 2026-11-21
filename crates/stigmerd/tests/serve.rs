@@ -4,7 +4,10 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
+use std::sync::mpsc;
 use std::time::{Duration, Instant};
+
+const STARTUP_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Kills the child on drop so a failing test cannot leak a server process.
 struct Server {
@@ -20,24 +23,40 @@ impl Drop for Server {
 }
 
 fn start(data_dir: &Path) -> Server {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_stigmerd"))
-        .args(["serve", "--bind", "127.0.0.1:0", "--data-dir"])
-        .arg(data_dir)
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_stigmerd"));
+    cmd.args(["serve", "--bind", "127.0.0.1:0", "--data-dir"])
+        .arg(data_dir);
+    spawn_guarded(cmd, STARTUP_TIMEOUT)
+}
+
+/// Spawns the command under the Drop guard at once, then waits (bounded) for the
+/// listening line. A wrong or missing line fails the test without leaking the child.
+fn spawn_guarded(mut cmd: Command, wait: Duration) -> Server {
+    let mut child = cmd
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
         .spawn()
-        .expect("spawn stigmerd");
+        .expect("spawn child");
     let stdout = child.stdout.take().expect("piped stdout");
-    let mut line = String::new();
-    BufReader::new(stdout)
-        .read_line(&mut line)
-        .expect("read listening line");
-    let addr = line
+    let mut server = Server {
+        child,
+        addr: String::new(),
+    };
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut line = String::new();
+        let _ = BufReader::new(stdout).read_line(&mut line);
+        let _ = tx.send(line);
+    });
+    let line = rx
+        .recv_timeout(wait)
+        .unwrap_or_else(|_| panic!("no listening line within {wait:?}"));
+    server.addr = line
         .strip_prefix("listening on http://")
         .and_then(|rest| rest.split_whitespace().next())
         .unwrap_or_else(|| panic!("unexpected first line: {line:?}"))
         .to_owned();
-    Server { child, addr }
+    server
 }
 
 /// Sends one HTTP/1.1 request and returns (status, body).
@@ -183,4 +202,36 @@ fn restart_keeps_data() {
     );
     assert_eq!(status, 200, "body: {body}");
     assert!(body.contains("survives restarts"), "body: {body}");
+}
+
+#[test]
+#[should_panic(expected = "no listening line within")]
+fn startup_that_prints_nothing_fails_instead_of_hanging() {
+    let mut cmd = Command::new("sleep");
+    cmd.arg("30");
+    let _ = spawn_guarded(cmd, Duration::from_millis(300));
+}
+
+#[test]
+#[should_panic(expected = "unexpected first line")]
+fn startup_with_a_wrong_first_line_fails() {
+    let mut cmd = Command::new("echo");
+    cmd.arg("hello");
+    let _ = spawn_guarded(cmd, Duration::from_secs(5));
+}
+
+#[cfg(unix)]
+#[test]
+fn sigterm_sent_immediately_after_the_listening_line_exits_0() {
+    for i in 0..20 {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut server = start(dir.path());
+        sigterm(&server);
+        let code = wait_for_exit(&mut server, Duration::from_secs(5));
+        assert_eq!(
+            code,
+            Some(0),
+            "iteration {i}: must exit 0, not die from the signal"
+        );
+    }
 }
