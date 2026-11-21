@@ -6,10 +6,11 @@
 
 use std::future::Future;
 use std::sync::Arc;
+use std::time::Duration;
 
 use stigmer_core::{
-    event_hash, BoardId, ChannelPath, Cursor, EventKind, Label, MessageId, NewMessage, Page,
-    Principal, Target, ThreadSummary, GENESIS_HASH,
+    event_hash, BoardId, ChannelPath, Cursor, Event, EventFilter, EventKind, Label, MessageId,
+    NewMessage, Page, Principal, Target, ThreadSummary, GENESIS_HASH,
 };
 use stigmer_store::{ChainReport, Posted, Store, StoreError};
 
@@ -36,6 +37,19 @@ where
     read_channel_preview_is_200_chars_not_bytes(factory().await).await;
     read_thread_returns_root_and_replies_in_order(factory().await).await;
     read_thread_of_unknown_id_reply_or_other_board_is_not_found(factory().await).await;
+    head_is_none_on_an_empty_board_then_the_latest_cursor(factory().await).await;
+    events_after_none_returns_from_start(factory().await).await;
+    events_after_resumes_after_a_cursor_and_clamps_limit(factory().await).await;
+    events_after_filters_by_channel_thread_and_label(factory().await).await;
+    events_after_future_cursor_is_invalid_cursor(factory().await).await;
+    events_after_malformed_cursor_is_invalid_cursor(factory().await).await;
+    events_after_unknown_board_is_not_found(factory().await).await;
+    wait_past_returns_true_when_a_post_lands_during_the_wait(factory().await).await;
+    wait_past_returns_false_on_timeout(factory().await).await;
+    wait_past_does_not_wake_for_events_before_the_cursor(factory().await).await;
+    wait_past_returns_true_at_once_when_head_is_already_past(factory().await).await;
+    wait_past_future_cursor_is_invalid_cursor_without_waiting(factory().await).await;
+    wait_past_is_not_woken_by_an_idempotent_replay(factory().await).await;
 }
 
 fn channel(raw: &str) -> ChannelPath {
@@ -623,5 +637,394 @@ async fn read_thread_of_unknown_id_reply_or_other_board_is_not_found<S: Store>(s
             matches!(result, Err(StoreError::NotFound(_))),
             "{SCENARIO}: {board} {id} gave {result:?}"
         );
+    }
+}
+
+fn labelled(channel_path: &str, text: &str, key: &str, value: &str) -> NewMessage {
+    message(
+        BoardId::main(),
+        Target::NewThread {
+            channel: channel(channel_path),
+        },
+        "alice",
+        text,
+        vec![Label::new(key, value).unwrap_or_else(|e| panic!("test label: {e}"))],
+    )
+}
+
+async fn events_ok<S: Store>(
+    store: &S,
+    after: Option<&Cursor>,
+    filter: &EventFilter,
+    limit: u32,
+    scenario: &str,
+) -> Vec<Event> {
+    match store
+        .events_after(&BoardId::main(), after, filter, limit)
+        .await
+    {
+        Ok(events) => events,
+        Err(e) => panic!("{scenario}: events_after failed: {e}"),
+    }
+}
+
+fn seqs(events: &[Event]) -> Vec<u64> {
+    events.iter().map(|e| e.seq).collect()
+}
+
+async fn head_is_none_on_an_empty_board_then_the_latest_cursor<S: Store>(store: S) {
+    const SCENARIO: &str = "head_is_none_on_an_empty_board_then_the_latest_cursor";
+    let board = BoardId::main();
+    assert_eq!(
+        store.head(&board).await,
+        Ok(None),
+        "{SCENARIO}: empty board has no head"
+    );
+    post_ok(&store, new_thread("eng", "alice", "one"), SCENARIO).await;
+    let second = post_ok(&store, new_thread("eng", "alice", "two"), SCENARIO).await;
+    assert_eq!(
+        store.head(&board).await,
+        Ok(Some(second.event.cursor)),
+        "{SCENARIO}"
+    );
+    let nowhere = BoardId::new("nowhere").unwrap_or_else(|e| panic!("{SCENARIO}: {e}"));
+    assert!(
+        matches!(store.head(&nowhere).await, Err(StoreError::NotFound(_))),
+        "{SCENARIO}: unknown board"
+    );
+}
+
+async fn events_after_none_returns_from_start<S: Store>(store: S) {
+    const SCENARIO: &str = "events_after_none_returns_from_start";
+    let none = events_ok(&store, None, &EventFilter::default(), 10, SCENARIO).await;
+    assert!(none.is_empty(), "{SCENARIO}: empty board has no events");
+
+    let root = post_ok(&store, new_thread("eng", "alice", "root"), SCENARIO).await;
+    let answer = post_ok(&store, reply(&root.message.id, "bob", "answer"), SCENARIO).await;
+    post_ok(&store, new_thread("ops", "carol", "third"), SCENARIO).await;
+
+    let events = events_ok(&store, None, &EventFilter::default(), 10, SCENARIO).await;
+    assert_eq!(seqs(&events), vec![1, 2, 3], "{SCENARIO}: ascending from 1");
+    assert_eq!(events[0], root.event, "{SCENARIO}: full first event");
+    assert_eq!(events[1], answer.event, "{SCENARIO}: full second event");
+}
+
+async fn events_after_resumes_after_a_cursor_and_clamps_limit<S: Store>(store: S) {
+    const SCENARIO: &str = "events_after_resumes_after_a_cursor_and_clamps_limit";
+    for i in 0..4 {
+        post_ok(
+            &store,
+            new_thread("eng", "alice", &format!("t{i}")),
+            SCENARIO,
+        )
+        .await;
+    }
+    let filter = EventFilter::default();
+    let after_1 = events_ok(&store, Some(&Cursor::from_seq(1)), &filter, 10, SCENARIO).await;
+    assert_eq!(seqs(&after_1), vec![2, 3, 4], "{SCENARIO}: strictly after");
+    let at_head = events_ok(&store, Some(&Cursor::from_seq(4)), &filter, 10, SCENARIO).await;
+    assert!(
+        at_head.is_empty(),
+        "{SCENARIO}: the head cursor has nothing new"
+    );
+    let limited = events_ok(&store, None, &filter, 2, SCENARIO).await;
+    assert_eq!(seqs(&limited), vec![1, 2], "{SCENARIO}: limit");
+    let zero = events_ok(&store, None, &filter, 0, SCENARIO).await;
+    assert_eq!(
+        seqs(&zero),
+        vec![1],
+        "{SCENARIO}: limit 0 is clamped up to 1"
+    );
+
+    for i in 4..504 {
+        post_ok(
+            &store,
+            new_thread("many", "alice", &format!("t{i}")),
+            SCENARIO,
+        )
+        .await;
+    }
+    let huge = events_ok(&store, None, &filter, u32::MAX, SCENARIO).await;
+    assert_eq!(huge.len(), 500, "{SCENARIO}: limit is clamped to 500");
+}
+
+async fn events_after_filters_by_channel_thread_and_label<S: Store>(store: S) {
+    const SCENARIO: &str = "events_after_filters_by_channel_thread_and_label";
+    let a = post_ok(&store, labelled("research", "a", "kind", "bug"), SCENARIO).await; // 1
+    let b = post_ok(
+        &store,
+        labelled("research/tls", "b", "kind", "idea"),
+        SCENARIO,
+    )
+    .await; // 2
+    post_ok(&store, labelled("research2", "c", "kind", "bug"), SCENARIO).await; // 3
+    let a_reply = post_ok(&store, reply(&a.message.id, "bob", "a reply"), SCENARIO).await; // 4
+    let b_reply = post_ok(
+        &store,
+        message(
+            BoardId::main(),
+            Target::Reply {
+                thread: b.message.id.clone(),
+            },
+            "bob",
+            "b reply",
+            vec![Label::new("kind", "bug").unwrap_or_else(|e| panic!("{e}"))],
+        ),
+        SCENARIO,
+    )
+    .await; // 5
+
+    let by_channel = EventFilter {
+        channel_prefix: Some(channel("research")),
+        ..EventFilter::default()
+    };
+    let got = events_ok(&store, None, &by_channel, 50, SCENARIO).await;
+    assert_eq!(
+        seqs(&got),
+        vec![1, 2, 4, 5],
+        "{SCENARIO}: whole segments, so research2 is out"
+    );
+
+    let by_thread = EventFilter {
+        thread: Some(a.message.id.clone()),
+        ..EventFilter::default()
+    };
+    let got = events_ok(&store, None, &by_thread, 50, SCENARIO).await;
+    assert_eq!(
+        seqs(&got),
+        vec![1, 4],
+        "{SCENARIO}: the root and its replies"
+    );
+    assert_eq!(got[1], a_reply.event, "{SCENARIO}");
+
+    let by_label = EventFilter {
+        label: Some(Label::new("kind", "bug").unwrap_or_else(|e| panic!("{e}"))),
+        ..EventFilter::default()
+    };
+    let got = events_ok(&store, None, &by_label, 50, SCENARIO).await;
+    assert_eq!(
+        seqs(&got),
+        vec![1, 3, 5],
+        "{SCENARIO}: events whose message carries kind=bug"
+    );
+    assert_eq!(got[2], b_reply.event, "{SCENARIO}");
+
+    let wrong_value = EventFilter {
+        label: Some(Label::new("kind", "bu").unwrap_or_else(|e| panic!("{e}"))),
+        ..EventFilter::default()
+    };
+    let got = events_ok(&store, None, &wrong_value, 50, SCENARIO).await;
+    assert!(got.is_empty(), "{SCENARIO}: label value must match exactly");
+
+    let combined = EventFilter {
+        channel_prefix: Some(channel("research")),
+        thread: Some(b.message.id.clone()),
+        label: Some(Label::new("kind", "bug").unwrap_or_else(|e| panic!("{e}"))),
+    };
+    let got = events_ok(&store, None, &combined, 50, SCENARIO).await;
+    assert_eq!(seqs(&got), vec![5], "{SCENARIO}: filters combine with AND");
+
+    let after_2 = events_ok(
+        &store,
+        Some(&Cursor::from_seq(2)),
+        &by_channel,
+        50,
+        SCENARIO,
+    )
+    .await;
+    assert_eq!(seqs(&after_2), vec![4, 5], "{SCENARIO}: cursor plus filter");
+}
+
+async fn events_after_future_cursor_is_invalid_cursor<S: Store>(store: S) {
+    const SCENARIO: &str = "events_after_future_cursor_is_invalid_cursor";
+    let filter = EventFilter::default();
+    let result = store
+        .events_after(&BoardId::main(), Some(&Cursor::from_seq(1)), &filter, 10)
+        .await;
+    assert_eq!(
+        result,
+        Err(StoreError::InvalidCursor),
+        "{SCENARIO}: any cursor on an empty board is ahead of the head"
+    );
+    post_ok(&store, new_thread("eng", "alice", "one"), SCENARIO).await;
+    let result = store
+        .events_after(&BoardId::main(), Some(&Cursor::from_seq(2)), &filter, 10)
+        .await;
+    assert_eq!(result, Err(StoreError::InvalidCursor), "{SCENARIO}: head+1");
+    let result = store
+        .events_after(
+            &BoardId::main(),
+            Some(&Cursor::from_seq(u64::MAX)),
+            &filter,
+            10,
+        )
+        .await;
+    assert_eq!(
+        result,
+        Err(StoreError::InvalidCursor),
+        "{SCENARIO}: u64::MAX"
+    );
+}
+
+async fn events_after_malformed_cursor_is_invalid_cursor<S: Store>(store: S) {
+    const SCENARIO: &str = "events_after_malformed_cursor_is_invalid_cursor";
+    post_ok(&store, new_thread("eng", "alice", "one"), SCENARIO).await;
+    // Sequences start at 1, so a cursor for seq 0 is well formed on the wire but does not decode.
+    let malformed = Cursor::from_seq(0);
+    assert!(
+        malformed.seq().is_err(),
+        "{SCENARIO}: test cursor must be bad"
+    );
+    let result = store
+        .events_after(
+            &BoardId::main(),
+            Some(&malformed),
+            &EventFilter::default(),
+            10,
+        )
+        .await;
+    assert_eq!(result, Err(StoreError::InvalidCursor), "{SCENARIO}");
+    let result = store
+        .wait_past(
+            &BoardId::main(),
+            Some(&malformed),
+            Duration::from_millis(50),
+        )
+        .await;
+    assert_eq!(
+        result,
+        Err(StoreError::InvalidCursor),
+        "{SCENARIO}: wait_past"
+    );
+}
+
+async fn events_after_unknown_board_is_not_found<S: Store>(store: S) {
+    const SCENARIO: &str = "events_after_unknown_board_is_not_found";
+    let nowhere = BoardId::new("nowhere").unwrap_or_else(|e| panic!("{SCENARIO}: {e}"));
+    let result = store
+        .events_after(&nowhere, None, &EventFilter::default(), 10)
+        .await;
+    assert!(
+        matches!(result, Err(StoreError::NotFound(_))),
+        "{SCENARIO}: got {result:?}"
+    );
+}
+
+/// Generous upper bound for waits that must end early; tests assert on the outcome, not the time.
+const LONG: Duration = Duration::from_secs(10);
+const SHORT: Duration = Duration::from_millis(150);
+
+async fn wait_past_returns_true_when_a_post_lands_during_the_wait<S: Store>(store: S) {
+    const SCENARIO: &str = "wait_past_returns_true_when_a_post_lands_during_the_wait";
+    let store = Arc::new(store);
+    let first = post_ok(&*store, new_thread("eng", "alice", "one"), SCENARIO).await;
+    let cursor = first.event.cursor.clone();
+
+    let waiter = {
+        let store = Arc::clone(&store);
+        tokio::spawn(async move { store.wait_past(&BoardId::main(), Some(&cursor), LONG).await })
+    };
+    // Give the waiter time to start waiting; correctness does not depend on it.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(!waiter.is_finished(), "{SCENARIO}: nothing posted yet");
+    post_ok(&*store, new_thread("eng", "bob", "two"), SCENARIO).await;
+
+    match waiter.await {
+        Ok(result) => assert_eq!(result, Ok(true), "{SCENARIO}"),
+        Err(e) => panic!("{SCENARIO}: waiter task failed: {e}"),
+    }
+}
+
+async fn wait_past_returns_false_on_timeout<S: Store>(store: S) {
+    const SCENARIO: &str = "wait_past_returns_false_on_timeout";
+    let first = post_ok(&store, new_thread("eng", "alice", "one"), SCENARIO).await;
+    let result = store
+        .wait_past(&BoardId::main(), Some(&first.event.cursor), SHORT)
+        .await;
+    assert_eq!(result, Ok(false), "{SCENARIO}: with a cursor at the head");
+    let from_start = store.wait_past(&BoardId::main(), None, SHORT).await;
+    assert_eq!(
+        from_start,
+        Ok(true),
+        "{SCENARIO}: None counts as seq 0, and seq 1 exists"
+    );
+}
+
+async fn wait_past_does_not_wake_for_events_before_the_cursor<S: Store>(store: S) {
+    const SCENARIO: &str = "wait_past_does_not_wake_for_events_before_the_cursor";
+    let store = Arc::new(store);
+    post_ok(&*store, new_thread("eng", "alice", "one"), SCENARIO).await;
+    let second = post_ok(&*store, new_thread("eng", "alice", "two"), SCENARIO).await;
+    let cursor = second.event.cursor.clone();
+
+    // Nothing new after seq 2: events 1 and 2 must not count.
+    let result = store
+        .wait_past(&BoardId::main(), Some(&cursor), SHORT)
+        .await;
+    assert_eq!(
+        result,
+        Ok(false),
+        "{SCENARIO}: old events do not wake the wait"
+    );
+
+    // A waiter on the head cursor wakes for the next post.
+    let fresh_waiter = {
+        let store = Arc::clone(&store);
+        tokio::spawn(async move {
+            store
+                .wait_past(&BoardId::main(), Some(&Cursor::from_seq(2)), LONG)
+                .await
+        })
+    };
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    post_ok(&*store, new_thread("eng", "alice", "three"), SCENARIO).await;
+    match fresh_waiter.await {
+        Ok(result) => assert_eq!(result, Ok(true), "{SCENARIO}: seq 3 is past cursor 2"),
+        Err(e) => panic!("{SCENARIO}: waiter task failed: {e}"),
+    }
+}
+
+async fn wait_past_returns_true_at_once_when_head_is_already_past<S: Store>(store: S) {
+    const SCENARIO: &str = "wait_past_returns_true_at_once_when_head_is_already_past";
+    let first = post_ok(&store, new_thread("eng", "alice", "one"), SCENARIO).await;
+    post_ok(&store, new_thread("eng", "alice", "two"), SCENARIO).await;
+    // A long timeout: if the head check is skipped this test would hang, not pass.
+    let result = store
+        .wait_past(&BoardId::main(), Some(&first.event.cursor), LONG)
+        .await;
+    assert_eq!(result, Ok(true), "{SCENARIO}");
+}
+
+async fn wait_past_future_cursor_is_invalid_cursor_without_waiting<S: Store>(store: S) {
+    const SCENARIO: &str = "wait_past_future_cursor_is_invalid_cursor_without_waiting";
+    post_ok(&store, new_thread("eng", "alice", "one"), SCENARIO).await;
+    let result = store
+        .wait_past(&BoardId::main(), Some(&Cursor::from_seq(5)), LONG)
+        .await;
+    assert_eq!(result, Err(StoreError::InvalidCursor), "{SCENARIO}");
+}
+
+async fn wait_past_is_not_woken_by_an_idempotent_replay<S: Store>(store: S) {
+    const SCENARIO: &str = "wait_past_is_not_woken_by_an_idempotent_replay";
+    let store = Arc::new(store);
+    let msg = keyed(new_thread("eng", "alice", "deploy"), "req-1");
+    let first = post_ok(&*store, msg.clone(), SCENARIO).await;
+    let cursor = first.event.cursor.clone();
+
+    let waiter = {
+        let store = Arc::clone(&store);
+        tokio::spawn(async move {
+            store
+                .wait_past(&BoardId::main(), Some(&cursor), Duration::from_millis(300))
+                .await
+        })
+    };
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let retry = post_ok(&*store, msg, SCENARIO).await;
+    assert!(retry.replayed, "{SCENARIO}: the retry is a replay");
+
+    match waiter.await {
+        Ok(result) => assert_eq!(result, Ok(false), "{SCENARIO}: a replay adds no event"),
+        Err(e) => panic!("{SCENARIO}: waiter task failed: {e}"),
     }
 }

@@ -1,10 +1,11 @@
 //! stigmer-store: the storage boundary every backend implements.
 
 use std::future::Future;
+use std::time::Duration;
 
 use thiserror::Error;
 
-use stigmer_core::{BoardId, ChannelPath, MessageId, NewMessage};
+use stigmer_core::{BoardId, ChannelPath, Cursor, Event, MessageId, NewMessage};
 
 pub use stigmer_core::{EventFilter, Message, Page, Posted, Thread, ThreadSummary};
 
@@ -65,6 +66,33 @@ pub trait Store: Send + Sync + 'static {
         board: &BoardId,
         thread: &MessageId,
     ) -> impl Future<Output = Result<Thread, StoreError>> + Send;
+
+    /// Events with a sequence number greater than `after`'s (all events when `None`), oldest
+    /// first, matching `filter`. `limit` is clamped to 1..=500. A cursor that does not decode or
+    /// lies beyond the board head is `InvalidCursor`, never an empty success.
+    fn events_after(
+        &self,
+        board: &BoardId,
+        after: Option<&Cursor>,
+        filter: &EventFilter,
+        limit: u32,
+    ) -> impl Future<Output = Result<Vec<Event>, StoreError>> + Send;
+
+    /// The cursor of the board's latest event, or `None` while it has no events.
+    fn head(
+        &self,
+        board: &BoardId,
+    ) -> impl Future<Output = Result<Option<Cursor>, StoreError>> + Send;
+
+    /// Waits up to `timeout` for the board head to move past `after` (`None` means before the
+    /// first event). Returns `true` as soon as it has, `false` on timeout. A cursor beyond the
+    /// head is `InvalidCursor` at once. Dropping the future cancels the wait.
+    fn wait_past(
+        &self,
+        board: &BoardId,
+        after: Option<&Cursor>,
+        timeout: Duration,
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send;
 }
 
 #[cfg(test)]
@@ -117,5 +145,9 @@ mod tests {
         };
         assert_send(store.read_channel(board, &prefix, page));
         assert_send(store.read_thread(board, &thread));
+        let filter = EventFilter::default();
+        assert_send(store.events_after(board, None, &filter, 1));
+        assert_send(store.head(board));
+        assert_send(store.wait_past(board, None, Duration::ZERO));
     }
 }

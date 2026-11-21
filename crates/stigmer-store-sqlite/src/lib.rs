@@ -2,6 +2,8 @@
 //!
 //! One connection behind a mutex; every database call runs on tokio's blocking pool.
 
+mod events;
+mod notify;
 mod posts;
 mod reads;
 mod schema;
@@ -13,12 +15,15 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use rusqlite::Connection;
-use stigmer_core::{BoardId, ChannelPath, MessageId, NewMessage};
-use stigmer_store::{ChainReport, Page, Posted, Store, StoreError, Thread, ThreadSummary};
+use stigmer_core::{BoardId, ChannelPath, Cursor, Event, MessageId, NewMessage};
+use stigmer_store::{
+    ChainReport, EventFilter, Page, Posted, Store, StoreError, Thread, ThreadSummary,
+};
 
 /// A `Store` backed by one SQLite database.
 pub struct SqliteStore {
     conn: Arc<Mutex<Connection>>,
+    notifier: Arc<notify::Notifier>,
 }
 
 impl SqliteStore {
@@ -64,6 +69,7 @@ impl SqliteStore {
         .map_err(backend)??;
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
+            notifier: Arc::new(notify::Notifier::default()),
         })
     }
 
@@ -89,7 +95,15 @@ impl SqliteStore {
 
 impl Store for SqliteStore {
     fn post(&self, msg: NewMessage) -> impl Future<Output = Result<Posted, StoreError>> + Send {
-        self.run(move |conn| posts::post(conn, msg))
+        let notifier = Arc::clone(&self.notifier);
+        self.run(move |conn| {
+            let posted = posts::post(conn, msg)?;
+            // Only a new event moves the head; a replay wrote nothing.
+            if !posted.replayed {
+                notifier.bump(&posted.message.board, posted.event.seq);
+            }
+            Ok(posted)
+        })
     }
 
     fn verify_chain(
@@ -117,6 +131,68 @@ impl Store for SqliteStore {
     ) -> impl Future<Output = Result<Thread, StoreError>> + Send {
         let (board, thread) = (board.clone(), thread.clone());
         self.run(move |conn| reads::read_thread(conn, &board, &thread))
+    }
+
+    fn events_after(
+        &self,
+        board: &BoardId,
+        after: Option<&Cursor>,
+        filter: &EventFilter,
+        limit: u32,
+    ) -> impl Future<Output = Result<Vec<Event>, StoreError>> + Send {
+        let (board, after, filter) = (board.clone(), after.cloned(), filter.clone());
+        self.run(move |conn| events::events_after(conn, &board, after.as_ref(), &filter, limit))
+    }
+
+    fn head(
+        &self,
+        board: &BoardId,
+    ) -> impl Future<Output = Result<Option<Cursor>, StoreError>> + Send {
+        let board = board.clone();
+        self.run(move |conn| events::head(conn, &board))
+    }
+
+    fn wait_past(
+        &self,
+        board: &BoardId,
+        after: Option<&Cursor>,
+        timeout: Duration,
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send {
+        let board = board.clone();
+        let after = after.cloned();
+        let notifier = Arc::clone(&self.notifier);
+        // Lazy: the database read starts only when polled, which is after `subscribe` below.
+        let read_head = {
+            let board = board.clone();
+            self.run(move |conn| events::head_seq(conn, &board))
+        };
+        async move {
+            let after_seq = events::cursor_seq(after.as_ref())?;
+            // Subscribe before reading the head so a post that lands in between is not missed.
+            let mut head_rx = notifier.subscribe(&board);
+            let head = read_head.await?;
+            if after_seq > head {
+                return Err(StoreError::InvalidCursor);
+            }
+            if head > after_seq {
+                return Ok(true);
+            }
+            let moved_past = async {
+                loop {
+                    if *head_rx.borrow_and_update() > after_seq {
+                        return Ok(true);
+                    }
+                    head_rx
+                        .changed()
+                        .await
+                        .map_err(|_| StoreError::Backend("head notifier closed".into()))?;
+                }
+            };
+            // No spawned task: dropping this future drops the receiver and the timer with it.
+            tokio::time::timeout(timeout, moved_past)
+                .await
+                .unwrap_or(Ok(false))
+        }
     }
 }
 

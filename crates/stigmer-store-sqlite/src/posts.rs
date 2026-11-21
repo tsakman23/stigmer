@@ -265,7 +265,7 @@ pub(crate) fn verify_chain(
 
 /// Rebuilds an event from a stored row, re-validating every field.
 /// Returns `None` when the row holds a value no valid event could have.
-fn event_from_row(row: &rusqlite::Row<'_>) -> Result<Option<Event>, StoreError> {
+pub(crate) fn event_from_row(row: &rusqlite::Row<'_>) -> Result<Option<Event>, StoreError> {
     let seq: i64 = row.get(0).map_err(backend)?;
     let kind: String = row.get(1).map_err(backend)?;
     let actor: String = row.get(2).map_err(backend)?;
@@ -305,7 +305,10 @@ fn parse_kind(raw: &str) -> Option<EventKind> {
 }
 
 /// The board's head `(seq, hash)`, or `None` if the board does not exist.
-fn board_head(tx: &Transaction<'_>, board: &BoardId) -> Result<Option<(u64, String)>, StoreError> {
+pub(crate) fn board_head(
+    tx: &Transaction<'_>,
+    board: &BoardId,
+) -> Result<Option<(u64, String)>, StoreError> {
     let head: Option<(i64, String)> = tx
         .query_row(
             "SELECT head_seq, head_hash FROM boards WHERE id = ?1",
