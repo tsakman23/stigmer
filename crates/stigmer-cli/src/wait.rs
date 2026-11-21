@@ -19,11 +19,46 @@ pub(crate) struct FeedArgs {
     pub(crate) thread: Option<String>,
     pub(crate) label: Option<String>,
     pub(crate) after: Option<String>,
+    pub(crate) from_now: bool,
+}
+
+/// Where the next events request starts.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Start {
+    /// From the first event (no cursor).
+    Beginning,
+    /// After this cursor.
+    After(Cursor),
+    /// After the board's head as the server sees it on arrival (`from_now=true`).
+    Now,
+}
+
+impl Start {
+    /// The cursor to send as `after`, if any.
+    pub(crate) fn after(&self) -> Option<&Cursor> {
+        match self {
+            Self::After(cursor) => Some(cursor),
+            Self::Beginning | Self::Now => None,
+        }
+    }
+}
+
+/// Where the chunk after one sent from `sent` starts, given the cursor it returned.
+///
+/// Only the first chunk may ask for "now": every later one resumes from the cursor the server
+/// resolved, so events landing between chunks are never skipped. A null cursor from a "now"
+/// request means the board was empty, so starting from the beginning skips nothing.
+fn next_start(sent: Start, returned: Option<Cursor>) -> Start {
+    match (returned, sent) {
+        (Some(cursor), _) => Start::After(cursor),
+        (None, Start::Now) => Start::Beginning,
+        (None, sent) => sent,
+    }
 }
 
 impl FeedArgs {
     /// Validates every argument before any request.
-    fn parse(self) -> Result<(EventFilter, Option<Cursor>), CliError> {
+    fn parse(self) -> Result<(EventFilter, Start), CliError> {
         let label = match self.label {
             Some(raw) => parse_arg(
                 &raw,
@@ -52,7 +87,12 @@ impl FeedArgs {
                 })
             })
             .transpose()?;
-        Ok((filter, after))
+        let start = match (after, self.from_now) {
+            (Some(cursor), _) => Start::After(cursor),
+            (None, true) => Start::Now,
+            (None, false) => Start::Beginning,
+        };
+        Ok((filter, start))
     }
 }
 
@@ -127,7 +167,7 @@ fn shell_word(value: &str) -> String {
 struct Feed {
     client: Client,
     filter: EventFilter,
-    cursor: Option<Cursor>,
+    start: Start,
     threads: HashMap<MessageId, Thread>,
 }
 
@@ -140,12 +180,11 @@ impl Feed {
                 Some(deadline) => chunk_secs(deadline.saturating_duration_since(Instant::now())),
                 None => MAX_WAIT_SECS,
             };
-            let response = self
-                .client
-                .events(&self.filter, self.cursor.as_ref(), secs)?;
-            if response.cursor.is_some() {
-                self.cursor = response.cursor;
-            }
+            let response = self.client.events(&self.filter, &self.start, secs)?;
+            self.start = next_start(
+                std::mem::replace(&mut self.start, Start::Beginning),
+                response.cursor,
+            );
             if !response.events.is_empty() {
                 return Ok(response.events);
             }
@@ -216,19 +255,19 @@ pub(crate) fn timed_out(timeout: Duration, resume: String) -> CliError {
 
 /// `wait`: blocks until matching events arrive (exit 0) or `timeout` passes (exit 3).
 pub(crate) fn wait(ctx: &Ctx, args: FeedArgs, timeout: Duration) -> Result<Exit, CliError> {
-    let (filter, after) = args.parse()?;
+    let (filter, start) = args.parse()?;
     let mut feed = Feed {
         client: ctx.client(None)?,
         filter,
-        cursor: after,
+        start,
         threads: HashMap::new(),
     };
     // A timeout too large to add to the clock waits until killed.
     let deadline = Instant::now().checked_add(timeout);
     let events = feed.next_batch(deadline)?;
-    let resume = resume_line(ctx.who.as_deref(), feed.cursor.as_ref(), &feed.filter);
+    let resume = resume_line(ctx.who.as_deref(), feed.start.after(), &feed.filter);
     let mut tail = String::new();
-    if let Some(cursor) = &feed.cursor {
+    if let Some(cursor) = feed.start.after() {
         tail.push_str(&format!("cursor: {cursor}\n"));
     }
     tail.push_str(&format!("resume: {resume}\n"));
@@ -252,7 +291,7 @@ pub(crate) fn wait(ctx: &Ctx, args: FeedArgs, timeout: Duration) -> Result<Exit,
     let output = WaitOutput {
         events: &events,
         messages: &messages,
-        cursor: feed.cursor.as_ref(),
+        cursor: feed.start.after(),
     };
     ctx.emit(&output, &text)?;
     Ok(Exit::Ok)
@@ -267,11 +306,11 @@ struct TailItem<'a> {
 /// `tail`: prints events as they arrive until killed, or until `timeout` passes (exit 0).
 /// With `--json` it prints one JSON object per event, one per line.
 pub(crate) fn tail(ctx: &Ctx, args: FeedArgs, timeout: Option<Duration>) -> Result<Exit, CliError> {
-    let (filter, after) = args.parse()?;
+    let (filter, start) = args.parse()?;
     let mut feed = Feed {
         client: ctx.client(None)?,
         filter,
-        cursor: after,
+        start,
         threads: HashMap::new(),
     };
     let deadline = timeout.and_then(|timeout| Instant::now().checked_add(timeout));
@@ -289,7 +328,7 @@ pub(crate) fn tail(ctx: &Ctx, args: FeedArgs, timeout: Option<Duration>) -> Resu
             break;
         }
     }
-    if let (false, Some(cursor)) = (ctx.json, &feed.cursor) {
+    if let (false, Some(cursor)) = (ctx.json, feed.start.after()) {
         print_out(&format!("cursor: {cursor}\n"))?;
     }
     Ok(Exit::Ok)
@@ -336,6 +375,41 @@ mod tests {
         for bad in ["", "s", "5x", "-1", "1.5m", "5 m", "99999999999999999999h"] {
             assert!(parse_timeout(bad).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn chunk_planner_never_resends_from_now_after_first_chunk() {
+        let c1 = Cursor::from_seq(4);
+        let c2 = Cursor::from_seq(9);
+        // First chunk asked from now and the board had events: continue after its cursor.
+        let second = next_start(Start::Now, Some(c1.clone()));
+        assert_eq!(second, Start::After(c1.clone()));
+        // A chunk that times out with the same cursor keeps it.
+        let third = next_start(second, Some(c1.clone()));
+        assert_eq!(third, Start::After(c1.clone()));
+        // A chunk that returns nothing keeps the position it sent.
+        assert_eq!(next_start(third.clone(), None), third);
+        // A chunk that returns events moves on.
+        assert_eq!(next_start(third, Some(c2.clone())), Start::After(c2));
+        for start in [Start::Now, Start::Beginning, Start::After(c1.clone())] {
+            for returned in [None, Some(c1.clone())] {
+                assert_ne!(next_start(start.clone(), returned), Start::Now);
+            }
+        }
+    }
+
+    #[test]
+    fn chunk_planner_keeps_starting_from_beginning_when_first_cursor_is_null() {
+        // The board was empty when the first chunk resolved "now": start from the beginning.
+        let second = next_start(Start::Now, None);
+        assert_eq!(second, Start::Beginning);
+        assert_eq!(second.after(), None);
+        assert_eq!(next_start(second, None), Start::Beginning);
+        let c1 = Cursor::from_seq(1);
+        assert_eq!(
+            next_start(Start::Beginning, Some(c1.clone())),
+            Start::After(c1)
+        );
     }
 
     #[test]

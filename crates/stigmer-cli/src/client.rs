@@ -5,13 +5,14 @@ use std::time::Duration;
 
 use serde::de::DeserializeOwned;
 use stigmer_core::{
-    ChannelPath, ChannelsResponse, Cursor, ErrorBody, EventFilter, EventsResponse, MessageId,
-    PostRequest, Posted, Principal, Thread,
+    ChannelPath, ChannelsResponse, ErrorBody, EventFilter, EventsResponse, MessageId, PostRequest,
+    Posted, Principal, Thread,
 };
 use ureq::http::Response;
 use ureq::{Agent, Body, RequestBuilder};
 
 use crate::exit::{CliError, Exit};
+use crate::wait::Start;
 
 /// Time limit for requests that do not wait for events.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
@@ -75,19 +76,21 @@ impl Client {
         self.finish(request.call())
     }
 
-    /// Events after `after` matching `filter`; with `timeout_s > 0` the server holds the
+    /// Events from `start` matching `filter`; with `timeout_s > 0` the server holds the
     /// request until a matching event lands or the timeout passes.
     pub(crate) fn events(
         &self,
         filter: &EventFilter,
-        after: Option<&Cursor>,
+        start: &Start,
         timeout_s: u64,
     ) -> Result<EventsResponse, CliError> {
         let mut request = self
             .identify(self.agent.get(self.url("events")))
             .query("timeout_s", timeout_s.to_string());
-        if let Some(after) = after {
-            request = request.query("after", after.as_str());
+        match start {
+            Start::Beginning => {}
+            Start::After(after) => request = request.query("after", after.as_str()),
+            Start::Now => request = request.query("from_now", "true"),
         }
         if let Some(channel) = &filter.channel_prefix {
             request = request.query("channel", channel.as_str());

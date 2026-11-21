@@ -100,6 +100,9 @@ struct FeedFlags {
     /// Start after this cursor, as printed by wait or tail (not the cursor of your own post).
     #[arg(long, value_name = "CURSOR")]
     after: Option<String>,
+    /// Skip existing history: only events posted after this command starts.
+    #[arg(long, conflicts_with = "after")]
+    from_now: bool,
 }
 
 impl From<FeedFlags> for FeedArgs {
@@ -109,6 +112,7 @@ impl From<FeedFlags> for FeedArgs {
             thread: flags.thread,
             label: flags.label,
             after: flags.after,
+            from_now: flags.from_now,
         }
     }
 }

@@ -427,6 +427,86 @@ fn tail_prints_events_and_exits_0_at_timeout() {
     assert!(line_value(&run.stdout, "cursor: ").starts_with("ev_"));
 }
 
+#[test]
+fn wait_from_now_ignores_history_and_returns_new_post() {
+    let url = server();
+    post_json(&url, "alice", "eng", "old news");
+    let waiter = {
+        let url = url.clone();
+        std::thread::spawn(move || {
+            stigmer(
+                &url,
+                &[
+                    "--as",
+                    "bob",
+                    "wait",
+                    "--from-now",
+                    "--channel",
+                    "eng",
+                    "--timeout",
+                    "20s",
+                ],
+            )
+        })
+    };
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    assert!(
+        !waiter.is_finished(),
+        "history must not end a --from-now wait"
+    );
+    let fresh = id_of(&post_json(&url, "alice", "eng", "fresh news"));
+    let woke = waiter.join().unwrap();
+    assert_eq!(woke.code, 0, "stderr: {}", woke.stderr);
+    assert!(woke.stdout.contains("\nfresh news\n"), "{}", woke.stdout);
+    assert!(!woke.stdout.contains("old news"), "{}", woke.stdout);
+    assert_eq!(woke.stdout.matches("<<<message ").count(), 1);
+    assert!(woke.stdout.contains(&format!("<<<end {fresh}>>>")));
+    let cursor = line_value(&woke.stdout, "cursor: ");
+    assert_eq!(
+        line_value(&woke.stdout, "resume: "),
+        format!("stigmer --as bob wait --after {cursor} --channel eng")
+    );
+}
+
+#[test]
+fn tail_from_now_skips_history() {
+    let url = server();
+    post_json(&url, "alice", "eng", "old news");
+    let tail = {
+        let url = url.clone();
+        std::thread::spawn(move || stigmer(&url, &["tail", "--from-now", "--timeout", "3s"]))
+    };
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    let fresh = id_of(&post_json(&url, "alice", "eng", "fresh news"));
+    let run = tail.join().unwrap();
+    assert_eq!(run.code, 0, "stderr: {}", run.stderr);
+    assert!(
+        run.stdout.contains(&format!("<<<end {fresh}>>>")),
+        "{}",
+        run.stdout
+    );
+    assert!(!run.stdout.contains("old news"), "{}", run.stdout);
+    assert_eq!(run.stdout.matches("<<<message ").count(), 1);
+}
+
+#[test]
+fn from_now_and_after_conflict_is_usage_error() {
+    for command in ["wait", "tail"] {
+        let run = stigmer(
+            &dead_url(),
+            &[command, "--from-now", "--after", "ev_djE6MQ"],
+        );
+        assert_eq!(run.code, 2, "{command}: {}", run.stderr);
+        assert_failure_lines(&run);
+        assert!(
+            run.stderr.contains("cannot be used with"),
+            "{command}: {}",
+            run.stderr
+        );
+        assert!(run.stdout.is_empty());
+    }
+}
+
 #[cfg(unix)]
 #[test]
 fn non_utf8_argument_is_a_usage_error() {
