@@ -4,15 +4,14 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
-use stigmer_core::{parse_labels, Cursor, Event, EventFilter, Message, MessageId, Thread};
+use stigmer_core::{
+    parse_labels, Cursor, Event, EventFilter, Message, MessageId, Thread, MAX_WAIT_SECS,
+};
 
 use crate::client::Client;
 use crate::commands::{channel, message_id, parse_arg, print_out, Ctx};
 use crate::exit::{CliError, Exit};
 use crate::render::render_message;
-
-/// The longest wait the server grants one request.
-const MAX_CHUNK_S: u64 = 300;
 
 /// Filters and start position shared by `wait` and `tail`, as typed.
 pub struct FeedArgs {
@@ -57,7 +56,8 @@ impl FeedArgs {
     }
 }
 
-/// Seconds to ask the server to wait with `remaining` left: rounded up, at most 300.
+/// Seconds to ask the server to wait with `remaining` left: rounded up, at most
+/// `MAX_WAIT_SECS`.
 pub fn chunk_secs(remaining: Duration) -> u64 {
     let secs = remaining.as_secs();
     let secs = if remaining.subsec_nanos() > 0 {
@@ -65,7 +65,7 @@ pub fn chunk_secs(remaining: Duration) -> u64 {
     } else {
         secs
     };
-    secs.min(MAX_CHUNK_S)
+    secs.min(MAX_WAIT_SECS)
 }
 
 /// Parses `30s`, `5m`, `1h` or plain seconds.
@@ -132,13 +132,13 @@ struct Feed {
 }
 
 impl Feed {
-    /// Long-polls in chunks of at most 300 s until events arrive or `deadline` passes
+    /// Long-polls in chunks of at most `MAX_WAIT_SECS` until events arrive or `deadline` passes
     /// (never, when None). An empty result means the deadline passed.
     fn next_batch(&mut self, deadline: Option<Instant>) -> Result<Vec<Event>, CliError> {
         loop {
             let secs = match deadline {
                 Some(deadline) => chunk_secs(deadline.saturating_duration_since(Instant::now())),
-                None => MAX_CHUNK_S,
+                None => MAX_WAIT_SECS,
             };
             let response = self
                 .client
@@ -317,6 +317,13 @@ mod tests {
             remaining = remaining.saturating_sub(Duration::from_secs(secs));
         }
         assert_eq!(chunks, vec![300, 300, 120]);
+    }
+
+    #[test]
+    fn chunks_never_exceed_the_server_wait_limit() {
+        let over = Duration::from_secs(MAX_WAIT_SECS + 1);
+        assert_eq!(chunk_secs(over), MAX_WAIT_SECS);
+        assert_eq!(chunk_secs(Duration::MAX), MAX_WAIT_SECS);
     }
 
     #[test]

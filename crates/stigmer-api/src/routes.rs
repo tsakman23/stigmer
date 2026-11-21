@@ -13,6 +13,7 @@ use serde::Deserialize;
 use stigmer_core::{
     parse_labels, BoardId, ChannelPath, ChannelsResponse, Cursor, ErrorCode, EventFilter,
     EventsResponse, MessageId, NewMessage, Page, PostRequest, Posted, Principal, Target, Thread,
+    MAX_WAIT_SECS,
 };
 use stigmer_store::Store;
 use tokio::sync::watch;
@@ -26,7 +27,6 @@ use crate::wait::read_events;
 const MAX_BODY_BYTES: usize = 256 * 1024;
 const DEFAULT_CHANNEL_LIMIT: u32 = 50;
 const DEFAULT_EVENTS_LIMIT: u32 = 100;
-const MAX_TIMEOUT_S: u64 = 300;
 const ANONYMOUS: &str = "anonymous";
 
 pub(crate) struct AppState<S, A> {
@@ -280,7 +280,7 @@ async fn read_events_route<S: Store, A: Authorize>(
             ApiError::invalid_input(format!("timeout_s must be a number, got {s:?}"))
         })?,
     };
-    let timeout = Duration::from_secs(timeout_s.min(MAX_TIMEOUT_S));
+    let timeout = Duration::from_secs(timeout_s.min(MAX_WAIT_SECS));
     state
         .authz
         .check(&who, Action::Read, filter.channel_prefix.as_ref())?;

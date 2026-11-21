@@ -14,4 +14,6 @@ pub use ids::{BoardId, ChannelPath, MessageId, Principal};
 pub use labels::{parse_labels, Label, MAX_LABELS};
 pub use message::{NewMessage, Target, MAX_IDEMPOTENCY_KEY_CHARS, MAX_MESSAGE_CHARS};
 pub use model::{EventFilter, Message, Page, Posted, Thread, ThreadSummary};
-pub use wire::{ChannelsResponse, ErrorBody, ErrorCode, ErrorDetail, EventsResponse, PostRequest};
+pub use wire::{
+    ChannelsResponse, ErrorBody, ErrorCode, ErrorDetail, EventsResponse, PostRequest, MAX_WAIT_SECS,
+};

@@ -4,6 +4,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::{ChannelPath, Cursor, Event, Label, MessageId, ThreadSummary};
 
+/// The longest a single events request may wait, in seconds; the server clamps longer
+/// timeouts to this and clients plan their long-poll chunks around it.
+pub const MAX_WAIT_SECS: u64 = 300;
+
 /// Body of a post. Exactly one of `channel` (new thread) or `thread` (reply) must be present;
 /// the server enforces that.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
