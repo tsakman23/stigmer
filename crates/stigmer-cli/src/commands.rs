@@ -3,11 +3,16 @@
 use std::io::Write;
 
 use stigmer_core::{
-    BoardId, ChannelPath, CoreError, NewMessage, PostRequest, Posted, Principal, Target,
+    BoardId, ChannelPath, CoreError, MessageId, NewMessage, PostRequest, Posted, Principal, Target,
+    ThreadSummary,
 };
 
 use crate::client::Client;
 use crate::exit::{CliError, Exit};
+use crate::render::render_message;
+
+/// Characters of a thread's root text shown by `read`.
+const PREVIEW_CHARS: usize = 80;
 
 const AS_HINT: &str = "export STIGMER_AS=<name> or pass --as <name>";
 
@@ -145,4 +150,86 @@ pub fn post(ctx: &Ctx, channel_arg: &str, args: WriteArgs) -> Result<Exit, CliEr
     let m = &posted.message;
     let first = format!("posted {} in {} as {}", m.id, m.channel, m.author);
     report_posted(ctx, &posted, first)
+}
+
+fn message_id(raw: &str) -> Result<MessageId, CliError> {
+    MessageId::new(raw).map_err(|e| {
+        CliError::invalid(
+            &e,
+            "ids look like msg_ and 24 hex digits; list threads with: stigmer read <channel>",
+        )
+    })
+}
+
+/// `reply <thread> <text>`: answers in a thread.
+pub fn reply(ctx: &Ctx, thread_arg: &str, args: WriteArgs) -> Result<Exit, CliError> {
+    let author = ctx.author("reply")?;
+    let target = Target::Reply {
+        thread: message_id(thread_arg)?,
+    };
+    let posted = send(ctx, validate(target, author, args)?)?;
+    let m = &posted.message;
+    let first = format!(
+        "replied {} in thread {} ({}) as {}",
+        m.id, m.thread_id, m.channel, m.author
+    );
+    report_posted(ctx, &posted, first)
+}
+
+/// `read <channel-prefix>`: one line per thread.
+pub fn read(ctx: &Ctx, prefix_arg: &str) -> Result<Exit, CliError> {
+    let prefix = channel(prefix_arg)?;
+    let listing = ctx.client(None)?.channels(&prefix)?;
+    let text = if listing.threads.is_empty() {
+        format!("no threads in {prefix}\n")
+    } else {
+        listing.threads.iter().map(summary_line).collect()
+    };
+    ctx.emit(&listing, &text)?;
+    Ok(Exit::Ok)
+}
+
+/// `<id>  <channel>  <n> replies  "<preview>"`; the preview is quoted and escaped so
+/// it stays on one line.
+fn summary_line(summary: &ThreadSummary) -> String {
+    let replies = match summary.reply_count {
+        1 => "1 reply".to_owned(),
+        n => format!("{n} replies"),
+    };
+    let mut preview: String = summary
+        .root_text_preview
+        .chars()
+        .take(PREVIEW_CHARS)
+        .collect();
+    if summary
+        .root_text_preview
+        .chars()
+        .nth(PREVIEW_CHARS)
+        .is_some()
+    {
+        preview.push('…');
+    }
+    format!(
+        "{}  {}  {replies}  {preview:?}\n",
+        summary.thread_id, summary.channel
+    )
+}
+
+/// `thread <id>`: every message framed, oldest first.
+pub fn thread(ctx: &Ctx, id_arg: &str) -> Result<Exit, CliError> {
+    let id = message_id(id_arg)?;
+    let thread = ctx.client(None)?.thread(&id)?;
+    let mut text = format!(
+        "thread {} in {} ({} replies)\n",
+        thread.root.id,
+        thread.root.channel,
+        thread.replies.len()
+    );
+    for message in std::iter::once(&thread.root).chain(&thread.replies) {
+        text.push('\n');
+        text.push_str(&render_message(message));
+        text.push('\n');
+    }
+    ctx.emit(&thread, &text)?;
+    Ok(Exit::Ok)
 }

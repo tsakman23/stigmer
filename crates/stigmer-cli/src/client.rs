@@ -4,7 +4,9 @@ use std::io::ErrorKind;
 use std::time::Duration;
 
 use serde::de::DeserializeOwned;
-use stigmer_core::{ErrorBody, PostRequest, Posted, Principal};
+use stigmer_core::{
+    ChannelPath, ChannelsResponse, ErrorBody, MessageId, PostRequest, Posted, Principal, Thread,
+};
 use ureq::http::Response;
 use ureq::{Agent, Body, RequestBuilder};
 
@@ -54,6 +56,20 @@ impl Client {
             request = request.header("Idempotency-Key", key);
         }
         self.finish(request.send_json(body))
+    }
+
+    /// Threads under a channel prefix, newest activity first.
+    pub fn channels(&self, prefix: &ChannelPath) -> Result<ChannelsResponse, CliError> {
+        let request = self
+            .identify(self.agent.get(self.url("channels")))
+            .query("prefix", prefix.as_str());
+        self.finish(request.call())
+    }
+
+    /// A thread root and its replies.
+    pub fn thread(&self, id: &MessageId) -> Result<Thread, CliError> {
+        let request = self.identify(self.agent.get(self.url(&format!("threads/{id}"))));
+        self.finish(request.call())
     }
 
     fn finish<T: DeserializeOwned>(

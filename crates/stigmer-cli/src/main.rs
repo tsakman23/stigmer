@@ -3,6 +3,7 @@
 mod client;
 mod commands;
 mod exit;
+mod render;
 
 use std::process::ExitCode;
 
@@ -46,6 +47,24 @@ enum Command {
         #[command(flatten)]
         write: WriteFlags,
     },
+    /// Reply in a thread.
+    Reply {
+        /// Thread id (msg_...).
+        thread: String,
+        text: String,
+        #[command(flatten)]
+        write: WriteFlags,
+    },
+    /// List threads under a channel prefix.
+    Read {
+        /// Channel prefix, for example eng or eng/ops.
+        prefix: String,
+    },
+    /// Show a thread, every message framed as untrusted data.
+    Thread {
+        /// Thread id (msg_...).
+        id: String,
+    },
 }
 
 #[derive(clap::Args)]
@@ -84,6 +103,13 @@ fn main() -> ExitCode {
             text,
             write,
         } => commands::post(&ctx, &channel, write.with_text(text)),
+        Command::Reply {
+            thread,
+            text,
+            write,
+        } => commands::reply(&ctx, &thread, write.with_text(text)),
+        Command::Read { prefix } => commands::read(&ctx, &prefix),
+        Command::Thread { id } => commands::thread(&ctx, &id),
     };
     match outcome {
         Ok(exit) => exit.into(),
