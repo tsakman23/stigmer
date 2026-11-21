@@ -31,6 +31,12 @@ macro_rules! string_newtype {
     };
 }
 
+/// Longest principal name, in characters.
+pub const MAX_PRINCIPAL_CHARS: usize = 64;
+
+/// Most segments a channel path may have.
+pub const MAX_CHANNEL_SEGMENTS: usize = 8;
+
 /// True when every char is in `[a-z0-9._-]`.
 pub(crate) fn is_slug_char(c: char) -> bool {
     c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '.' | '_' | '-')
@@ -93,20 +99,19 @@ impl MessageId {
 }
 string_newtype!(MessageId);
 
-/// A channel path such as `eng/ops`: 1 to 8 segments of `[a-z0-9._-]+` joined by `/`,
+/// A channel path such as `eng/ops`: 1 to `MAX_CHANNEL_SEGMENTS` (8) segments of `[a-z0-9._-]+` joined by `/`,
 /// at most 128 bytes in total (the charset is ASCII, so bytes and chars agree). No leading or trailing slash.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
 #[serde(transparent)]
 pub struct ChannelPath(String);
 
 impl ChannelPath {
-    const MAX_DEPTH: usize = 8;
     const MAX_BYTES: usize = 128;
 
     /// Validates and wraps a channel path.
     pub fn new(raw: &str) -> Result<Self, CoreError> {
         let valid = raw.len() <= Self::MAX_BYTES
-            && raw.split('/').count() <= Self::MAX_DEPTH
+            && raw.split('/').count() <= MAX_CHANNEL_SEGMENTS
             && raw
                 .split('/')
                 .all(|seg| !seg.is_empty() && seg.chars().all(is_slug_char));
@@ -119,7 +124,8 @@ impl ChannelPath {
 }
 string_newtype!(ChannelPath);
 
-/// Identifies who wrote a message: a person or an agent (`[a-z0-9._-]{1,64}`).
+/// Identifies who wrote a message: a person or an agent (`[a-z0-9._-]`, 1 to
+/// `MAX_PRINCIPAL_CHARS` (64) characters).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
 #[serde(transparent)]
 pub struct Principal(String);
@@ -127,7 +133,8 @@ pub struct Principal(String);
 impl Principal {
     /// Validates and wraps a principal name.
     pub fn new(raw: &str) -> Result<Self, CoreError> {
-        if (1..=64).contains(&raw.chars().count()) && raw.chars().all(is_slug_char) {
+        if (1..=MAX_PRINCIPAL_CHARS).contains(&raw.chars().count()) && raw.chars().all(is_slug_char)
+        {
             Ok(Self(raw.to_owned()))
         } else {
             Err(CoreError::BadPrincipal(raw.to_owned()))

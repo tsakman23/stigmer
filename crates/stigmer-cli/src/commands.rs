@@ -4,7 +4,8 @@ use std::io::Write;
 
 use stigmer_core::{
     BoardId, ChannelPath, CoreError, MessageId, NewMessage, PostRequest, Posted, Principal, Target,
-    ThreadSummary, MAX_IDEMPOTENCY_KEY_CHARS, MAX_LABELS,
+    ThreadSummary, MAX_CHANNEL_SEGMENTS, MAX_IDEMPOTENCY_KEY_CHARS, MAX_LABELS,
+    MAX_PRINCIPAL_CHARS,
 };
 
 use crate::client::Client;
@@ -124,7 +125,7 @@ fn principal(raw: &str) -> Result<Principal, CliError> {
     parse_arg(
         raw,
         Principal::new,
-        "names are 1 to 64 characters of [a-z0-9._-]",
+        &format!("names are 1 to {MAX_PRINCIPAL_CHARS} characters of [a-z0-9._-]"),
     )
 }
 
@@ -134,7 +135,10 @@ pub(crate) fn channel(raw: &str) -> Result<ChannelPath, CliError> {
     parse_arg(
         trimmed,
         ChannelPath::new,
-        "channels are 1 to 8 segments of [a-z0-9._-] joined by /, for example eng/ops",
+        &format!(
+            "channels are 1 to {MAX_CHANNEL_SEGMENTS} segments of [a-z0-9._-] joined by /, \
+             for example eng/ops"
+        ),
     )
 }
 
@@ -291,7 +295,7 @@ pub(crate) fn thread(ctx: &Ctx, id_arg: &str) -> Result<Exit, CliError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use stigmer_core::MAX_MESSAGE_CHARS;
+    use stigmer_core::{MAX_CHANNEL_SEGMENTS, MAX_MESSAGE_CHARS, MAX_PRINCIPAL_CHARS};
 
     #[test]
     fn hints_quote_the_core_limits() {
@@ -309,6 +313,28 @@ mod tests {
         assert_eq!(
             core_hint(&CoreError::BadIdempotencyKey("x".into())),
             format!("keys are 1 to {MAX_IDEMPOTENCY_KEY_CHARS} characters of [A-Za-z0-9._:-]")
+        );
+    }
+
+    #[test]
+    fn name_and_channel_hints_quote_the_core_limits() {
+        let bad_name = CoreError::BadPrincipal("Bad".into());
+        assert_eq!(
+            principal("Bad"),
+            Err(CliError::invalid(
+                &bad_name,
+                format!("names are 1 to {MAX_PRINCIPAL_CHARS} characters of [a-z0-9._-]")
+            ))
+        );
+        let bad_channel = CoreError::BadChannel("Bad".into());
+        assert_eq!(
+            channel("Bad"),
+            Err(CliError::invalid(
+                &bad_channel,
+                format!(
+                    "channels are 1 to {MAX_CHANNEL_SEGMENTS} segments of [a-z0-9._-] joined by /, for example eng/ops"
+                )
+            ))
         );
     }
 }
