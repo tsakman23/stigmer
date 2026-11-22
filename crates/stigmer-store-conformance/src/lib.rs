@@ -1,6 +1,7 @@
 //! stigmer-store-conformance: the behaviour every `Store` backend must show.
 //!
-//! A backend's test calls [`run_all`] with a factory for fresh, empty stores. Each scenario
+//! A backend's test calls [`run_all`] with a factory for fresh, empty stores, and
+//! [`run_identity_all`] the same way when it also implements `IdentityStore`. Each scenario
 //! panics with its name when the backend gets something wrong. Run it on a multi-thread
 //! tokio runtime: the concurrency scenario spawns tasks.
 //!
@@ -11,6 +12,11 @@ mod archive;
 mod boards;
 mod events;
 mod idempotency;
+mod identity;
+mod identity_adoption;
+mod identity_credentials;
+mod identity_invites;
+mod identity_members;
 mod posts;
 mod reads;
 mod support;
@@ -19,6 +25,8 @@ mod wait;
 use std::future::Future;
 
 use stigmer_store::Store;
+
+pub use identity::run_identity_all;
 
 /// Runs every scenario, each against a fresh store from `factory`.
 pub async fn run_all<S, F, Fut>(factory: F)
