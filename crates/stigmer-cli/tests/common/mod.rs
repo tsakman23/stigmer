@@ -3,26 +3,38 @@
 //! capture server that records what the CLI sends.
 #![allow(dead_code)] // each test crate uses a different subset
 
+pub mod fixtures;
 pub mod tls;
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Output, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::sync::{mpsc, Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 pub const STARTUP_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Environment variables the CLI reads; every run starts with them cleared.
-const CLI_ENV: [&str; 6] = [
+pub const CLI_ENV: [&str; 5] = [
     "STIGMER_AS",
     "STIGMER_URL",
     "STIGMER_BOARD",
     "STIGMER_TOKEN",
     "STIGMER_CA_CERT",
-    "XDG_CONFIG_HOME",
 ];
+
+/// Clears every variable the CLI reads and points HOME and XDG_CONFIG_HOME at a directory under
+/// the test target dir, so no developer login or setting can leak into a run. For tests that
+/// never save a login (local mode); `CliUser` gives each user its own directory instead.
+pub fn isolate(cmd: &mut Command) -> &mut Command {
+    let home = Path::new(env!("CARGO_TARGET_TMPDIR")).join("isolated-home");
+    for name in CLI_ENV {
+        cmd.env_remove(name);
+    }
+    cmd.env("HOME", &home)
+        .env("XDG_CONFIG_HOME", home.join("config"))
+}
 
 fn bin_dir() -> PathBuf {
     let target = std::env::var_os("CARGO_TARGET_DIR").map_or_else(
@@ -90,14 +102,6 @@ pub struct Run {
 }
 
 impl Run {
-    fn from_output(out: Output) -> Self {
-        Self {
-            code: out.status.code().unwrap_or(-1),
-            stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
-            stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
-        }
-    }
-
     /// Everything printed, for "never printed" checks.
     pub fn all(&self) -> String {
         format!("{}{}", self.stdout, self.stderr)
@@ -149,10 +153,12 @@ impl CliUser {
         self.run_env(args, &[])
     }
 
+    /// Runs to completion within `RUN_TIMEOUT`; a run that takes longer fails the test and
+    /// its process is killed.
     pub fn run_env(&self, args: &[&str], env: &[(&str, &str)]) -> Run {
         let mut cmd = self.cmd(args);
         cmd.envs(env.iter().copied());
-        Run::from_output(cmd.output().expect("run stigmer"))
+        finish(Guard::spawn(&mut cmd), RUN_TIMEOUT)
     }
 
     /// Runs with `input` on stdin.
@@ -171,7 +177,14 @@ impl CliUser {
 pub const RUN_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// Waits (bounded) for a guarded child with piped output to exit and returns what it printed.
+/// Its pipes are drained while it runs, so a large output cannot stall it. A child still running
+/// after `within` fails the test, and the guard kills it.
 pub fn finish(mut child: Guard, within: Duration) -> Run {
+    let (stdout, stderr) = (Collected::default(), Collected::default());
+    let readers = [
+        child.0.stdout.take().map(|pipe| stdout.drain(pipe)),
+        child.0.stderr.take().map(|pipe| stderr.drain(pipe)),
+    ];
     let deadline = Instant::now() + within;
     let status = loop {
         if let Some(status) = child.0.try_wait().expect("try_wait") {
@@ -183,17 +196,13 @@ pub fn finish(mut child: Guard, within: Duration) -> Run {
         );
         std::thread::sleep(Duration::from_millis(20));
     };
-    let read = |pipe: Option<&mut dyn Read>| {
-        let mut text = String::new();
-        if let Some(pipe) = pipe {
-            let _ = pipe.read_to_string(&mut text);
-        }
-        text
-    };
+    for reader in readers.into_iter().flatten() {
+        let _ = reader.join();
+    }
     Run {
         code: status.code().unwrap_or(-1),
-        stdout: read(child.0.stdout.as_mut().map(|p| p as &mut dyn Read)),
-        stderr: read(child.0.stderr.as_mut().map(|p| p as &mut dyn Read)),
+        stdout: stdout.text(),
+        stderr: stderr.text(),
     }
 }
 
@@ -294,8 +303,9 @@ impl Collected {
         }
     }
 
-    /// Appends everything `pipe` yields, line by line, from a background thread.
-    pub fn drain(&self, pipe: impl Read + Send + 'static) {
+    /// Appends everything `pipe` yields, line by line, from a background thread, which ends
+    /// when the pipe closes.
+    pub fn drain(&self, pipe: impl Read + Send + 'static) -> std::thread::JoinHandle<()> {
         let sink = self.clone();
         std::thread::spawn(move || {
             let mut lines = BufReader::new(pipe);
@@ -304,7 +314,7 @@ impl Collected {
                 sink.0.lock().expect("collected lock").push_str(&line);
                 line.clear();
             }
-        });
+        })
     }
 }
 

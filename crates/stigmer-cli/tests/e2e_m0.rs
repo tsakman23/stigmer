@@ -105,10 +105,9 @@ fn stigmer(server: &Server, who: &str, args: &[&str]) -> Command {
     let mut cmd = Command::new(bin("stigmer"));
     cmd.args(["--url", &server.url, "--as", who])
         .args(args)
-        .env_remove("STIGMER_AS")
-        .env_remove("STIGMER_URL")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    common::isolate(&mut cmd);
     cmd
 }
 

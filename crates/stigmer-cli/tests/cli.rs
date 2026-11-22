@@ -1,6 +1,8 @@
 //! End-to-end tests: the real board server runs in-process on an ephemeral port and the
 //! `stigmer` binary is run against it with `--url`.
 
+mod common;
+
 use std::net::{SocketAddr, TcpListener};
 use std::process::Command;
 use std::sync::mpsc;
@@ -46,11 +48,9 @@ struct Run {
     stderr: String,
 }
 
-/// Runs `stigmer --url <url> <args>` with STIGMER_* cleared from the environment.
+/// Runs `stigmer --url <url> <args>` with STIGMER_* cleared and an isolated HOME.
 fn stigmer(url: &str, args: &[&str]) -> Run {
-    let out = Command::new(env!("CARGO_BIN_EXE_stigmer"))
-        .env_remove("STIGMER_AS")
-        .env_remove("STIGMER_URL")
+    let out = common::isolate(&mut Command::new(env!("CARGO_BIN_EXE_stigmer")))
         .arg("--url")
         .arg(url)
         .args(args)
@@ -539,9 +539,7 @@ fn from_now_and_after_conflict_is_usage_error() {
 fn non_utf8_argument_is_a_usage_error() {
     use std::ffi::OsStr;
     use std::os::unix::ffi::OsStrExt;
-    let out = Command::new(env!("CARGO_BIN_EXE_stigmer"))
-        .env_remove("STIGMER_AS")
-        .env_remove("STIGMER_URL")
+    let out = common::isolate(&mut Command::new(env!("CARGO_BIN_EXE_stigmer")))
         .args(["--url", &dead_url(), "read"])
         .arg(OsStr::from_bytes(b"ab\xff"))
         .output()
