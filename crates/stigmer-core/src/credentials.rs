@@ -269,8 +269,10 @@ mod tests {
     fn new_secret_debug_redacts_the_secret() {
         let s = generate_secret(SecretKind::Token).unwrap();
         let shown = format!("{s:?}");
-        let secret = s.full.rsplit('_').next().unwrap();
-        assert!(!shown.contains(secret));
+        // Not rsplit('_'): a base64url secret can contain '_', which would leave a needle of a
+        // character or two that the debug text can contain by chance.
+        let (_, secret) = parse_secret(SecretKind::Token, &s.full).unwrap();
+        assert!(!shown.contains(&secret));
         assert!(!shown.contains(&s.full));
         assert!(shown.contains(s.id.as_str()));
     }
