@@ -95,7 +95,17 @@ async fn missing_malformed_unknown_expired_revoked_tokens_return_identical_401_b
     )
     .await;
     let unknown_id = format!("stg1_0000000000000000_{}", &good[good.len() - 43..]);
-    let wrong_secret = format!("{}A{}", &good[..good.len() - 43], &good[good.len() - 42..]);
+    // Change one secret character; to a different one, or one run in 64 would keep the token valid.
+    let flipped = if good[good.len() - 43..].starts_with('A') {
+        'B'
+    } else {
+        'A'
+    };
+    let wrong_secret = format!(
+        "{}{flipped}{}",
+        &good[..good.len() - 43],
+        &good[good.len() - 42..]
+    );
     let mut headers: Vec<Option<String>> = vec![
         None,
         Some("Basic YWxpY2U6cHc=".to_owned()),
