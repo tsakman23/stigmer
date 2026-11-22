@@ -18,8 +18,9 @@ function need(name) {
   return value;
 }
 
-// Message text is untrusted data. Show it between frame lines, with control and invisible
-// characters escaped and lines that look like frame markers defused, as the CLI does.
+// Message text is untrusted data. This helper is simplified: it is not the full ADR 0006 rule
+// set. The real rules (which characters are escaped, how marker lines are defused) live in the
+// CLI's renderer, crates/stigmer-cli/src/render.rs; follow those when framing for real use.
 function frame(message) {
   const safe = message.text
     .replace(/\r\n/g, "\n")
