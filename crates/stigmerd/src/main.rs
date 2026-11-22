@@ -8,6 +8,7 @@ use std::process::ExitCode;
 use std::sync::Arc;
 use std::time::Duration;
 
+use admin::AdminCommand;
 use clap::{Parser, Subcommand};
 use lock::DataDir;
 use stigmer_api::{require_loopback, router, AllowAll, ApiConfig, RoleAuthorize};
@@ -15,6 +16,7 @@ use stigmer_store::{IdentityStore, Mode};
 use stigmer_store_sqlite::SqliteStore;
 use tokio::sync::{oneshot, watch};
 
+mod admin;
 mod lock;
 
 /// How long in-flight requests get to finish after a shutdown signal.
@@ -38,6 +40,19 @@ enum Command {
         #[arg(long, default_value = "127.0.0.1:7878")]
         bind: SocketAddr,
     },
+    /// Administer a data directory directly (the server must not be running).
+    Admin {
+        #[command(subcommand)]
+        command: AdminCommand,
+    },
+}
+
+/// Milliseconds since the Unix epoch; the only place this binary reads the clock.
+fn now_ms() -> i64 {
+    let since = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    i64::try_from(since.as_millis()).unwrap_or(i64::MAX)
 }
 
 /// Why the server stopped without a clean shutdown; carries the process exit code.
@@ -50,8 +65,11 @@ pub enum Failure {
 
 #[tokio::main]
 async fn main() -> ExitCode {
-    let Command::Serve { data_dir, bind } = Cli::parse().command;
-    match serve(data_dir, bind).await {
+    let result = match Cli::parse().command {
+        Command::Serve { data_dir, bind } => serve(data_dir, bind).await,
+        Command::Admin { command } => admin::run(command).await,
+    };
+    match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(Failure::Config(msg)) => {
             eprintln!("stigmerd: {msg}");

@@ -245,6 +245,12 @@ async fn security_log_newest_first_and_limited<S: IdentityStore>(store: S) {
             Some("root"),
         ),
         event(NOW + 3, SecurityEventKind::AuthFailed, None, None),
+        event(
+            NOW + 4,
+            SecurityEventKind::InstanceTokenIssued,
+            None,
+            Some("instance-admin"),
+        ),
         // Logged later but stamped earlier: the log keeps insertion order.
         event(
             NOW - 5,
