@@ -269,7 +269,21 @@ impl Collected {
         self.0.lock().expect("collected lock").clone()
     }
 
-    fn drain(&self, pipe: impl Read + Send + 'static) {
+    /// Polls until the text contains `needle`, failing the test after `within`.
+    pub fn wait_for(&self, needle: &str, within: Duration) -> String {
+        let deadline = Instant::now() + within;
+        loop {
+            let text = self.text();
+            if text.contains(needle) {
+                return text;
+            }
+            assert!(Instant::now() < deadline, "never saw {needle:?} in: {text}");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    /// Appends everything `pipe` yields, line by line, from a background thread.
+    pub fn drain(&self, pipe: impl Read + Send + 'static) {
         let sink = self.clone();
         std::thread::spawn(move || {
             let mut lines = BufReader::new(pipe);

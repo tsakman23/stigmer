@@ -1,7 +1,6 @@
 //! The commands: validate arguments with stigmer-core, call the API, print the result.
 
 use std::io::Write;
-use std::path::PathBuf;
 
 use stigmer_core::{
     BoardId, ChannelPath, CoreError, MessageId, NewMessage, PostRequest, Posted, Principal, Target,
@@ -9,122 +8,13 @@ use stigmer_core::{
     MAX_PRINCIPAL_CHARS,
 };
 
-use crate::client::{Auth, Client, Token};
+use crate::client::Client;
+use crate::ctx::Ctx;
 use crate::exit::{too_long_hint, CliError, Exit};
-use crate::logins::{Logins, Scope};
-use crate::render::render_message;
-use crate::tls::check_credential_transport;
-use ureq::tls::TlsConfig;
+use crate::render::{render_message, render_preview};
 
 /// Characters of a thread's root text shown by `read`.
 const PREVIEW_CHARS: usize = 80;
-
-/// The placeholder author a write is validated with when a token names the real one.
-const TOKEN_AUTHOR: &str = "token-holder";
-
-const AS_HINT: &str = "export STIGMER_AS=<name> or pass --as <name>";
-
-/// Global options every command sees.
-pub(crate) struct Ctx {
-    pub(crate) url: String,
-    pub(crate) who: Option<String>,
-    pub(crate) json: bool,
-    pub(crate) board: BoardId,
-    /// Allow a credential over plain HTTP to a host that is not loopback.
-    pub(crate) insecure: bool,
-    /// `STIGMER_TOKEN`, which overrides the login file.
-    pub(crate) env_token: Option<String>,
-    /// The login file, when HOME or XDG_CONFIG_HOME says where it is.
-    pub(crate) logins_path: Option<PathBuf>,
-    /// The roots https is verified against.
-    pub(crate) tls: TlsConfig,
-}
-
-impl Ctx {
-    /// The token to send to a route that accepts the credentials of `scopes` (first match
-    /// wins): `STIGMER_TOKEN`, else the login saved for this URL and scope, else none.
-    /// A token is checked for shape and for a safe transport before it is used.
-    pub(crate) fn token(&self, scopes: &[Scope]) -> Result<Option<Token>, CliError> {
-        let token = if let Some(raw) = &self.env_token {
-            Token::new(raw, "STIGMER_TOKEN")?
-        } else {
-            let Some(path) = &self.logins_path else {
-                return Ok(None);
-            };
-            let logins = Logins::load(path)?;
-            match scopes
-                .iter()
-                .find_map(|scope| logins.token(&self.url, scope))
-            {
-                Some(raw) => Token::new(raw, "the saved login")?,
-                None => return Ok(None),
-            }
-        };
-        check_credential_transport(&self.url, self.insecure)?;
-        Ok(Some(token))
-    }
-
-    /// The scope of this board's own credentials.
-    pub(crate) fn board_scope(&self) -> Scope {
-        Scope::Board(self.board.clone())
-    }
-
-    /// A client for routes that accept the credentials of `scopes`: the resolved token, else
-    /// local mode with the optional `--as` name.
-    pub(crate) fn client_for(&self, scopes: &[Scope]) -> Result<Client, CliError> {
-        let auth = match self.token(scopes)? {
-            Some(token) => Auth::Token(token),
-            None => Auth::Local(self.who.as_deref().map(principal).transpose()?),
-        };
-        Ok(self.client_with(auth))
-    }
-
-    pub(crate) fn client_with(&self, auth: Auth) -> Client {
-        Client::new(&self.url, self.board.clone(), auth, self.tls.clone())
-    }
-
-    /// A client for this board's content routes.
-    pub(crate) fn client(&self) -> Result<Client, CliError> {
-        self.client_for(&[self.board_scope()])
-    }
-
-    /// A client for a write and the author to validate it with. With a token the server takes
-    /// the author from the credential; without one `--as` is required, as in local mode.
-    fn writer(&self, verb: &str) -> Result<(Client, Principal), CliError> {
-        if let Some(token) = self.token(&[self.board_scope()])? {
-            // Only used to validate the message locally; never sent with a token.
-            let author = principal(self.who.as_deref().unwrap_or(TOKEN_AUTHOR))?;
-            return Ok((self.client_with(Auth::Token(token)), author));
-        }
-        let raw = self
-            .who
-            .as_deref()
-            .ok_or_else(|| CliError::usage(format!("--as is required to {verb}"), AS_HINT))?;
-        let author = principal(raw)?;
-        Ok((self.client_with(Auth::Local(Some(author.clone()))), author))
-    }
-
-    /// Prints `value` as one JSON object with every message marked untrusted, or
-    /// `text` otherwise.
-    pub(crate) fn emit<T: serde::Serialize>(&self, value: &T, text: &str) -> Result<(), CliError> {
-        if self.json {
-            let encode_failed = |e: serde_json::Error| {
-                CliError::new(
-                    Exit::Failure,
-                    "internal",
-                    format!("cannot encode output: {e}"),
-                    "report this as a bug",
-                )
-            };
-            let mut value = serde_json::to_value(value).map_err(encode_failed)?;
-            mark_untrusted(&mut value);
-            let json = serde_json::to_string(&value).map_err(encode_failed)?;
-            print_out(&format!("{json}\n"))
-        } else {
-            print_out(text)
-        }
-    }
-}
 
 /// Fields of the JSON outputs that hold one message (or thread summary) written by
 /// another party.
@@ -135,7 +25,7 @@ const MESSAGE_LIST_FIELDS: [&str; 3] = ["messages", "replies", "threads"];
 /// Adds `"untrusted": true` to every message object in a top-level JSON output
 /// (`Posted`, `Thread`, `ChannelsResponse`, and the wait and tail outputs), so a
 /// program reading `--json` sees that the text is data from another party.
-fn mark_untrusted(output: &mut serde_json::Value) {
+pub(crate) fn mark_untrusted(output: &mut serde_json::Value) {
     let Some(fields) = output.as_object_mut() else {
         return;
     };
@@ -303,14 +193,14 @@ pub(crate) fn reply(ctx: &Ctx, thread_arg: &str, args: WriteArgs) -> Result<Exit
     report_posted(ctx, &posted, first)
 }
 
-/// `read <channel-prefix>`: one line per thread.
+/// `read <channel-prefix>`: a summary line and a framed preview per thread.
 pub(crate) fn read(ctx: &Ctx, prefix_arg: &str) -> Result<Exit, CliError> {
     let prefix = channel(prefix_arg)?;
     let listing = ctx.client()?.channels(&prefix)?;
     let text = if listing.threads.is_empty() {
         format!("no threads in {prefix}\n")
     } else {
-        listing.threads.iter().map(summary_line).collect()
+        listing.threads.iter().map(summary_lines).collect()
     };
     ctx.emit(&listing, &text)?;
     Ok(Exit::Ok)
@@ -325,9 +215,9 @@ fn reply_count(n: u64) -> String {
     }
 }
 
-/// `<id>  <channel>  <n> replies  "<preview>"`; the preview is quoted and escaped so
-/// it stays on one line.
-fn summary_line(summary: &ThreadSummary) -> String {
+/// `<id>  <channel>  <n> replies`, then the preview (cut to `PREVIEW_CHARS`) framed as
+/// untrusted data.
+fn summary_lines(summary: &ThreadSummary) -> String {
     let replies = reply_count(u64::from(summary.reply_count));
     let mut preview: String = summary
         .root_text_preview
@@ -343,8 +233,10 @@ fn summary_line(summary: &ThreadSummary) -> String {
         preview.push('…');
     }
     format!(
-        "{}  {}  {replies}  {preview:?}\n",
-        summary.thread_id, summary.channel
+        "{}  {}  {replies}\n{}\n",
+        summary.thread_id,
+        summary.channel,
+        render_preview(&summary.thread_id, &preview)
     )
 }
 

@@ -9,7 +9,8 @@ use stigmer_core::{
 };
 
 use crate::client::{Auth, Token};
-use crate::commands::{principal, Ctx};
+use crate::commands::principal;
+use crate::ctx::Ctx;
 use crate::exit::{CliError, Exit};
 use crate::logins::{Logins, Scope};
 use crate::tls::check_credential_transport;

@@ -5,7 +5,9 @@ mod common;
 
 use std::path::Path;
 
-use common::{Capture, CliUser, Stigmerd};
+use std::time::Duration;
+
+use common::{Capture, CliUser, Collected, Guard, Stigmerd};
 use stigmer_core::{generate_secret, SecretKind};
 
 /// A well-formed token no server knows.
@@ -772,4 +774,67 @@ fn unreadable_or_empty_ca_cert_is_a_usage_error() {
         assert!(run.stderr.contains("CA certificate"), "{run:?}");
         assert!(run.stderr.contains("next: "), "{run:?}");
     }
+}
+
+#[test]
+fn tail_retries_after_a_server_restart() {
+    let mut server = Stigmerd::local();
+    let user = CliUser::new();
+    let url = server.url.clone();
+    let post = |text: &str| user.run(&["--url", &url, "--as", "a", "post", "eng", text]);
+    assert_eq!(post("before").code, 0);
+    let mut tail = Guard::spawn(&mut user.cmd(&["--url", &url, "tail", "--channel", "eng"]));
+    let (stdout, stderr) = (Collected::default(), Collected::default());
+    stdout.drain(tail.0.stdout.take().unwrap());
+    stderr.drain(tail.0.stderr.take().unwrap());
+    stdout.wait_for("before", Duration::from_secs(10));
+
+    server.restart_after(Duration::from_millis(1_500));
+    let notes = stderr.wait_for("retrying in", Duration::from_secs(10));
+    assert!(notes.lines().all(|l| l.starts_with("stigmer: ")), "{notes}");
+    let posted = post("after");
+    assert_eq!(posted.code, 0, "{posted:?}");
+    stdout.wait_for("after", Duration::from_secs(40));
+    assert!(tail.0.try_wait().unwrap().is_none(), "tail never gives up");
+}
+
+#[test]
+fn m0_cli_tests_pass_unchanged() {
+    // The v0.1.0 local workflow against the real stigmerd: no token, names from --as, and no
+    // login file is created or needed.
+    let server = Stigmerd::local();
+    let user = CliUser::new();
+    let url = server.url.as_str();
+    let posted = user.run(&[
+        "--url",
+        url,
+        "--as",
+        "agent-a",
+        "post",
+        "research/tls",
+        "question",
+    ]);
+    assert_eq!(posted.code, 0, "{posted:?}");
+    assert!(posted.stdout.starts_with("posted msg_"), "{posted:?}");
+    assert!(posted.stdout.contains(" as agent-a"), "{posted:?}");
+    let thread = posted.stdout.split_whitespace().nth(1).unwrap().to_owned();
+    let replied = user.run(&["--url", url, "--as", "agent-c", "reply", &thread, "answer"]);
+    assert_eq!(replied.code, 0, "{replied:?}");
+    let waited = user.run(&[
+        "--url",
+        url,
+        "wait",
+        "--channel",
+        "research/",
+        "--timeout",
+        "5s",
+    ]);
+    assert_eq!(waited.code, 0, "{waited:?}");
+    assert!(waited.stdout.contains("<<<message "), "{waited:?}");
+    let shown = user.run(&["--url", url, "thread", &thread]);
+    assert_eq!(shown.code, 0, "{shown:?}");
+    assert!(shown.stdout.find("question") < shown.stdout.find("answer"));
+    let missing_as = user.run(&["--url", url, "post", "eng", "hi"]);
+    assert_eq!(missing_as.code, 2, "{missing_as:?}");
+    assert!(!user.logins_path().exists());
 }

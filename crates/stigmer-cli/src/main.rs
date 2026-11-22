@@ -3,10 +3,12 @@
 mod account;
 mod client;
 mod commands;
+mod ctx;
 mod exit;
 mod logins;
 mod manage;
 mod render;
+mod retry;
 mod tls;
 mod wait;
 
@@ -16,7 +18,8 @@ use std::time::Duration;
 use clap::error::ErrorKind;
 use clap::{Parser, Subcommand};
 
-use crate::commands::{Ctx, WriteArgs};
+use crate::commands::WriteArgs;
+use crate::ctx::Ctx;
 use crate::exit::{CliError, Exit};
 use crate::wait::FeedArgs;
 

@@ -64,6 +64,8 @@ pub(crate) struct CliError {
     pub(crate) code: &'static str,
     message: String,
     next: String,
+    /// Extra top-level fields of the JSON report, such as a timed-out wait's `cursor`.
+    fields: Vec<(&'static str, serde_json::Value)>,
 }
 
 impl CliError {
@@ -78,7 +80,24 @@ impl CliError {
             code,
             message: message.into(),
             next: next.into(),
+            fields: Vec::new(),
         }
+    }
+
+    /// Adds a top-level field to the JSON report.
+    pub(crate) fn with_field(mut self, name: &'static str, value: serde_json::Value) -> Self {
+        self.fields.push((name, value));
+        self
+    }
+
+    /// What went wrong, without the next step.
+    pub(crate) fn message(&self) -> &str {
+        &self.message
+    }
+
+    /// A failure to reach the server that may pass: refused, reset or timed out.
+    pub(crate) fn is_transient(&self) -> bool {
+        matches!(self.code, "unavailable" | "network" | "request_timeout")
     }
 
     pub(crate) fn usage(message: impl Into<String>, next: impl Into<String>) -> Self {
@@ -173,11 +192,16 @@ impl CliError {
     /// The report on stderr: two lines, or one JSON object with `--json`.
     pub(crate) fn render(&self, json: bool) -> String {
         if json {
-            serde_json::json!({
+            let mut report = serde_json::json!({
                 "error": {"code": self.code, "message": self.message},
                 "next": self.next,
-            })
-            .to_string()
+            });
+            if let Some(object) = report.as_object_mut() {
+                for (name, value) in &self.fields {
+                    object.insert((*name).to_owned(), value.clone());
+                }
+            }
+            report.to_string()
         } else {
             format!("error: {}\nnext: {}", self.message, self.next)
         }

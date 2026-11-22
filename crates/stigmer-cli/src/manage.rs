@@ -7,7 +7,8 @@ use stigmer_core::{
     MembersResponse, PrincipalKind, Role, TokenId, TokensResponse,
 };
 
-use crate::commands::{board_id, parse_arg, principal, Ctx};
+use crate::commands::{board_id, parse_arg, principal};
+use crate::ctx::Ctx;
 use crate::exit::{CliError, Exit};
 use crate::logins::Scope;
 use crate::render::rfc3339_ms;

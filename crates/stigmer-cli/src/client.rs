@@ -284,7 +284,7 @@ mod tests {
         let json: serde_json::Value = serde_json::from_str(&request.render(true)).unwrap();
         assert_eq!(json["error"]["code"], "request_timeout");
 
-        let wait = crate::wait::timed_out(Duration::from_secs(1), "stigmer wait".to_owned());
+        let wait = crate::wait::timed_out(Duration::from_secs(1), "stigmer wait".to_owned(), None);
         assert_eq!((wait.exit, wait.code), (Exit::Timeout, "timeout"));
         let json: serde_json::Value = serde_json::from_str(&wait.render(true)).unwrap();
         assert_eq!(json["error"]["code"], "timeout");

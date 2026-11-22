@@ -9,9 +9,11 @@ use stigmer_core::{
 };
 
 use crate::client::Client;
-use crate::commands::{channel, message_id, parse_arg, print_out, Ctx};
+use crate::commands::{channel, message_id, parse_arg, print_out};
+use crate::ctx::Ctx;
 use crate::exit::{CliError, Exit};
 use crate::render::render_message;
+use crate::retry::retrying;
 
 /// Filters and start position shared by `wait` and `tail`, as typed.
 pub(crate) struct FeedArgs {
@@ -251,14 +253,19 @@ struct WaitOutput<'a> {
     cursor: Option<&'a Cursor>,
 }
 
-/// The error of a wait that saw no matching event within `timeout` (exit 3).
-pub(crate) fn timed_out(timeout: Duration, resume: String) -> CliError {
+/// The error of a wait that saw no matching event within `timeout` (exit 3); its JSON form
+/// carries the resume `cursor` (null when there is none).
+pub(crate) fn timed_out(timeout: Duration, resume: String, cursor: Option<&Cursor>) -> CliError {
+    let cursor = cursor.map_or(serde_json::Value::Null, |c| {
+        serde_json::Value::String(c.to_string())
+    });
     CliError::new(
         Exit::Timeout,
         "timeout",
         format!("no matching events within {}s", timeout.as_secs()),
         resume,
     )
+    .with_field("cursor", cursor)
 }
 
 /// `wait`: blocks until matching events arrive (exit 0) or `timeout` passes (exit 3).
@@ -289,7 +296,7 @@ pub(crate) fn wait(ctx: &Ctx, args: FeedArgs, timeout: Duration) -> Result<Exit,
         if !ctx.json {
             print_out(&tail)?;
         }
-        return Err(timed_out(timeout, resume));
+        return Err(timed_out(timeout, resume, feed.start.after()));
     }
     let messages = events
         .iter()
@@ -327,10 +334,11 @@ pub(crate) fn tail(ctx: &Ctx, args: FeedArgs, timeout: Option<Duration>) -> Resu
         threads: HashMap::new(),
     };
     let deadline = timeout.and_then(|timeout| Instant::now().checked_add(timeout));
-    loop {
-        let events = feed.next_batch(deadline)?;
+    'feed: while let Some(events) = retrying(deadline, || feed.next_batch(deadline))? {
         for event in &events {
-            let message = feed.message(event)?;
+            let Some(message) = retrying(deadline, || feed.message(event))? else {
+                break 'feed;
+            };
             let item = TailItem {
                 event,
                 message: &message,
