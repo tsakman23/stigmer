@@ -6,7 +6,7 @@ use std::time::Duration;
 use serde::de::DeserializeOwned;
 use stigmer_core::{
     BoardId, ChannelPath, ChannelsResponse, ErrorBody, EventFilter, EventsResponse, MessageId,
-    PostRequest, Posted, Principal, Thread,
+    PostRequest, Posted, Principal, SecretKind, Thread,
 };
 use ureq::http::Response;
 use ureq::{Agent, Body, RequestBuilder};
@@ -18,16 +18,54 @@ use crate::wait::Start;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 /// How much longer than its server-side wait an events request may take.
 const WAIT_GRACE: Duration = Duration::from_secs(10);
+/// How a request says who is calling.
+#[derive(Debug)]
+pub(crate) enum Auth {
+    /// No credential (local mode): `X-Stigmer-As` names the caller when given.
+    Local(Option<Principal>),
+    /// `Authorization: Bearer`; `X-Stigmer-As` is never sent with it.
+    Token(Token),
+}
+
+/// A token in the `stg1_<id>_<secret>` shape. Debug output redacts it.
+pub(crate) struct Token(String);
+
+impl Token {
+    /// Checks the shape locally so a mistyped value never reaches the server; `source` names
+    /// where it came from. The error never echoes the value.
+    pub(crate) fn new(raw: &str, source: &str) -> Result<Self, CliError> {
+        stigmer_core::parse_secret(SecretKind::Token, raw).map_err(|_| {
+            CliError::new(
+                Exit::Invalid,
+                "invalid_input",
+                format!("{source} does not hold a stigmer token"),
+                "use a token saved by stigmer join or stigmer login, or unset STIGMER_TOKEN",
+            )
+        })?;
+        Ok(Self(raw.to_owned()))
+    }
+
+    pub(crate) fn expose(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for Token {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Token(<redacted>)")
+    }
+}
+
 pub(crate) struct Client {
     agent: Agent,
     base: String,
     board: BoardId,
-    who: Option<Principal>,
+    auth: Auth,
 }
 
 impl Client {
-    /// A client for the server at `base_url`, acting as `who` when given.
-    pub(crate) fn new(base_url: &str, board: BoardId, who: Option<Principal>) -> Self {
+    /// A client for `board` on the server at `base_url`, identified by `auth`.
+    pub(crate) fn new(base_url: &str, board: BoardId, auth: Auth) -> Self {
         let agent: Agent = Agent::config_builder()
             .http_status_as_error(false)
             .timeout_global(Some(REQUEST_TIMEOUT))
@@ -37,7 +75,7 @@ impl Client {
             agent,
             base: base_url.trim_end_matches('/').to_owned(),
             board,
-            who,
+            auth,
         }
     }
 
@@ -45,10 +83,32 @@ impl Client {
         format!("{}/v1/boards/{}/{path}", self.base, self.board)
     }
 
+    /// A route outside any board, such as `whoami` or `boards`.
+    pub(crate) fn root_route(&self, path: &str) -> String {
+        format!("{}/v1/{path}", self.base)
+    }
+
+    /// GETs `url` and decodes the JSON response.
+    pub(crate) fn get<T: DeserializeOwned>(&self, url: &str) -> Result<T, CliError> {
+        self.finish(self.identify(self.agent.get(url)).call())
+    }
+
+    /// POSTs `body` as JSON to `url` and decodes the JSON response.
+    pub(crate) fn post_json<B: serde::Serialize, T: DeserializeOwned>(
+        &self,
+        url: &str,
+        body: &B,
+    ) -> Result<T, CliError> {
+        self.finish(self.identify(self.agent.post(url)).send_json(body))
+    }
+
     fn identify<B>(&self, request: RequestBuilder<B>) -> RequestBuilder<B> {
-        match &self.who {
-            Some(who) => request.header("X-Stigmer-As", who.as_str()),
-            None => request,
+        match &self.auth {
+            Auth::Local(Some(who)) => request.header("X-Stigmer-As", who.as_str()),
+            Auth::Local(None) => request,
+            Auth::Token(token) => {
+                request.header("Authorization", format!("Bearer {}", token.expose()))
+            }
         }
     }
 
@@ -114,19 +174,36 @@ impl Client {
         let mut response = sent.map_err(|e| self.network_error(e))?;
         let status = response.status();
         if status.is_success() {
-            return response
-                .body_mut()
-                .read_json::<T>()
-                .map_err(|e| self.bad_response(&e.to_string()));
+            // serde's messages can quote a value from the body, which may be a secret, so a
+            // decoding failure reports only where it happened.
+            return response.body_mut().read_json::<T>().map_err(|e| match e {
+                ureq::Error::Json(json) => self.bad_response(&format!(
+                    "unexpected JSON at line {} column {}",
+                    json.line(),
+                    json.column()
+                )),
+                other => self.bad_response(&other.to_string()),
+            });
         }
+        Err(self.failure(response)?)
+    }
+
+    /// The error a non-success response describes.
+    fn failure(&self, mut response: Response<Body>) -> Result<CliError, CliError> {
+        let status = response.status();
+        let retry_after = response
+            .headers()
+            .get("retry-after")
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.trim().parse::<u64>().ok());
         let text = response
             .body_mut()
             .read_to_string()
             .map_err(|e| self.network_error(e))?;
-        match serde_json::from_str::<ErrorBody>(&text) {
-            Ok(body) => Err(CliError::api(body.error)),
-            Err(_) => Err(self.bad_response(&format!("HTTP {status}"))),
-        }
+        Ok(match serde_json::from_str::<ErrorBody>(&text) {
+            Ok(body) => CliError::api(body.error, retry_after),
+            Err(_) => self.bad_response(&format!("HTTP {status}")),
+        })
     }
 
     fn bad_response(&self, what: &str) -> CliError {
@@ -171,7 +248,7 @@ mod tests {
 
     #[test]
     fn json_request_timeout_code_differs_from_wait_timeout() {
-        let client = Client::new("http://127.0.0.1:7878", BoardId::main(), None);
+        let client = Client::new("http://127.0.0.1:7878", BoardId::main(), Auth::Local(None));
         let request = client.network_error(ureq::Error::Timeout(ureq::Timeout::Global));
         assert_eq!(
             (request.exit, request.code),

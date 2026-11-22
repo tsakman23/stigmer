@@ -301,6 +301,12 @@ impl Stigmerd {
         Self::start(false, Vec::new())
     }
 
+    /// A network-mode server: `admin enable-auth` first, keeping the instance token and the
+    /// main admin invite it prints.
+    pub fn network() -> Self {
+        Self::start(true, Vec::new())
+    }
+
     fn data_dir(dir: &Path) -> PathBuf {
         // A fresh subdirectory, so stigmerd creates it 0700 and has nothing to warn about.
         dir.join("data")

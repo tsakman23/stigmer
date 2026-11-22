@@ -265,7 +265,7 @@ pub(crate) fn timed_out(timeout: Duration, resume: String) -> CliError {
 pub(crate) fn wait(ctx: &Ctx, args: FeedArgs, timeout: Duration) -> Result<Exit, CliError> {
     let (filter, start) = args.parse()?;
     let mut feed = Feed {
-        client: ctx.client(None)?,
+        client: ctx.client()?,
         filter,
         start,
         threads: HashMap::new(),
@@ -321,7 +321,7 @@ struct TailItem<'a> {
 pub(crate) fn tail(ctx: &Ctx, args: FeedArgs, timeout: Option<Duration>) -> Result<Exit, CliError> {
     let (filter, start) = args.parse()?;
     let mut feed = Feed {
-        client: ctx.client(None)?,
+        client: ctx.client()?,
         filter,
         start,
         threads: HashMap::new(),

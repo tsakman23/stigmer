@@ -1,9 +1,12 @@
 //! stigmer: the command-line client of a Stigmer board, for people and coding agents.
 
+mod account;
 mod client;
 mod commands;
 mod exit;
+mod logins;
 mod render;
+mod tls;
 mod wait;
 
 use std::process::ExitCode;
@@ -16,11 +19,27 @@ use crate::commands::{Ctx, WriteArgs};
 use crate::exit::{CliError, Exit};
 use crate::wait::FeedArgs;
 
+/// Shown at the end of `--help`.
+const EXIT_CODES: &str = "\
+Exit codes:
+  0  ok
+  1  failure: network or server error, conflict, archived board or a bad login file
+  2  usage: a wrong command line, or a credential refused over plain http
+  3  wait timed out
+  4  not found (an unknown id, or a board your credential cannot see)
+  5  invalid input
+  6  unauthorized: no valid token; run stigmer join or stigmer login
+  7  forbidden: your role cannot do this
+  8  rate limited: wait the seconds shown, then retry
+
+Credentials: STIGMER_TOKEN, else the login saved by join or login for --url and --board.";
+
 #[derive(Parser)]
 #[command(
     name = "stigmer",
     version,
-    about = "Post, read and wait on a Stigmer board"
+    about = "Post, read and wait on a Stigmer board",
+    after_help = EXIT_CODES
 )]
 struct Cli {
     /// Your name on the board; required to post or reply.
@@ -43,6 +62,9 @@ struct Cli {
         value_name = "NAME"
     )]
     board: String,
+    /// Allow sending a credential over plain http to a host that is not loopback.
+    #[arg(long, global = true)]
+    insecure: bool,
     /// Print one JSON object instead of text.
     #[arg(long, global = true)]
     json: bool,
@@ -85,6 +107,19 @@ enum Command {
         #[arg(long, default_value = "5m", value_parser = wait::parse_timeout)]
         timeout: Duration,
     },
+    /// Redeem an invite: creates your name on its board and saves the token (never printed).
+    Join {
+        /// The invite (stgi1_...), as given by a board admin.
+        invite: String,
+    },
+    /// Save a token read from stdin (one line) after checking it with the server.
+    Login {
+        /// Save it as the instance-admin login (the token from stigmerd admin enable-auth).
+        #[arg(long)]
+        instance: bool,
+    },
+    /// Show who the saved login (or STIGMER_TOKEN) is.
+    Whoami,
     /// Print matching events as they arrive (one JSON object per line with --json).
     Tail {
         #[command(flatten)]
@@ -152,8 +187,18 @@ fn main() -> ExitCode {
         Err(err) => return usage_failure(&err),
     };
     let json = cli.json;
-    let outcome =
-        Ctx::new(cli.url, cli.who, &cli.board, json).and_then(|ctx| run(&ctx, cli.command));
+    let outcome = commands::board_id(&cli.board).and_then(|board| {
+        let ctx = Ctx {
+            url: cli.url,
+            who: cli.who,
+            json,
+            board,
+            insecure: cli.insecure,
+            env_token: env_token(),
+            logins_path: logins::default_path(),
+        };
+        run(&ctx, cli.command)
+    });
     match outcome {
         Ok(exit) => exit.into(),
         Err(err) => {
@@ -179,7 +224,35 @@ fn run(ctx: &Ctx, command: Command) -> Result<Exit, CliError> {
         Command::Thread { id } => commands::thread(ctx, &id),
         Command::Wait { feed, timeout } => wait::wait(ctx, feed.into(), timeout),
         Command::Tail { feed, timeout } => wait::tail(ctx, feed.into(), timeout),
+        Command::Join { invite } => account::join(ctx, &invite),
+        Command::Login { instance } => account::login(ctx, instance),
+        Command::Whoami => account::whoami(ctx),
     }
+}
+
+/// `STIGMER_TOKEN` when set and not empty. A value that is not UTF-8 is kept as an empty
+/// string, which fails the token check rather than being ignored.
+fn env_token() -> Option<String> {
+    match std::env::var("STIGMER_TOKEN") {
+        Ok(token) if token.is_empty() => None,
+        Ok(token) => Some(token),
+        Err(std::env::VarError::NotPresent) => None,
+        Err(std::env::VarError::NotUnicode(_)) => Some(String::new()),
+    }
+}
+
+/// clap quotes the offending argument, which could be a token typed where it does not belong
+/// (tokens are never taken as arguments): every argument shaped like a credential is masked.
+fn redact_credentials(message: &str) -> String {
+    let mut message = message.to_owned();
+    for arg in std::env::args_os() {
+        let arg = arg.to_string_lossy();
+        let secret = arg.trim();
+        if ["stg1_", "stgi1_"].iter().any(|p| secret.starts_with(p)) {
+            message = message.replace(secret, "<redacted credential>");
+        }
+    }
+    message
 }
 
 /// Help and version go to stdout with exit 0; anything else clap rejects is exit 2.
@@ -207,6 +280,6 @@ fn usage_failure(err: &clap::Error) -> ExitCode {
     };
     // Parsing failed, so --json is looked for in the raw arguments.
     let json = std::env::args_os().any(|arg| arg == "--json");
-    CliError::usage(message, "run: stigmer --help").print(json);
+    CliError::usage(redact_credentials(message), "run: stigmer --help").print(json);
     Exit::Usage.into()
 }

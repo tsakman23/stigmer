@@ -1,6 +1,7 @@
 //! The commands: validate arguments with stigmer-core, call the API, print the result.
 
 use std::io::Write;
+use std::path::PathBuf;
 
 use stigmer_core::{
     BoardId, ChannelPath, CoreError, MessageId, NewMessage, PostRequest, Posted, Principal, Target,
@@ -8,12 +9,17 @@ use stigmer_core::{
     MAX_PRINCIPAL_CHARS,
 };
 
-use crate::client::Client;
+use crate::client::{Auth, Client, Token};
 use crate::exit::{too_long_hint, CliError, Exit};
+use crate::logins::{Logins, Scope};
 use crate::render::render_message;
+use crate::tls::check_credential_transport;
 
 /// Characters of a thread's root text shown by `read`.
 const PREVIEW_CHARS: usize = 80;
+
+/// The placeholder author a write is validated with when a token names the real one.
+const TOKEN_AUTHOR: &str = "token-holder";
 
 const AS_HINT: &str = "export STIGMER_AS=<name> or pass --as <name>";
 
@@ -23,40 +29,76 @@ pub(crate) struct Ctx {
     pub(crate) who: Option<String>,
     pub(crate) json: bool,
     pub(crate) board: BoardId,
+    /// Allow a credential over plain HTTP to a host that is not loopback.
+    pub(crate) insecure: bool,
+    /// `STIGMER_TOKEN`, which overrides the login file.
+    pub(crate) env_token: Option<String>,
+    /// The login file, when HOME or XDG_CONFIG_HOME says where it is.
+    pub(crate) logins_path: Option<PathBuf>,
 }
 
 impl Ctx {
-    /// Validates the global options before any request.
-    pub(crate) fn new(
-        url: String,
-        who: Option<String>,
-        board: &str,
-        json: bool,
-    ) -> Result<Self, CliError> {
-        Ok(Self {
-            url,
-            who,
-            json,
-            board: board_id(board)?,
-        })
+    /// The token to send to a route that accepts the credentials of `scopes` (first match
+    /// wins): `STIGMER_TOKEN`, else the login saved for this URL and scope, else none.
+    /// A token is checked for shape and for a safe transport before it is used.
+    pub(crate) fn token(&self, scopes: &[Scope]) -> Result<Option<Token>, CliError> {
+        let token = if let Some(raw) = &self.env_token {
+            Token::new(raw, "STIGMER_TOKEN")?
+        } else {
+            let Some(path) = &self.logins_path else {
+                return Ok(None);
+            };
+            let logins = Logins::load(path)?;
+            match scopes
+                .iter()
+                .find_map(|scope| logins.token(&self.url, scope))
+            {
+                Some(raw) => Token::new(raw, "the saved login")?,
+                None => return Ok(None),
+            }
+        };
+        check_credential_transport(&self.url, self.insecure)?;
+        Ok(Some(token))
     }
 
-    /// The identity a write needs: required, and validated before any request.
-    fn author(&self, verb: &str) -> Result<Principal, CliError> {
+    /// The scope of this board's own credentials.
+    pub(crate) fn board_scope(&self) -> Scope {
+        Scope::Board(self.board.clone())
+    }
+
+    /// A client for routes that accept the credentials of `scopes`: the resolved token, else
+    /// local mode with the optional `--as` name.
+    pub(crate) fn client_for(&self, scopes: &[Scope]) -> Result<Client, CliError> {
+        let auth = match self.token(scopes)? {
+            Some(token) => Auth::Token(token),
+            None => Auth::Local(self.who.as_deref().map(principal).transpose()?),
+        };
+        Ok(self.client_with(auth))
+    }
+
+    pub(crate) fn client_with(&self, auth: Auth) -> Client {
+        Client::new(&self.url, self.board.clone(), auth)
+    }
+
+    /// A client for this board's content routes.
+    pub(crate) fn client(&self) -> Result<Client, CliError> {
+        self.client_for(&[self.board_scope()])
+    }
+
+    /// A client for a write and the author to validate it with. With a token the server takes
+    /// the author from the credential; without one `--as` is required, as in local mode.
+    fn writer(&self, verb: &str) -> Result<(Client, Principal), CliError> {
+        if let Some(token) = self.token(&[self.board_scope()])? {
+            // Only used to validate the message locally; never sent with a token.
+            let author = principal(self.who.as_deref().unwrap_or(TOKEN_AUTHOR))?;
+            return Ok((self.client_with(Auth::Token(token)), author));
+        }
         let raw = self
             .who
             .as_deref()
             .ok_or_else(|| CliError::usage(format!("--as is required to {verb}"), AS_HINT))?;
-        principal(raw)
-    }
-
-    /// A client acting as `who`, or as the optional `--as` identity when `who` is None.
-    pub(crate) fn client(&self, who: Option<Principal>) -> Result<Client, CliError> {
-        let who = match who {
-            Some(who) => Some(who),
-            None => self.who.as_deref().map(principal).transpose()?,
-        };
-        Ok(Client::new(&self.url, self.board.clone(), who))
+        let author = principal(raw)?;
+        Ok((self.client_with(Auth::Local(Some(author.clone()))), author))
     }
 
     /// Prints `value` as one JSON object with every message marked untrusted, or
@@ -146,7 +188,7 @@ pub(crate) fn board_id(raw: &str) -> Result<BoardId, CliError> {
     )
 }
 
-fn principal(raw: &str) -> Result<Principal, CliError> {
+pub(crate) fn principal(raw: &str) -> Result<Principal, CliError> {
     parse_arg(
         raw,
         Principal::new,
@@ -200,7 +242,7 @@ fn validate(
         .map_err(|e| CliError::invalid(&e, core_hint(&e)))
 }
 
-fn send(ctx: &Ctx, msg: NewMessage) -> Result<Posted, CliError> {
+fn send(client: &Client, msg: NewMessage) -> Result<Posted, CliError> {
     let (channel, thread) = match msg.target {
         Target::NewThread { channel } => (Some(channel), None),
         Target::Reply { thread } => (None, Some(thread)),
@@ -211,8 +253,7 @@ fn send(ctx: &Ctx, msg: NewMessage) -> Result<Posted, CliError> {
         text: msg.text,
         labels: msg.labels,
     };
-    ctx.client(Some(msg.author))?
-        .post(&body, msg.idempotency_key.as_deref())
+    client.post(&body, msg.idempotency_key.as_deref())
 }
 
 fn report_posted(ctx: &Ctx, posted: &Posted, first: String) -> Result<Exit, CliError> {
@@ -226,11 +267,11 @@ fn report_posted(ctx: &Ctx, posted: &Posted, first: String) -> Result<Exit, CliE
 
 /// `post <channel> <text>`: starts a thread.
 pub(crate) fn post(ctx: &Ctx, channel_arg: &str, args: WriteArgs) -> Result<Exit, CliError> {
-    let author = ctx.author("post")?;
+    let (client, author) = ctx.writer("post")?;
     let target = Target::NewThread {
         channel: channel(channel_arg)?,
     };
-    let posted = send(ctx, validate(ctx.board.clone(), target, author, args)?)?;
+    let posted = send(&client, validate(ctx.board.clone(), target, author, args)?)?;
     let m = &posted.message;
     let first = format!("posted {} in {} as {}", m.id, m.channel, m.author);
     report_posted(ctx, &posted, first)
@@ -246,11 +287,11 @@ pub(crate) fn message_id(raw: &str) -> Result<MessageId, CliError> {
 
 /// `reply <thread> <text>`: answers in a thread.
 pub(crate) fn reply(ctx: &Ctx, thread_arg: &str, args: WriteArgs) -> Result<Exit, CliError> {
-    let author = ctx.author("reply")?;
+    let (client, author) = ctx.writer("reply")?;
     let target = Target::Reply {
         thread: message_id(thread_arg)?,
     };
-    let posted = send(ctx, validate(ctx.board.clone(), target, author, args)?)?;
+    let posted = send(&client, validate(ctx.board.clone(), target, author, args)?)?;
     let m = &posted.message;
     let first = format!(
         "replied {} in thread {} ({}) as {}",
@@ -262,7 +303,7 @@ pub(crate) fn reply(ctx: &Ctx, thread_arg: &str, args: WriteArgs) -> Result<Exit
 /// `read <channel-prefix>`: one line per thread.
 pub(crate) fn read(ctx: &Ctx, prefix_arg: &str) -> Result<Exit, CliError> {
     let prefix = channel(prefix_arg)?;
-    let listing = ctx.client(None)?.channels(&prefix)?;
+    let listing = ctx.client()?.channels(&prefix)?;
     let text = if listing.threads.is_empty() {
         format!("no threads in {prefix}\n")
     } else {
@@ -307,7 +348,7 @@ fn summary_line(summary: &ThreadSummary) -> String {
 /// `thread <id>`: every message framed, oldest first.
 pub(crate) fn thread(ctx: &Ctx, id_arg: &str) -> Result<Exit, CliError> {
     let id = message_id(id_arg)?;
-    let thread = ctx.client(None)?.thread(&id)?;
+    let thread = ctx.client()?.thread(&id)?;
     let replies = u64::try_from(thread.replies.len()).unwrap_or(u64::MAX);
     let mut text = format!(
         "thread {} in {} ({})\n",
