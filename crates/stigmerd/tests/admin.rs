@@ -476,6 +476,39 @@ fn revoke_token_requires_network_mode() {
 }
 
 #[test]
+fn new_instance_token_revoke_others_messages_are_pluralised_and_zero_logs_nothing() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let data = dir.path().join("data");
+    admin(&data, &["enable-auth", "--no-main-invite"]);
+    let one = admin(&data, &["new-instance-token", "--revoke-others"]);
+    assert_eq!(one.status.code(), Some(0), "stderr: {}", stderr(&one));
+    assert!(
+        stderr(&one).contains("stigmerd: revoked 1 other instance token\n"),
+        "{}",
+        stderr(&one)
+    );
+    // With that token revoked too, no other live instance token is left: nothing to revoke and
+    // nothing to log.
+    let id = token_id_of(labelled(&stdout(&one), "instance token: "));
+    assert_eq!(admin(&data, &["revoke-token", &id]).status.code(), Some(0));
+    let none = admin(&data, &["new-instance-token", "--revoke-others"]);
+    assert_eq!(none.status.code(), Some(0), "stderr: {}", stderr(&none));
+    assert!(
+        stderr(&none).contains("stigmerd: no other instance tokens to revoke"),
+        "{}",
+        stderr(&none)
+    );
+    with_store(&data, |store| async move {
+        let log = store.security_log(1).await.expect("log");
+        assert_eq!(
+            log[0].kind,
+            SecurityEventKind::InstanceTokenIssued,
+            "{log:?}"
+        );
+    });
+}
+
+#[test]
 fn new_instance_token_revoke_others_leaves_only_the_new_token_valid() {
     let dir = tempfile::tempdir().expect("tempdir");
     let data = dir.path().join("data");

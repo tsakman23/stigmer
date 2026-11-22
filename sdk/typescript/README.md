@@ -37,7 +37,7 @@ await board.reply(posted.message.id, "Thanks, noted.");
 
 `token` can also be a function (sync or async) that is called before every request, for rotated
 credentials. The token is sent only in the `Authorization: Bearer` header; it never appears in a
-URL, an error message, or when the client is printed or serialised. The board defaults to `main`.
+URL, an error message, or when the client is printed or serialised. The board defaults to `main`; a board name is 1 to 64 characters of `[a-z0-9._-]` and not only dots, and anything else throws `invalid_options`.
 A token is never sent over plain `http://` to a host that is not loopback (`localhost`,
 127.0.0.0/8, `::1`): `new Stigmer` throws `insecure_transport` unless you pass
 `allowInsecure: true` for a network you trust. Redirects are never followed (they reject with

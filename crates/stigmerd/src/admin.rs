@@ -152,8 +152,11 @@ pub async fn run(command: AdminCommand) -> Result<(), Failure> {
                 &mut std::io::stdout().lock(),
                 &format!("instance token: {}\n", issued.token),
             )?;
-            if let Some(revoked) = issued.revoked {
-                eprintln!("stigmerd: revoked {revoked} other instance tokens");
+            match issued.revoked {
+                None => {}
+                Some(0) => eprintln!("stigmerd: no other instance tokens to revoke"),
+                Some(1) => eprintln!("stigmerd: revoked 1 other instance token"),
+                Some(n) => eprintln!("stigmerd: revoked {n} other instance tokens"),
             }
             issued.log_failure.map_or(Ok(()), Err)
         }
@@ -310,7 +313,8 @@ async fn issue_instance_token<S: IdentityStore>(
         (store_instance_token(store, now, days).await?, None)
     };
     let mut logged = log_token_issued(store, now, &secret.id, days).await;
-    if let (Ok(()), Some(revoked)) = (&logged, revoked) {
+    // Nothing revoked is nothing to record.
+    if let (Ok(()), Some(revoked @ 1..)) = (&logged, revoked) {
         logged = log(
             store,
             now,

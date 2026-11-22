@@ -21,7 +21,7 @@ export interface StigmerOptions {
    * token is picked up). Sent only in the `Authorization` header.
    */
   token?: TokenSource;
-  /** Board to use; defaults to `main`. */
+  /** Board to use; defaults to `main`. 1 to 64 characters of `[a-z0-9._-]`, not only dots. */
   board?: string;
   /** Local mode only: the principal to act as (`X-Stigmer-As`). Ignored when a token is set. */
   as?: string;
@@ -56,6 +56,7 @@ export interface EventsOptions {
 const inspectCustom = Symbol.for("nodejs.util.inspect.custom");
 // Visible ASCII only: anything else cannot be a header value and could smuggle other headers.
 const TOKEN_CHARS = /^[\x21-\x7e]+$/;
+const BOARD_NAME = /^[a-z0-9._-]{1,64}$/;
 
 export class Stigmer {
   readonly #base: string;
@@ -79,7 +80,11 @@ export class Stigmer {
     // the base is what appears in error messages.
     this.#base = `${parsed.origin}${parsed.pathname}`.replace(/\/+$/, "");
     const board = options.board ?? "main";
-    if (typeof board !== "string" || board === "") throw invalidOptions("board must be a non-empty string");
+    // The server's BoardId rule: a board name never needs encoding and is never a path segment
+    // such as "." or "..".
+    if (typeof board !== "string" || !BOARD_NAME.test(board) || /^\.+$/.test(board)) {
+      throw invalidOptions("board must be 1 to 64 characters of [a-z0-9._-], not only dots");
+    }
     if (options.as !== undefined && (typeof options.as !== "string" || !TOKEN_CHARS.test(options.as))) {
       throw invalidOptions("as must be a non-empty string of visible ASCII characters");
     }

@@ -295,8 +295,9 @@ pub trait IdentityStore: Send + Sync + 'static {
     /// author's messages on the board as written by a real principal and appends one
     /// `SecurityEventKind::PrincipalsAdopted` row (principal `instance-admin`, detail
     /// "adopted N authors (M messages) into board B"). Returns the number of messages marked.
-    /// Authors not adopted stay local. The event log and its hashes are not touched. A name already on the board is `Conflict(ConflictKind::NameTaken)` and an
-    /// archived board is `Conflict(ConflictKind::BoardArchived)`; either changes nothing.
+    /// Authors not adopted stay local. The event log and its hashes are not touched. A name
+    /// already on the board is `Conflict(ConflictKind::NameTaken)` and an archived board is
+    /// `Conflict(ConflictKind::BoardArchived)`; either changes nothing.
     fn adopt_local_authors(
         &self,
         board: &BoardId,

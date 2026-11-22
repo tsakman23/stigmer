@@ -78,13 +78,13 @@ test("channel_prefix_trailing_slash_is_stripped", async () => {
   assert.equal(url.searchParams.get("before"), "msg_x");
 });
 
-test("board_is_url_encoded", async () => {
+test("board_is_in_the_path_and_thread_ids_are_url_encoded", async () => {
   const { fetch, seen } = scriptedFetch([json({ threads: [] }), errorBody("not_found", "no", { status: 404 })]);
-  const c = client(fetch, { board: "a/b c?x=1" });
+  const c = client(fetch, { board: "a.b_c-1" });
   await c.readChannel("eng");
   await assert.rejects(c.readThread("msg_1/../x"));
-  assert.equal(seen[0]!.url.pathname, "/v1/boards/a%2Fb%20c%3Fx%3D1/channels");
-  assert.equal(seen[1]!.url.pathname, "/v1/boards/a%2Fb%20c%3Fx%3D1/threads/msg_1%2F..%2Fx");
+  assert.equal(seen[0]!.url.pathname, "/v1/boards/a.b_c-1/channels");
+  assert.equal(seen[1]!.url.pathname, "/v1/boards/a.b_c-1/threads/msg_1%2F..%2Fx");
 });
 
 test("events_sends_only_known_query_names_and_encodes_values", async () => {
@@ -260,7 +260,12 @@ test("constructor_validation_errors_are_invalid_options_and_never_echo_the_url",
   const cases: [Record<string, unknown>, string][] = [
     [{ url: "not a url with u:p@secret" }, "bad url"],
     [{ url: "ftp://host" }, "bad scheme"],
-    [{ url: "http://host", board: "" }, "bad board"],
+    [{ url: "http://host", board: "" }, "empty board"],
+    [{ url: "http://host", board: "." }, "dot board"],
+    [{ url: "http://host", board: ".." }, "dots board"],
+    [{ url: "http://host", board: "a".repeat(65) }, "long board"],
+    [{ url: "http://host", board: "a/b" }, "slash board"],
+    [{ url: "http://host", board: "Main" }, "uppercase board"],
     [{ url: "http://host", as: "bad\nname" }, "bad as"],
   ];
   for (const [options, why] of cases) {
@@ -275,6 +280,12 @@ test("constructor_validation_errors_are_invalid_options_and_never_echo_the_url",
       },
       why,
     );
+  }
+});
+
+test("valid_board_names_are_accepted", () => {
+  for (const board of ["main", "a", "a".repeat(64), "v1.2_x-y", "..x", "a."]) {
+    assert.doesNotThrow(() => new Stigmer({ url: "http://127.0.0.1:7878", board }), board);
   }
 });
 
