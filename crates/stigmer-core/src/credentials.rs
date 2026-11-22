@@ -72,7 +72,7 @@ impl SecretKind {
 
 /// A freshly generated credential. `full` is the only copy of the secret and is shown to its
 /// owner once; the store keeps `id` and `hash`.
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone)]
 pub struct NewSecret {
     pub id: TokenId,
     pub full: String,
@@ -236,7 +236,7 @@ mod tests {
     }
 
     #[test]
-    fn secrets_match_is_true_for_equal_and_false_for_one_bit_difference() {
+    fn secrets_match_is_true_for_equal_and_false_for_different_secrets() {
         let stored = hash_secret("alpha");
         assert!(secrets_match("alpha", &stored));
         assert!(!secrets_match("alphb", &stored));
@@ -260,7 +260,7 @@ mod tests {
     fn two_generated_secrets_differ() {
         let a = generate_secret(SecretKind::Token).unwrap();
         let b = generate_secret(SecretKind::Token).unwrap();
-        assert_ne!(a.full, b.full);
+        assert!(a.full != b.full, "secrets must differ");
         assert_ne!(a.id, b.id);
         assert_ne!(a.hash, b.hash);
     }

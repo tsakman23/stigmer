@@ -138,6 +138,10 @@ pub fn event_hash(
     channel: &ChannelPath,
     at_ms: i64,
 ) -> String {
+    debug_assert!(
+        kind != EventKind::Unknown,
+        "EventKind::Unknown is deserialization-only and must never be hashed"
+    );
     let input = format!(
         "{prev}:{seq}:{}:{actor}:{message_id}:{thread_id}:{channel}:{at_ms}",
         kind.as_str()
@@ -173,6 +177,22 @@ mod tests {
         assert!(!EventKind::ALL.contains(&EventKind::Unknown));
         assert_eq!(EventKind::Unknown.as_str(), "unknown");
         assert_eq!(EventKind::from_name("unknown"), None);
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "never be hashed")]
+    fn event_hash_rejects_unknown_kind_in_debug_builds() {
+        hash_with(
+            GENESIS_HASH,
+            1,
+            EventKind::Unknown,
+            "alice",
+            MSG,
+            MSG,
+            "eng/ops",
+            1,
+        );
     }
 
     #[test]
