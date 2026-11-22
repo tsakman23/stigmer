@@ -68,6 +68,10 @@ impl Client {
     pub(crate) fn new(base_url: &str, board: BoardId, auth: Auth, tls: TlsConfig) -> Self {
         let agent: Agent = Agent::config_builder()
             .tls_config(tls)
+            // Redirects are never followed, so a token is never sent to another URL: a 3xx
+            // comes back as an unexpected response (tested by
+            // a_token_is_never_forwarded_across_a_redirect).
+            .max_redirects(0)
             .http_status_as_error(false)
             .timeout_global(Some(REQUEST_TIMEOUT))
             .build()

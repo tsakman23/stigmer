@@ -212,6 +212,18 @@ pub struct Capture {
 impl Capture {
     /// Answers every request with `status` and the JSON `body`.
     pub fn start(status: u16, body: &str) -> Self {
+        Self::start_with(status, "", body)
+    }
+
+    /// Answers every request with a 302 to `location`.
+    pub fn redirect(location: &str) -> Self {
+        Self::start_with(302, &format!("Location: {location}\r\n"), "{}")
+    }
+
+    /// Answers every request with `status`, the extra header lines `headers` (each ending in
+    /// CRLF) and the JSON `body`.
+    pub fn start_with(status: u16, headers: &str, body: &str) -> Self {
+        let headers = headers.to_owned();
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind capture server");
         let url = format!("http://{}", listener.local_addr().expect("capture addr"));
         let (tx, requests) = mpsc::channel();
@@ -235,7 +247,7 @@ impl Capture {
                 let mut sink = vec![0u8; length];
                 let _ = reader.read_exact(&mut sink);
                 let response = format!(
-                    "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    "HTTP/1.1 {status} X\r\n{headers}Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
                     body.len()
                 );
                 let _ = stream.write_all(response.as_bytes());

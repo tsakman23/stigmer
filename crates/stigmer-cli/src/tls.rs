@@ -28,12 +28,20 @@ pub(crate) fn tls_config(ca_cert: Option<&Path>) -> Result<TlsConfig, CliError> 
             CA_HINT,
         )
     })?;
-    let extra: Vec<Certificate<'static>> = parse_pem(&pem)
-        .filter_map(|item| match item {
-            Ok(PemItem::Certificate(cert)) => Some(cert),
-            _ => None,
-        })
-        .collect();
+    let mut extra: Vec<Certificate<'static>> = Vec::new();
+    for item in parse_pem(&pem) {
+        match item {
+            Ok(PemItem::Certificate(cert)) => extra.push(cert),
+            // A key or other block is not a CA certificate, but is well formed.
+            Ok(_) => {}
+            Err(_) => {
+                return Err(CliError::usage(
+                    format!("malformed PEM block in {}", path.display()),
+                    CA_HINT,
+                ))
+            }
+        }
+    }
     if extra.is_empty() {
         return Err(CliError::usage(
             format!("no CA certificate found in {}", path.display()),
@@ -110,6 +118,45 @@ mod tests {
             let err = check_credential_transport(refused, false).unwrap_err();
             assert_eq!(err.exit, Exit::Usage, "{refused}");
         }
+    }
+
+    #[test]
+    fn look_alike_hosts_are_not_loopback() {
+        for refused in [
+            "http://localhost@evil.example",
+            "http://localhost:7878@evil.example:7878",
+            "http://127.0.0.1.evil.example",
+            "http://evil-localhost",
+            "http://localhost.",
+        ] {
+            let err = check_credential_transport(refused, false).unwrap_err();
+            assert_eq!(err.exit, Exit::Usage, "{refused}");
+        }
+        // An IPv4-mapped loopback address is loopback.
+        assert_eq!(
+            check_credential_transport("http://[::ffff:127.0.0.1]:7878", false),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn a_malformed_pem_block_is_a_usage_error_even_beside_a_good_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ca.pem");
+        let key = rcgen::KeyPair::generate().unwrap();
+        let good = rcgen::CertificateParams::new(vec!["one.test".to_owned()])
+            .unwrap()
+            .self_signed(&key)
+            .unwrap()
+            .pem();
+        let corrupt = "-----BEGIN CERTIFICATE-----\n!!!not base64!!!\n-----END CERTIFICATE-----\n";
+        std::fs::write(&path, format!("{good}{corrupt}")).unwrap();
+        let err = tls_config(Some(&path)).unwrap_err();
+        assert_eq!(err.exit, Exit::Usage);
+        assert!(err.message().contains("malformed"), "{}", err.message());
+        let truncated = "-----BEGIN CERTIFICATE-----\nMIIB\n";
+        std::fs::write(&path, format!("{good}{truncated}")).unwrap();
+        assert_eq!(tls_config(Some(&path)).unwrap_err().exit, Exit::Usage);
     }
 
     #[test]

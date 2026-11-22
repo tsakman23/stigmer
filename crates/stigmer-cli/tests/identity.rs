@@ -895,3 +895,49 @@ fn tail_still_retries_after_connection_refused() {
     assert!(run.stderr.contains("retrying in 1s"), "{run:?}");
     assert!(run.stderr.contains("retrying in 2s"), "{run:?}");
 }
+
+#[test]
+fn a_token_is_never_forwarded_across_a_redirect() {
+    let target = Capture::start(200, r#"{"threads":[]}"#);
+    let redirect = Capture::redirect(&format!(
+        "{}/v1/boards/main/channels?prefix=eng",
+        target.url
+    ));
+    let user = CliUser::new();
+    let token = fake_token();
+    let run = user.run_env(
+        &["--url", &redirect.url, "read", "eng"],
+        &[("STIGMER_TOKEN", &token)],
+    );
+    assert_eq!(run.code, 1, "a redirect is not followed: {run:?}");
+    let head = redirect.request();
+    assert!(header(&head, "authorization").is_some(), "{head}");
+    std::thread::sleep(Duration::from_millis(200));
+    assert!(
+        !target.saw_request(),
+        "the redirect target never sees a request"
+    );
+    assert!(!run.all().contains(&token));
+}
+
+#[test]
+fn a_ca_bundle_with_a_malformed_block_is_refused() {
+    let (server, files, pems) = Stigmerd::tls();
+    let good = std::fs::read_to_string(&files.ca).unwrap();
+    let bundle = pems.path().join("bundle.pem");
+    std::fs::write(
+        &bundle,
+        format!("{good}-----BEGIN CERTIFICATE-----\n%%%%\n-----END CERTIFICATE-----\n"),
+    )
+    .unwrap();
+    let user = CliUser::new();
+    let bundle = bundle.display().to_string();
+    let run = user.run(&["--url", &server.url, "--ca-cert", &bundle, "whoami"]);
+    assert_eq!(run.code, 2, "{run:?}");
+    assert!(run.stderr.contains("malformed"), "{run:?}");
+    let run = user.run_env(
+        &["--url", &server.url, "whoami"],
+        &[("STIGMER_CA_CERT", &bundle)],
+    );
+    assert_eq!(run.code, 2, "{run:?}");
+}
