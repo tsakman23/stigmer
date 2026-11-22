@@ -7,7 +7,8 @@ use std::path::Path;
 use std::process::{Command, Output};
 
 use stigmer_core::{
-    parse_secret, secrets_match, BoardId, MessageId, Principal, PrincipalKind, Role, SecretKind,
+    hash_secret, parse_secret, secrets_match, BoardId, MessageId, Principal, PrincipalKind, Role,
+    SecretKind,
 };
 use stigmer_store::{CredentialScope, IdentityStore, Mode, SecurityEventKind, Store};
 use stigmer_store_sqlite::SqliteStore;
@@ -243,6 +244,37 @@ fn secrets_never_reach_stderr_or_the_security_log() {
         assert!(!stderr(&out).contains(part.as_str()));
         assert!(!stderr(&replacement).contains(part.as_str()));
     }
+
+    // Raw database bytes: no plaintext secret, and the scan really sees stored data.
+    let mut raw = std::fs::read(data.join("stigmer.db")).expect("read db");
+    if let Ok(wal) = std::fs::read(data.join("stigmer.db-wal")) {
+        raw.extend(wal);
+    }
+    for (secret, part) in secrets.iter().zip(&secret_parts) {
+        assert!(
+            !contains_bytes(&raw, part.as_bytes()),
+            "database holds a plaintext secret"
+        );
+        assert!(
+            !contains_bytes(&raw, secret.as_bytes()),
+            "database holds a full token"
+        );
+    }
+    let (id, secret) = parse_secret(SecretKind::Token, &secrets[0]).expect("token shape");
+    let hash = hash_secret(&secret);
+    assert_ne!(
+        hash.as_slice(),
+        secret.as_bytes(),
+        "the stored hash is not the plaintext"
+    );
+    assert!(
+        contains_bytes(&raw, &hash),
+        "scan control: the hash of token {id} must be in the database bytes"
+    );
+}
+
+fn contains_bytes(haystack: &[u8], needle: &[u8]) -> bool {
+    haystack.windows(needle.len()).any(|w| w == needle)
 }
 
 #[test]
