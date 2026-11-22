@@ -20,7 +20,8 @@ mistaken for an invite), checkable without storing them, and cheap to look up.
   and its errors never echo the input.
 - **Storage.** Only `sha256(secret)` is stored, next to the id, scope, principal, expiry,
   revocation time and last-seen time. The secret is returned once (by `enable-auth`,
-  `new-instance-token`, `invite create` or `join`) and never stored, logged or echoed. A
+  `new-instance-token`, `issue-member-token`, `invite create` or `join`) and never stored, logged
+  or echoed. A
   slow password hash is not needed: the secret has 256 bits of entropy.
 - **Verification.** Look up by id, then compare the hashes with `hashes_match`, which XOR-folds
   all 32 bytes with no early exit. An unknown id is compared against a fixed dummy hash

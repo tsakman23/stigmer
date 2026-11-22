@@ -30,18 +30,21 @@ network mode). It lists the distinct authors of board `main` whose messages are 
 least one `--admin` is required so the board keeps an administrator. With `--apply`, one store
 transaction (`IdentityStore::adopt_local_authors`) adds the members and sets those authors'
 messages to `author_kind = 'principal'`. A name already on the board refuses the whole mapping.
-No adopted member gets a token, and M1 has no way to issue one for an existing member (an
-invite always creates a new name), so an adopted name keeps its history but its owner carries
-on under a new name joined by invite.
+An adopted member has no token yet; the operator issues one with `stigmerd admin
+issue-member-token --board main --member <name>` (server stopped; printed once), and the member
+saves it with `stigmer login` (token on stdin).
 
-`author_kind` semantics after M1: `'principal'` marks a message whose author was adopted by
-the mapping. `'local'` is what `post` still writes for every new message, in local and in network
-mode alike (the store's `NewMessage` carries no author kind), so in M1 `'local'` means "not
-adopted", not "self-declared". A network-mode post is in fact authenticated (its author is the
-credential's principal). Consequence: running the mapping again after members have posted in
-network mode lists them as local authors, and since they are already members the whole mapping
-is refused (name taken). Writing `'principal'` for authenticated posts is carried into M2. The
-column is still not on the wire.
+`author_kind` semantics after M1: `post` decides it in its transaction. A post whose author is a
+member of the board (a network-mode post, whose author is the credential's principal, or a post
+by an adopted name) is stored as `'principal'`; any other post is `'local'`, a self-declared name
+as in M0. The mapping sets `'principal'` on the adopted authors' existing messages. So a
+member's post never makes its author a local author, and running the mapping again after members
+have posted is a clean "nothing to map". (A local author whose name later joins the board by
+invite keeps its old `'local'` messages and is still listed; the mapping then refuses with name
+taken.) There is
+no backfill migration: M1 is unreleased, and an M1 database whose members posted under the
+earlier rule (every post `'local'`) is a development artifact only. The column is still not on
+the wire.
 
 ## Consequences
 
@@ -53,7 +56,6 @@ column is still not on the wire.
 - M1 wrote the mapping command. Every local author of `main` is adopted (there is no "leave
   unmapped" option besides not running it), only `main` is mapped (M0 had no other board; a board
   created in local mode under M1 keeps its local authors), and the kind did not reach the wire
-  format. Still open: writing `'principal'` for authenticated posts (above), and a
-  way to give an adopted member a token.
+  format.
 - Idempotency keys are unique per board and author name, so they inherit the same self-declared
   identity.

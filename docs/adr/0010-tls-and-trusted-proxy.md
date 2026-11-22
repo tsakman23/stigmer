@@ -1,6 +1,6 @@
 # 0010. TLS and trusted proxies
 
-Status: Accepted
+Status: Accepted; amended 2026-11-22 for M1 (HTTP/2 compiled out, PeerAddr, proxies)
 Date: 2026-11-22
 
 ## Context
@@ -32,7 +32,9 @@ rate limiting needs the real peer address of every connection.
   `--header-read-timeout-ms` (default 10000, 1 to 60000) and `--tls-reload-interval-ms`
   (default 5000, 1 to 3600000). They are not a supported interface.
 - TLS is rustls with the ring provider, TLS 1.3 only, no client certificates, ALPN `http/1.1`
-  only, and `Strict-Transport-Security: max-age=31536000` on every TLS response. The pair
+  only, and `Strict-Transport-Security: max-age=31536000` on every response the router produces
+  over TLS (its 404 and 405 fallbacks included); the 400 and 431 responses hyper writes itself for
+  malformed HTTP never reach the router and carry none. The pair
   is served through a resolver over a shared cell. Every 5 s the files' modification times are
   checked; on a change both files are loaded and swapped in only if they parse and the key
   matches the certificate, so a half-written pair is never served. A bad candidate keeps the old

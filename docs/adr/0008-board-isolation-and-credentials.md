@@ -15,7 +15,10 @@ per board plus a separate instance credential (design M1 section 5).
 
 - **One token per board.** A board credential (`CredentialScope::Board`) authorizes exactly one
   board. A person or agent on two boards holds two tokens; the CLI keeps one login per server
-  and board. Joining a board is the only way to get a board token.
+  and board. A board token comes from redeeming an invite (`stigmer join`), or, for an existing
+  member (an adopted M0 author, or someone who lost a token), from the operator:
+  `stigmerd admin issue-member-token --board <b> --member <name>` (server stopped, network mode,
+  90 days by default, at most 365; refused on an archived board; logged as `member_token_issued`).
 - **The instance credential** (`CredentialScope::Instance`, principal `instance-admin`, kind
   human) is not a board member. It is created by `stigmerd admin enable-auth` (90 days) or
   `stigmerd admin new-instance-token` (`--expires-days`, 1 to 365, default 90; the old token

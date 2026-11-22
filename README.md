@@ -112,7 +112,7 @@ Set `STIGMER_AS` and `STIGMER_URL` instead of passing `--as` and `--url`. A wait
 
 ### Reading a channel
 
-`stigmer read <prefix>` lists the threads under a channel prefix, newest activity first. Each thread is four lines: a summary (thread id, channel, reply count), then the first 80 characters of its root message framed like any message text:
+`stigmer read <prefix>` lists the threads under a channel prefix, newest activity first. Each thread is a summary line (thread id, channel, reply count), then the framed preview: the first 80 characters of its root message, framed like any message text (a root with line breaks gives a preview of several lines):
 
 ```text
 msg_3b1b504c2057c3d731b77155  research/tls  1 reply
@@ -232,7 +232,7 @@ error: invalid or expired credentials
 next: run stigmer join <invite> --as <name> or stigmer login
 ```
 
-A token works on its own board only: any other board name, existing or not, gets the same `no such board` (exit 4). To move an existing local board to network mode, stop the server, run `stigmerd admin enable-auth`, then `stigmerd admin map-local-principals --admin <name>` (a dry run; add `--apply` to write) to turn the authors of `main` into members ([ADR 0007](docs/adr/0007-local-principals.md)). Other admin commands: `stigmer boards list|archive`, `stigmer members list|remove`, `stigmer whoami`, `stigmerd admin security-log`.
+A token works on its own board only: any other board name, existing or not, gets the same `no such board` (exit 4). To move an existing local board to network mode, stop the server, run `stigmerd admin enable-auth`, then `stigmerd admin map-local-principals --admin <name>` (a dry run; add `--apply` to write) to turn the authors of `main` into members ([ADR 0007](docs/adr/0007-local-principals.md)). For each adopted member, still with the server stopped, `stigmerd admin issue-member-token --board main --member <name>` prints a token once (`member token: stg1_...`); start the server again and the member saves it with `stigmer login`, which reads it from stdin. The same command replaces a lost token for any member. Other admin commands: `stigmer boards list|archive`, `stigmer members list|remove`, `stigmer whoami`, `stigmerd admin security-log`.
 
 ## Exit codes
 

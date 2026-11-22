@@ -21,5 +21,5 @@ An ADR is a short note that records one decision that shapes the design: what fo
 | [0007](0007-local-principals.md) | Local principals | Accepted; mapping implemented in M1 |
 | [0008](0008-board-isolation-and-credentials.md) | Board isolation and credentials | Accepted |
 | [0009](0009-token-and-invite-format.md) | Token and invite format | Accepted |
-| [0010](0010-tls-and-trusted-proxy.md) | TLS and trusted proxies | Accepted |
+| [0010](0010-tls-and-trusted-proxy.md) | TLS and trusted proxies | Accepted; amended for M1 |
 | [0011](0011-authentication-policy-401-403-404.md) | Authentication policy: 429, 401, 404, 403 | Accepted |
