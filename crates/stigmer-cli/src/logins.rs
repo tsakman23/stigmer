@@ -2,7 +2,8 @@
 //!
 //! `$XDG_CONFIG_HOME/stigmer/logins.json`, else `$HOME/.config/stigmer/logins.json`. On unix
 //! the directory is made 0700 and the file is written 0600 before any secret goes in; updates go
-//! through a temp file in the same directory, fsynced and renamed over the old one. A file that
+//! through a temp file in the same directory, fsynced and renamed over the old one, while an
+//! exclusive lock on `logins.lock` beside it is held for the whole read-modify-write. A file that
 //! does not parse is an error and is never rewritten. Nothing here prints a token or the file's
 //! contents.
 
@@ -158,6 +159,11 @@ impl Logins {
         token: &str,
         saved_at_ms: i64,
     ) -> Result<(), CliError> {
+        // Held until the end of this function: the whole read-modify-write is exclusive, so
+        // concurrent joins and logins never lose each other's entries.
+        let _lock = lock_for_update(&self.path).map_err(|e| io_failure(&self.path, "lock", &e))?;
+        // Re-read under the lock; a file that went bad meanwhile is still never overwritten.
+        self.logins = Logins::load(&self.path)?.logins;
         let (url, scope) = (normalize_url(url).to_owned(), scope.to_string());
         self.logins
             .retain(|login| !(normalize_url(&login.url) == url && login.scope == scope));
@@ -187,6 +193,25 @@ impl Logins {
     pub(crate) fn path(&self) -> &Path {
         &self.path
     }
+}
+
+/// Takes an exclusive lock on `logins.lock` (created 0600) beside the login file, creating the
+/// directory owner-only first. The lock is released when the returned file is dropped.
+fn lock_for_update(path: &Path) -> std::io::Result<std::fs::File> {
+    let dir = path
+        .parent()
+        .ok_or_else(|| std::io::Error::other("the login file path has no directory"))?;
+    private_dir(dir)?;
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true).write(true).create(true).truncate(false);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let file = options.open(dir.join("logins.lock"))?;
+    file.lock()?;
+    Ok(file)
 }
 
 /// Creates `dir` (and missing parents) owner-only, and makes `dir` itself 0700 if it existed.
@@ -278,11 +303,16 @@ mod tests {
         assert_eq!(value["logins"][0]["url"], "http://h");
         assert_eq!(value["logins"][0]["scope"], "instance");
         assert_eq!(value["logins"][0]["saved_at_ms"], 6);
-        let names: Vec<_> = std::fs::read_dir(path.parent().unwrap())
+        let mut names: Vec<_> = std::fs::read_dir(path.parent().unwrap())
             .unwrap()
             .map(|entry| entry.unwrap().file_name())
             .collect();
-        assert_eq!(names, vec!["logins.json"], "no temp file is left behind");
+        names.sort();
+        assert_eq!(
+            names,
+            vec!["logins.json", "logins.lock"],
+            "no temp file is left behind"
+        );
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -306,6 +336,44 @@ mod tests {
             .unwrap();
         let mode = std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o700);
+    }
+
+    #[test]
+    fn concurrent_updates_keep_every_entry() {
+        let home = tempfile::tempdir().unwrap();
+        let path = home.path().join("stigmer").join("logins.json");
+        let writers: Vec<_> = (0..16)
+            .map(|i| {
+                let path = path.clone();
+                std::thread::spawn(move || {
+                    // Every writer read the file before any of them saved, as join and login do.
+                    let mut logins = Logins::load(&path).unwrap();
+                    let scope = Scope::Board(BoardId::new(&format!("b{i}")).unwrap());
+                    logins
+                        .save("http://h", &scope, "p", &format!("stg1_{i}"), i)
+                        .unwrap();
+                })
+            })
+            .collect();
+        for writer in writers {
+            writer.join().unwrap();
+        }
+        let back = Logins::load(&path).unwrap();
+        for i in 0..16 {
+            let scope = Scope::Board(BoardId::new(&format!("b{i}")).unwrap());
+            assert_eq!(
+                back.token("http://h", &scope),
+                Some(format!("stg1_{i}").as_str()),
+                "entry {i} lost"
+            );
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let lock = path.with_file_name("logins.lock");
+            let mode = std::fs::metadata(&lock).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600);
+        }
     }
 
     #[test]
