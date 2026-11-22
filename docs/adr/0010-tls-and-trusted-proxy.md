@@ -1,4 +1,4 @@
-# 0008. TLS, trusted proxies and the bind rule
+# 0010. TLS and trusted proxies
 
 Status: Accepted
 Date: 2026-11-22

@@ -1,6 +1,6 @@
 # 0003. Loopback-only bind and the Host/Origin guard
 
-Status: Accepted; the loopback-only bind rule is superseded by [0008](0008-tls-trusted-proxy-and-the-bind-rule.md)
+Status: Accepted; the loopback-only bind rule is superseded by [0010](0010-tls-and-trusted-proxy.md)
 Date: 2026-11-21
 
 ## Context
