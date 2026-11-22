@@ -146,7 +146,7 @@ impl CliError {
             ErrorCode::Conflict => (
                 Exit::Failure,
                 "conflict",
-                "retry with a different --key".into(),
+                "that name or resource already exists; choose another".into(),
             ),
             ErrorCode::Forbidden => (
                 Exit::Forbidden,
@@ -269,6 +269,13 @@ mod tests {
             value,
             serde_json::json!({"error": {"code": "usage", "message": "bad"}, "next": "do this"})
         );
+    }
+
+    #[test]
+    fn a_conflict_outside_a_post_says_the_thing_exists() {
+        let next = api(ErrorCode::Conflict).next;
+        assert!(next.contains("already exists"), "{next}");
+        assert!(!next.contains("--key"), "{next}");
     }
 
     #[test]

@@ -941,3 +941,17 @@ fn a_ca_bundle_with_a_malformed_block_is_refused() {
     );
     assert_eq!(run.code, 2, "{run:?}");
 }
+
+#[test]
+fn creating_an_existing_board_says_to_choose_another_name() {
+    let server = Stigmerd::network();
+    let root = instance_admin(&server);
+    let run = root.run(&["--url", &server.url, "boards", "create", "main"]);
+    assert_eq!(run.code, 1, "{run:?}");
+    assert!(
+        run.stderr
+            .contains("next: a board with that name already exists; choose another name"),
+        "{run:?}"
+    );
+    assert!(!run.stderr.contains("--key"), "{run:?}");
+}

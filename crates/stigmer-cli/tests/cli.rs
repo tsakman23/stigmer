@@ -698,3 +698,27 @@ fn wait_json_timeout_has_a_cursor_field() {
     assert_eq!(error["cursor"], cursor.as_str(), "{error}");
     assert!(error["next"].as_str().unwrap().contains(&cursor));
 }
+
+#[test]
+fn conflicting_idempotency_key_hints_at_the_key() {
+    let url = server();
+    let first = stigmer(
+        &url,
+        &["--as", "alice", "post", "eng", "one", "--key", "k-9"],
+    );
+    assert_eq!(first.code, 0, "stderr: {}", first.stderr);
+    let clash = stigmer(
+        &url,
+        &["--as", "alice", "post", "eng", "two", "--key", "k-9"],
+    );
+    assert_eq!(
+        clash.code, 1,
+        "stdout: {} stderr: {}",
+        clash.stdout, clash.stderr
+    );
+    assert!(
+        clash.stderr.contains("next: retry with a different --key"),
+        "{}",
+        clash.stderr
+    );
+}

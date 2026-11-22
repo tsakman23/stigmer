@@ -146,7 +146,13 @@ fn send(client: &Client, msg: NewMessage) -> Result<Posted, CliError> {
         text: msg.text,
         labels: msg.labels,
     };
-    client.post(&body, msg.idempotency_key.as_deref())
+    client
+        .post(&body, msg.idempotency_key.as_deref())
+        .map_err(|err| match err.code {
+            // A post conflicts only on its idempotency key.
+            "conflict" => err.with_next("retry with a different --key"),
+            _ => err,
+        })
 }
 
 fn report_posted(ctx: &Ctx, posted: &Posted, first: String) -> Result<Exit, CliError> {

@@ -119,7 +119,14 @@ pub(crate) fn boards(ctx: &Ctx, command: BoardsCommand) -> Result<Exit, CliError
             let name = board_id(&name)?;
             let client = ctx.client_for(&[Scope::Instance])?;
             let request = CreateBoardRequest { name };
-            let created: BoardSummary = client.post_json(&client.root_route("boards"), &request)?;
+            let created: BoardSummary = client
+                .post_json(&client.root_route("boards"), &request)
+                .map_err(|err| match err.code {
+                    "conflict" => {
+                        err.with_next("a board with that name already exists; choose another name")
+                    }
+                    _ => err,
+                })?;
             ctx.emit(&created, &format!("created board {}\n", created.id))?;
         }
         BoardsCommand::Archive { name } => {
