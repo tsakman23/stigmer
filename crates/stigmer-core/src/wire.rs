@@ -81,7 +81,7 @@ pub struct ErrorBody {
 
 /// One board in a listing.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct BoardInfo {
+pub struct BoardSummary {
     pub id: BoardId,
     pub archived: bool,
     pub created_at_ms: i64,
@@ -97,7 +97,7 @@ pub struct CreateBoardRequest {
 /// Response of a board listing.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BoardsResponse {
-    pub boards: Vec<BoardInfo>,
+    pub boards: Vec<BoardSummary>,
 }
 
 /// One member of a board.
@@ -382,7 +382,7 @@ mod tests {
             vec![token]
         );
         let boards = BoardsResponse {
-            boards: vec![BoardInfo {
+            boards: vec![BoardSummary {
                 id: BoardId::main(),
                 archived: false,
                 created_at_ms: 7,
