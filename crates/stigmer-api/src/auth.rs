@@ -20,7 +20,7 @@ use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use stigmer_core::{parse_secret, secrets_match, PrincipalKind, Role, SecretKind, TokenId};
 use stigmer_store::{
-    CredentialScope, IdentityStore, Mode, SecurityEvent, SecurityEventKind, StoreError,
+    Credential, CredentialScope, IdentityStore, Mode, SecurityEvent, SecurityEventKind, StoreError,
 };
 
 use crate::authz::{Authenticated, Authorize};
@@ -219,6 +219,40 @@ fn bearer(headers: &HeaderMap) -> Option<&str> {
         .filter(|t| !t.is_empty())
 }
 
+/// Neither revoked nor expired at `now_ms`.
+fn live(credential: &Credential, now_ms: i64) -> bool {
+    credential.revoked_at_ms.is_none() && now_ms < credential.expires_at_ms
+}
+
+/// Whether `who`, authenticated earlier in this request, would still be now: its credential is
+/// stored, neither revoked nor expired, and for a board credential its principal is still a
+/// member. A caller without a credential (local mode) always is. The secret was checked when the
+/// request was authenticated and is not needed again.
+pub(crate) async fn still_authenticated<S: IdentityStore>(
+    store: &S,
+    who: &Authenticated,
+    now_ms: i64,
+) -> Result<bool, StoreError> {
+    let Some(id) = &who.credential else {
+        return Ok(true);
+    };
+    let Some(credential) = store.find_credential(id).await? else {
+        return Ok(false);
+    };
+    if !live(&credential, now_ms) {
+        return Ok(false);
+    }
+    match &credential.scope {
+        CredentialScope::Instance => Ok(true),
+        CredentialScope::Board(board) => match store.get_member(board, &credential.principal).await
+        {
+            Ok(member) => Ok(member.is_some()),
+            Err(StoreError::NotFound { .. }) => Ok(false),
+            Err(err) => Err(err),
+        },
+    }
+}
+
 /// The caller a parsed token stands for, or `None` for any reason to refuse it. Only storage
 /// failures are errors.
 async fn verify<S: IdentityStore>(
@@ -233,10 +267,7 @@ async fn verify<S: IdentityStore>(
         black_box(secrets_match(&secret, &DUMMY_HASH));
         return Ok(None);
     };
-    let usable = secrets_match(&secret, &credential.secret_hash)
-        && credential.revoked_at_ms.is_none()
-        && now_ms < credential.expires_at_ms;
-    if !usable {
+    if !secrets_match(&secret, &credential.secret_hash) || !live(&credential, now_ms) {
         return Ok(None);
     }
     let (kind, role) = match &credential.scope {

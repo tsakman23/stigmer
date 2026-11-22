@@ -23,7 +23,7 @@ use stigmer_store::{CredentialScope, IdentityStore, Mode, SecurityEvent, Store, 
 use tokio::sync::{watch, Semaphore};
 
 use crate::admin_routes;
-use crate::auth::{authenticate, require_peer, PeerGuard};
+use crate::auth::{authenticate, require_peer, still_authenticated, PeerGuard};
 use crate::authz::{Action, Authenticated, Authorize, Scope};
 use crate::body_deadline::limit_body_idle;
 use crate::config::ApiConfig;
@@ -31,7 +31,7 @@ use crate::error::ApiError;
 use crate::host_guard::{require_allowed_host, AllowedHosts};
 use crate::join_routes;
 use crate::ratelimit::FailureLimiter;
-use crate::wait::read_events;
+use crate::wait::{read_events, Read};
 
 /// Largest accepted request body.
 const MAX_BODY_BYTES: usize = 256 * 1024;
@@ -391,7 +391,7 @@ fn parse_from_now(raw: Option<&str>) -> Result<bool, ApiError> {
     }
 }
 
-async fn read_events_route<S: Store, A: Authorize>(
+async fn read_events_route<S: Store + IdentityStore, A: Authorize>(
     State(state): State<AppState<S, A>>,
     Extension(who): Extension<Authenticated>,
     path: Result<Path<String>, PathRejection>,
@@ -447,15 +447,21 @@ async fn read_events_route<S: Store, A: Authorize>(
     } else {
         after
     };
-    let response = read_events(
-        &*state.store,
+    let (store, clock, caller) = (&*state.store, &state.config.clock, &who);
+    let read = read_events(
+        store,
         state.shutdown.clone(),
         &board,
         after,
         &filter,
         limit,
         timeout,
+        move || still_authenticated(store, caller, clock()),
     )
     .await?;
-    Ok(Json(response))
+    match read {
+        Read::Events(response) => Ok(Json(response)),
+        // The same 401 as any refused credential.
+        Read::NoLongerAllowed => Err(ApiError::unauthorized()),
+    }
 }

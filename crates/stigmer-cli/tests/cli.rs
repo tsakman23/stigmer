@@ -126,6 +126,18 @@ fn missing_as_exits_2_with_next_hint() {
 }
 
 #[test]
+fn board_name_made_only_of_dots_exits_5() {
+    // Nothing listens on this URL, so exit 5 (not 1) shows the check happened client-side.
+    let url = dead_url();
+    for board in [".", ".."] {
+        let run = stigmer(&url, &["--as", "alice", "--board", board, "read", "eng"]);
+        assert_eq!(run.code, 5, "{board}: stderr: {}", run.stderr);
+        assert!(run.stderr.contains("only of dots"), "{}", run.stderr);
+        assert_failure_lines(&run);
+    }
+}
+
+#[test]
 fn text_over_10000_chars_exits_5() {
     // Nothing listens on this URL, so exit 5 (not 1) shows the check happened client-side.
     let url = dead_url();

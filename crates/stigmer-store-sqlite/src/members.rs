@@ -11,7 +11,8 @@ use crate::credentials::log_security;
 use crate::posts::{LOCAL_AUTHOR_KIND, PRINCIPAL_AUTHOR_KIND};
 use crate::{backend, not_found};
 
-/// Who adopts local authors: only the operator, through `stigmerd admin map-local-principals`.
+/// The operator's principal: the instance credential's and the adopter of local authors (only
+/// through `stigmerd admin map-local-principals`). Reserved: no member may take it.
 const INSTANCE_ADMIN: &str = "instance-admin";
 
 const MEMBER_COLUMNS: &str = "SELECT name, kind, role, created_at_ms FROM principals";
@@ -59,7 +60,8 @@ pub(crate) fn add(
     Ok(member)
 }
 
-/// Inserts a member inside the caller's transaction; `NameTaken` if the name is on the board.
+/// Inserts a member inside the caller's transaction; `NameTaken` if the name is on the board or
+/// is the reserved `instance-admin`.
 pub(crate) fn insert(
     tx: &Transaction<'_>,
     board: &BoardId,
@@ -68,7 +70,8 @@ pub(crate) fn insert(
     role: Role,
     now_ms: i64,
 ) -> Result<Member, StoreError> {
-    if find(tx, board, name)?.is_some() {
+    // The operator's name in the security log is never a member's.
+    if name.as_str() == INSTANCE_ADMIN || find(tx, board, name)?.is_some() {
         return Err(StoreError::Conflict(ConflictKind::NameTaken));
     }
     tx.execute(

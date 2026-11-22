@@ -4,6 +4,7 @@ mod common;
 
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::http::{Method, StatusCode};
 use common::*;
@@ -446,4 +447,76 @@ async fn removed_member_is_refused_on_the_very_next_request() {
     let reply = send(&net.app, get()).await;
     assert_eq!(reply.status, StatusCode::UNAUTHORIZED);
     assert_eq!(reply.body, UNAUTHORIZED_BODY);
+}
+
+/// Starts a long poll on main for `token` and checks that it is parked.
+async fn parked_wait(net: &Net, token: &str) -> tokio::task::JoinHandle<Reply> {
+    let (app, token) = (net.app.clone(), token.to_owned());
+    let uri = "/v1/boards/main/events?from_now=true&timeout_s=30";
+    let handle =
+        tokio::spawn(
+            async move { send(&app, request(Method::GET, uri, Some(&token), None)).await },
+        );
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(!handle.is_finished(), "the wait must be parked");
+    handle
+}
+
+async fn finished(handle: tokio::task::JoinHandle<Reply>) -> Reply {
+    tokio::time::timeout(Duration::from_secs(5), handle)
+        .await
+        .expect("the wait must end once a post lands")
+        .expect("wait task")
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn revocation_ends_an_open_wait_with_401() {
+    let net = network().await;
+    let main = BoardId::main();
+    let revoked = member_token(&net.store, &main, "alice", Role::Member).await;
+    let kept = member_token(&net.store, &main, "bob", Role::Member).await;
+    let (revoked_wait, kept_wait) = (
+        parked_wait(&net, &revoked).await,
+        parked_wait(&net, &kept).await,
+    );
+    net.store
+        .revoke_credential(&token_id(&revoked), NOW)
+        .await
+        .unwrap();
+    seed_thread(&net.store, &main).await;
+
+    let reply = finished(revoked_wait).await;
+    assert_eq!(reply.status, StatusCode::UNAUTHORIZED, "{}", reply.body);
+    assert_eq!(reply.body, UNAUTHORIZED_BODY);
+    let reply = finished(kept_wait).await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+    assert_eq!(reply.json()["events"].as_array().unwrap().len(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn member_removal_ends_an_open_wait_with_401() {
+    let net = network().await;
+    let main = BoardId::main();
+    let token = member_token(&net.store, &main, "alice", Role::Member).await;
+    let waiting = parked_wait(&net, &token).await;
+    net.store
+        .remove_member(&main, &Principal::new("alice").unwrap(), NOW)
+        .await
+        .unwrap();
+    seed_thread(&net.store, &main).await;
+    let reply = finished(waiting).await;
+    assert_eq!(reply.status, StatusCode::UNAUTHORIZED, "{}", reply.body);
+    assert_eq!(reply.body, UNAUTHORIZED_BODY);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn expiry_during_an_open_wait_ends_it_with_401() {
+    let net = network().await;
+    let main = BoardId::main();
+    let token = member_token(&net.store, &main, "alice", Role::Member).await;
+    let waiting = parked_wait(&net, &token).await;
+    net.now.store(NOW + 2 * DAY, Ordering::SeqCst);
+    seed_thread(&net.store, &main).await;
+    let reply = finished(waiting).await;
+    assert_eq!(reply.status, StatusCode::UNAUTHORIZED, "{}", reply.body);
 }

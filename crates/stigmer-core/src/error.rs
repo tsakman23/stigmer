@@ -19,6 +19,8 @@ pub enum CoreError {
     BadPrincipal(String),
     #[error("invalid id: {0}")]
     BadId(String),
+    #[error("invalid board name {0}: a name made only of dots is not allowed")]
+    DotsOnlyBoard(String),
     #[error("invalid idempotency key: {0}")]
     BadIdempotencyKey(String),
     #[error("invalid cursor: {0}")]

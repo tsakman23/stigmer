@@ -194,7 +194,7 @@ async fn create_duplicate_board_is_409() {
 async fn invalid_board_name_is_400() {
     let net = network().await;
     let root = instance_token(&net.store).await;
-    for name in ["Bad Name", "", "a/b", "UPPER"] {
+    for name in ["Bad Name", "", "a/b", "UPPER", ".", "..", "..."] {
         let reply = create(&net, &root, name).await;
         assert_eq!(reply.status, StatusCode::BAD_REQUEST, "{name:?}");
         assert_eq!(reply.json()["error"]["code"], "invalid_input");

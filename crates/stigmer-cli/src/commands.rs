@@ -77,7 +77,7 @@ pub(crate) fn board_id(raw: &str) -> Result<BoardId, CliError> {
     parse_arg(
         raw,
         BoardId::new,
-        "board names are 1 to 64 characters of [a-z0-9._-]",
+        "board names are 1 to 64 characters of [a-z0-9._-], not only dots",
     )
 }
 

@@ -36,6 +36,7 @@ where
     identity_members::add_member_then_list_and_name_taken_conflict(factory().await).await;
     identity_members::member_names_are_unique_per_board_not_globally(factory().await).await;
     identity_members::remove_member_revokes_their_credentials(factory().await).await;
+    identity_members::instance_admin_is_a_reserved_member_name(factory().await).await;
     identity_credentials::credential_roundtrip_and_find_unknown_is_none(factory().await).await;
     identity_credentials::revoke_credential_is_idempotent(factory().await).await;
     identity_credentials::archive_style_revoke_keeps_admins_when_asked(factory().await).await;

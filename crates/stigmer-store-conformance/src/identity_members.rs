@@ -149,3 +149,66 @@ pub(crate) async fn remove_member_revokes_their_credentials<S: Store + IdentityS
         "{SCENARIO}: remove again"
     );
 }
+
+/// `instance-admin` names the operator in the security log; no member may take it.
+pub(crate) async fn instance_admin_is_a_reserved_member_name<S: Store + IdentityStore>(store: S) {
+    const SCENARIO: &str = "instance_admin_is_a_reserved_member_name";
+    let main = BoardId::main();
+    let reserved = principal("instance-admin");
+    let taken = Err(StoreError::Conflict(ConflictKind::NameTaken));
+    let added = store
+        .add_member(&main, &reserved, PrincipalKind::Human, Role::Admin, NOW)
+        .await;
+    assert_eq!(added.map(drop), taken.clone(), "{SCENARIO}: add_member");
+
+    let post = crate::support::new_thread_on(&main, "eng", "instance-admin", "m0 post");
+    crate::support::post_ok(&store, post, SCENARIO).await;
+    let adoption = stigmer_store::Adoption {
+        name: reserved.clone(),
+        kind: PrincipalKind::Human,
+        role: Role::Admin,
+    };
+    let adopted = store.adopt_local_authors(&main, &[adoption], NOW).await;
+    assert_eq!(
+        adopted.map(drop),
+        taken.clone(),
+        "{SCENARIO}: adopt_local_authors"
+    );
+    assert_eq!(
+        store.list_local_authors(&main).await,
+        Ok(vec![reserved.clone()]),
+        "{SCENARIO}: the author stays local"
+    );
+
+    let new = crate::identity::invite(1, &main, Role::Admin, PrincipalKind::Human);
+    let hash = new.secret_hash;
+    ok(store.create_invite(new, NOW).await, SCENARIO);
+    let joined = store
+        .consume_invite(
+            &token_id(1),
+            &hash,
+            &reserved,
+            NOW,
+            crate::identity::join_credential(100),
+        )
+        .await;
+    assert_eq!(joined.map(drop), taken, "{SCENARIO}: consume_invite");
+    assert_eq!(
+        store.list_members(&main).await,
+        Ok(vec![]),
+        "{SCENARIO}: no member was created"
+    );
+    let bob = store
+        .consume_invite(
+            &token_id(1),
+            &hash,
+            &principal("bob"),
+            NOW,
+            crate::identity::join_credential(100),
+        )
+        .await;
+    assert!(
+        bob.is_ok(),
+        "{SCENARIO}: the invite was still unused: {bob:?}"
+    );
+}

@@ -1,6 +1,6 @@
 //! The events read: a plain feed read, or a long poll that waits for a matching event.
 
-use std::future::pending;
+use std::future::{pending, Future};
 use std::time::Duration;
 
 use stigmer_core::{BoardId, Cursor, EventFilter, EventsResponse};
@@ -8,12 +8,24 @@ use stigmer_store::{Store, StoreError};
 use tokio::sync::watch;
 use tokio::time::Instant;
 
+/// What an events read came to.
+#[derive(Debug)]
+pub(crate) enum Read {
+    Events(EventsResponse),
+    /// The caller stopped being allowed while the read waited (`still_allowed` said no).
+    NoLongerAllowed,
+}
+
 /// Reads events after `after`. With `timeout > 0` and nothing to return, waits until a
 /// matching event lands, the deadline passes, or `shutdown` flips to `true`. The deadline is
 /// fixed once; wake-ups for events the filter rejects do not extend it.
 ///
+/// After every wake `still_allowed` is asked again before anything is read or returned, so a
+/// credential revoked, expired or removed while the request waited gets no events.
+///
 /// Dropping the returned future cancels the wait, so a client disconnect needs no cleanup.
-pub(crate) async fn read_events<S: Store>(
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn read_events<S, F, Fut>(
     store: &S,
     mut shutdown: watch::Receiver<bool>,
     board: &BoardId,
@@ -21,7 +33,13 @@ pub(crate) async fn read_events<S: Store>(
     filter: &EventFilter,
     limit: u32,
     timeout: Duration,
-) -> Result<EventsResponse, StoreError> {
+    mut still_allowed: F,
+) -> Result<Read, StoreError>
+where
+    S: Store,
+    F: FnMut() -> Fut,
+    Fut: Future<Output = Result<bool, StoreError>>,
+{
     let deadline = Instant::now() + timeout;
     loop {
         // Read the head first: everything up to it is examined by the query below, so if the
@@ -41,24 +59,27 @@ pub(crate) async fn read_events<S: Store>(
             .await?;
         if let Some(last) = events.last() {
             let cursor = Some(last.cursor.clone());
-            return Ok(EventsResponse {
+            return Ok(Read::Events(EventsResponse {
                 events,
                 cursor,
                 timed_out: false,
-            });
+            }));
         }
         let remaining = deadline.saturating_duration_since(Instant::now());
         let give_up = !timeout.is_zero() && (remaining.is_zero() || *shutdown.borrow());
         if timeout.is_zero() || give_up {
-            return Ok(EventsResponse {
+            return Ok(Read::Events(EventsResponse {
                 events,
                 cursor: after.or(head),
                 timed_out: give_up,
-            });
+            }));
         }
         tokio::select! {
             woke = store.wait_past(board, head.as_ref(), remaining) => { woke?; }
             _ = shutdown_changed(&mut shutdown) => {}
+        }
+        if !still_allowed().await? {
+            return Ok(Read::NoLongerAllowed);
         }
     }
 }

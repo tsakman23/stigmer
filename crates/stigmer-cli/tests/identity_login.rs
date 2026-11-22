@@ -201,7 +201,9 @@ fn join_taken_name_prints_the_409_hint_and_keeps_the_invite_usable() {
     assert_eq!(run.code, 1, "{run:?}");
     assert!(
         run.stderr
-            .contains("next: choose another --as name; the invite is still valid"),
+            .contains(
+                "next: choose another --as name (instance-admin is reserved); the invite is still valid"
+            ),
         "{run:?}"
     );
     assert!(!bob.logins_path().exists());

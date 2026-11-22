@@ -48,13 +48,16 @@ pub(crate) fn is_slug_char(c: char) -> bool {
 pub struct BoardId(String);
 
 impl BoardId {
-    /// Validates and wraps a board id (`[a-z0-9._-]{1,64}`).
+    /// Validates and wraps a board id (`[a-z0-9._-]{1,64}`, not only dots: `.` and `..` are
+    /// path segments, not names).
     pub fn new(raw: &str) -> Result<Self, CoreError> {
-        if (1..=64).contains(&raw.chars().count()) && raw.chars().all(is_slug_char) {
-            Ok(Self(raw.to_owned()))
-        } else {
-            Err(CoreError::BadId(raw.to_owned()))
+        if !(1..=64).contains(&raw.chars().count()) || !raw.chars().all(is_slug_char) {
+            return Err(CoreError::BadId(raw.to_owned()));
         }
+        if raw.chars().all(|c| c == '.') {
+            return Err(CoreError::DotsOnlyBoard(raw.to_owned()));
+        }
+        Ok(Self(raw.to_owned()))
     }
 
     /// The default board.
@@ -182,6 +185,20 @@ mod tests {
                 matches!(MessageId::new(bad), Err(CoreError::BadId(_))),
                 "{bad}"
             );
+        }
+    }
+
+    #[test]
+    fn board_id_rejects_names_made_only_of_dots() {
+        let all_dots = ".".repeat(64);
+        for bad in [".", "..", "...", all_dots.as_str()] {
+            let err = BoardId::new(bad).unwrap_err();
+            assert_eq!(err, CoreError::DotsOnlyBoard(bad.to_owned()), "{bad}");
+            assert!(err.to_string().contains("only of dots"), "{err}");
+        }
+        assert!(serde_json::from_str::<BoardId>("\"..\"").is_err());
+        for good in ["a.", ".a", "a..b", "v1.2", "..x"] {
+            assert!(BoardId::new(good).is_ok(), "{good}");
         }
     }
 

@@ -239,6 +239,9 @@ const REDACTED: &str = "<redacted>";
 /// `create_credential` for that board, and `consume_invite` refuses an invite into it like any
 /// other unusable invite. Reads, `remove_member` and revocation keep working on archived boards,
 /// as the archive flow needs them.
+///
+/// The name `instance-admin` belongs to the instance credential and the security log: `add_member`,
+/// `adopt_local_authors` and `consume_invite` refuse it as `Conflict(ConflictKind::NameTaken)`.
 pub trait IdentityStore: Send + Sync + 'static {
     /// The instance mode. A fresh store is `Mode::Local`.
     fn mode(&self) -> impl Future<Output = Result<Mode, StoreError>> + Send;

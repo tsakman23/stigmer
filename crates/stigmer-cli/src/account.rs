@@ -73,7 +73,9 @@ pub(crate) fn join(ctx: &Ctx, invite: &str) -> Result<Exit, CliError> {
     let joined: JoinResponse = client
         .post_json(&client.root_route("join"), &request)
         .map_err(|err| match err.code {
-            "conflict" => err.with_next("choose another --as name; the invite is still valid"),
+            "conflict" => err.with_next(
+                "choose another --as name (instance-admin is reserved); the invite is still valid",
+            ),
             _ => err,
         })?;
     let scope = Scope::Board(joined.board.clone());
