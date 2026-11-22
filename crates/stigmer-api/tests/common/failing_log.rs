@@ -253,6 +253,22 @@ impl IdentityStore for LogFailingStore {
         revoked
     }
 
+    fn revoke_instance_credentials_except(
+        &self,
+        keep: &TokenId,
+        now_ms: i64,
+    ) -> impl Future<Output = Result<u64, StoreError>> + Send {
+        self.inner.revoke_instance_credentials_except(keep, now_ms)
+    }
+
+    fn replace_instance_credential(
+        &self,
+        credential: NewCredential,
+        now_ms: i64,
+    ) -> impl Future<Output = Result<u64, StoreError>> + Send {
+        self.inner.replace_instance_credential(credential, now_ms)
+    }
+
     fn create_invite(
         &self,
         invite: NewInvite,

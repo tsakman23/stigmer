@@ -334,12 +334,14 @@ mod tests {
         assert_send(store.remove_member(board, name, 0));
         assert_send(store.list_local_authors(board));
         assert_send(store.adopt_local_authors(board, &[], 0));
-        assert_send(store.create_credential(credential, 0));
+        assert_send(store.create_credential(credential.clone(), 0));
         assert_send(store.find_credential(id));
         assert_send(store.touch_credential(id, 0));
         assert_send(store.list_credentials(board));
         assert_send(store.revoke_credential(id, 0));
         assert_send(store.revoke_board_credentials(board, true, 0));
+        assert_send(store.revoke_instance_credentials_except(id, 0));
+        assert_send(store.replace_instance_credential(credential, 0));
         assert_send(store.create_invite(invite, 0));
         assert_send(store.consume_invite(id, &[0; 32], name, 0, join));
         assert_send(store.log_security(event));

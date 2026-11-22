@@ -52,6 +52,19 @@ pub enum AdminCommand {
             value_parser = clap::value_parser!(u32).range(1..=365)
         )]
         expires_days: u32,
+        /// Also revoke every other instance token, in the same transaction as the new one is
+        /// stored (board tokens are untouched).
+        #[arg(long)]
+        revoke_others: bool,
+        #[command(flatten)]
+        dir: DataDirArg,
+    },
+    /// Revoke any token, an instance token or a board token, by its id (the 16 hex characters
+    /// after stg1_, as token list shows). Revoking a revoked token changes nothing.
+    RevokeToken {
+        /// The token id.
+        #[arg(value_name = "ID")]
+        id: String,
         #[command(flatten)]
         dir: DataDirArg,
     },
@@ -103,6 +116,7 @@ pub async fn run(command: AdminCommand) -> Result<(), Failure> {
     let dir = match &command {
         AdminCommand::EnableAuth { dir, .. }
         | AdminCommand::NewInstanceToken { dir, .. }
+        | AdminCommand::RevokeToken { dir, .. }
         | AdminCommand::IssueMemberToken { dir, .. }
         | AdminCommand::MapLocalPrincipals { dir, .. }
         | AdminCommand::SecurityLog { dir, .. } => &dir.data_dir,
@@ -124,13 +138,26 @@ pub async fn run(command: AdminCommand) -> Result<(), Failure> {
             write_once(&mut out, &lines)?;
             issued.log_failure.map_or(Ok(()), Err)
         }
-        AdminCommand::NewInstanceToken { expires_days, .. } => {
+        AdminCommand::NewInstanceToken {
+            expires_days,
+            revoke_others,
+            ..
+        } => {
             require_network(&store).await?;
-            let token = issue_instance_token(&store, now, expires_days).await?;
+            let issued = issue_instance_token(&store, now, expires_days, revoke_others).await?;
             write_once(
                 &mut std::io::stdout().lock(),
-                &format!("instance token: {token}\n"),
-            )
+                &format!("instance token: {}\n", issued.token),
+            )?;
+            if let Some(revoked) = issued.revoked {
+                eprintln!("stigmerd: revoked {revoked} other instance tokens");
+            }
+            issued.log_failure.map_or(Ok(()), Err)
+        }
+        AdminCommand::RevokeToken { id, .. } => {
+            require_network(&store).await?;
+            let text = revoke_token(&store, now, &id).await?;
+            print_stdout(&text)
         }
         AdminCommand::IssueMemberToken {
             board,
@@ -245,14 +272,53 @@ fn already_network() -> Failure {
     )
 }
 
+/// A new instance token and what came with it.
+struct IssuedInstanceToken {
+    token: String,
+    /// How many other instance tokens were revoked, when asked to.
+    revoked: Option<u64>,
+    /// Set when the token is valid but the security log could not be written.
+    log_failure: Option<Failure>,
+}
+
+/// Stores a new instance credential and, with `revoke_others`, revokes every other instance
+/// credential in the same store transaction, so a failure leaves the old tokens valid rather
+/// than no token at all. Once stored the token is returned even if the log write fails.
 async fn issue_instance_token<S: IdentityStore>(
     store: &S,
     now: i64,
     days: u32,
-) -> Result<String, Failure> {
-    let secret = store_instance_token(store, now, days).await?;
-    log_token_issued(store, now, &secret.id, days).await?;
-    Ok(secret.full)
+    revoke_others: bool,
+) -> Result<IssuedInstanceToken, Failure> {
+    let (secret, revoked) = if revoke_others {
+        let secret = new_secret(SecretKind::Token)?;
+        let revoked = store
+            .replace_instance_credential(instance_credential(&secret, now, days)?, now)
+            .await
+            .map_err(|e| store_failure("cannot replace the instance token", &e))?;
+        (secret, Some(revoked))
+    } else {
+        (store_instance_token(store, now, days).await?, None)
+    };
+    let mut logged = log_token_issued(store, now, &secret.id, days).await;
+    if let (Ok(()), Some(revoked)) = (&logged, revoked) {
+        logged = log(
+            store,
+            now,
+            SecurityEventKind::TokenRevoked,
+            None,
+            &format!(
+                "revoked {revoked} other instance credentials, kept credential {}",
+                secret.id
+            ),
+        )
+        .await;
+    }
+    Ok(IssuedInstanceToken {
+        token: secret.full,
+        revoked,
+        log_failure: logged.err(),
+    })
 }
 
 async fn store_instance_token<S: IdentityStore>(
@@ -262,19 +328,64 @@ async fn store_instance_token<S: IdentityStore>(
 ) -> Result<NewSecret, Failure> {
     let secret = new_secret(SecretKind::Token)?;
     store
-        .create_credential(
-            NewCredential {
-                id: secret.id.clone(),
-                secret_hash: secret.hash,
-                scope: CredentialScope::Instance,
-                principal: instance_admin()?,
-                expires_at_ms: now + i64::from(days) * DAY_MS,
-            },
-            now,
-        )
+        .create_credential(instance_credential(&secret, now, days)?, now)
         .await
         .map_err(|e| store_failure("cannot store the instance token", &e))?;
     Ok(secret)
+}
+
+/// The instance credential for `secret`, valid `days` from `now`.
+fn instance_credential(secret: &NewSecret, now: i64, days: u32) -> Result<NewCredential, Failure> {
+    Ok(NewCredential {
+        id: secret.id.clone(),
+        secret_hash: secret.hash,
+        scope: CredentialScope::Instance,
+        principal: instance_admin()?,
+        expires_at_ms: now + i64::from(days) * DAY_MS,
+    })
+}
+
+/// Revokes the credential `raw_id`, whatever its scope, and logs it the first time.
+///
+/// A malformed id is not echoed: it may be a whole token pasted by mistake.
+async fn revoke_token<S: IdentityStore>(
+    store: &S,
+    now: i64,
+    raw_id: &str,
+) -> Result<String, Failure> {
+    let id = TokenId::new(raw_id).map_err(|_| {
+        Failure::Config(
+            "not a token id: pass the 16 hex characters after stg1_ (the value is not shown)"
+                .into(),
+        )
+    })?;
+    let unknown = || Failure::Config(format!("no token with id {id}"));
+    let credential = store
+        .find_credential(&id)
+        .await
+        .map_err(|e| store_failure("cannot read the token", &e))?
+        .ok_or_else(unknown)?;
+    match store.revoke_credential(&id, now).await {
+        Ok(()) => {}
+        Err(StoreError::NotFound { .. }) => return Err(unknown()),
+        Err(e) => return Err(store_failure("cannot revoke the token", &e)),
+    }
+    // A repeat revoke keeps the first time and is not a new event.
+    if credential.revoked_at_ms.is_none() {
+        let board = match credential.scope {
+            CredentialScope::Instance => None,
+            CredentialScope::Board(board) => Some(board),
+        };
+        log(
+            store,
+            now,
+            SecurityEventKind::TokenRevoked,
+            board,
+            &format!("credential {id}"),
+        )
+        .await?;
+    }
+    Ok(format!("revoked {id}\n"))
 }
 
 async fn log_token_issued<S: IdentityStore>(

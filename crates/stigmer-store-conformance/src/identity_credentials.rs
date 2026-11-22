@@ -154,3 +154,124 @@ pub(crate) async fn archive_style_revoke_keeps_admins_when_asked<S: Store + Iden
         );
     }
 }
+
+pub(crate) async fn revoke_instance_credentials_except_spares_the_kept_one_and_board_credentials<
+    S: IdentityStore,
+>(
+    store: S,
+) {
+    const SCENARIO: &str =
+        "revoke_instance_credentials_except_spares_the_kept_one_and_board_credentials";
+    let creds = [
+        credential(1, CredentialScope::Instance, "instance-admin"),
+        credential(2, CredentialScope::Instance, "instance-admin"),
+        credential(3, CredentialScope::Instance, "instance-admin"),
+        credential(4, CredentialScope::Board(BoardId::main()), "alice"),
+    ];
+    for c in creds {
+        ok(store.create_credential(c, NOW).await, SCENARIO);
+    }
+    ok(store.revoke_credential(&token_id(3), NOW).await, SCENARIO);
+
+    assert_eq!(
+        store
+            .revoke_instance_credentials_except(&token_id(2), NOW + 5)
+            .await,
+        Ok(1),
+        "{SCENARIO}: only the other live instance credential is counted"
+    );
+    for (n, expected) in [(1, Some(NOW + 5)), (2, None), (3, Some(NOW)), (4, None)] {
+        let found = ok(store.find_credential(&token_id(n)).await, SCENARIO);
+        assert_eq!(
+            found.and_then(|c| c.revoked_at_ms),
+            expected,
+            "{SCENARIO}: credential {n}"
+        );
+    }
+    assert_eq!(
+        store
+            .revoke_instance_credentials_except(&token_id(2), NOW + 6)
+            .await,
+        Ok(0),
+        "{SCENARIO}: a second call has nothing left to revoke"
+    );
+}
+
+pub(crate) async fn replace_instance_credential_stores_the_new_one_and_revokes_the_rest_atomically<
+    S: IdentityStore,
+>(
+    store: S,
+) {
+    const SCENARIO: &str =
+        "replace_instance_credential_stores_the_new_one_and_revokes_the_rest_atomically";
+    let old = credential(1, CredentialScope::Instance, "instance-admin");
+    let board_token = credential(4, CredentialScope::Board(BoardId::main()), "alice");
+    ok(store.create_credential(old, NOW).await, SCENARIO);
+    ok(store.create_credential(board_token, NOW).await, SCENARIO);
+
+    let new = credential(5, CredentialScope::Instance, "instance-admin");
+    assert_eq!(
+        store
+            .replace_instance_credential(new.clone(), NOW + 1)
+            .await,
+        Ok(1),
+        "{SCENARIO}: the old instance credential is revoked"
+    );
+    assert_eq!(
+        store.find_credential(&new.id).await,
+        Ok(Some(stored(&new))),
+        "{SCENARIO}: the new credential is stored and live"
+    );
+    for (n, expected) in [(1, Some(NOW + 1)), (4, None)] {
+        let found = ok(store.find_credential(&token_id(n)).await, SCENARIO);
+        assert_eq!(
+            found.and_then(|c| c.revoked_at_ms),
+            expected,
+            "{SCENARIO}: credential {n}"
+        );
+    }
+
+    // A replacement that cannot be stored (its id is taken) revokes nothing.
+    ok(
+        store
+            .create_credential(
+                credential(6, CredentialScope::Instance, "instance-admin"),
+                NOW,
+            )
+            .await,
+        SCENARIO,
+    );
+    let clash = credential(5, CredentialScope::Instance, "instance-admin");
+    assert!(
+        store
+            .replace_instance_credential(clash, NOW + 2)
+            .await
+            .is_err(),
+        "{SCENARIO}: a duplicate id is refused"
+    );
+    for n in [5, 6] {
+        let found = ok(store.find_credential(&token_id(n)).await, SCENARIO);
+        assert_eq!(
+            found.and_then(|c| c.revoked_at_ms),
+            None,
+            "{SCENARIO}: credential {n} stays live after the failed replacement"
+        );
+    }
+
+    // Only an instance credential can replace the instance credentials.
+    let scoped = credential(7, CredentialScope::Board(BoardId::main()), "alice");
+    assert!(
+        store
+            .replace_instance_credential(scoped, NOW + 3)
+            .await
+            .is_err(),
+        "{SCENARIO}: a board credential is refused"
+    );
+    assert_eq!(
+        store.find_credential(&token_id(7)).await,
+        Ok(None),
+        "{SCENARIO}: nothing stored"
+    );
+    let found = ok(store.find_credential(&token_id(6)).await, SCENARIO);
+    assert_eq!(found.and_then(|c| c.revoked_at_ms), None, "{SCENARIO}");
+}

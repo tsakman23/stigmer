@@ -342,6 +342,25 @@ pub trait IdentityStore: Send + Sync + 'static {
         now_ms: i64,
     ) -> impl Future<Output = Result<u64, StoreError>> + Send;
 
+    /// Revokes at `now_ms` every live instance-scope credential except `keep`. Never touches a
+    /// board credential, and leaves `keep` as it is (it need not exist). Returns the number
+    /// revoked.
+    fn revoke_instance_credentials_except(
+        &self,
+        keep: &TokenId,
+        now_ms: i64,
+    ) -> impl Future<Output = Result<u64, StoreError>> + Send;
+
+    /// In one transaction: stores `credential`, which must have the instance scope, and revokes
+    /// at `now_ms` every other live instance credential. Returns the number revoked. Either all
+    /// of it happens or none, so a failure leaves the old instance credentials valid. A board
+    /// scope is refused with `StoreError::Backend` and stores nothing.
+    fn replace_instance_credential(
+        &self,
+        credential: NewCredential,
+        now_ms: i64,
+    ) -> impl Future<Output = Result<u64, StoreError>> + Send;
+
     /// Stores an invite created at `now_ms`. An archived board is
     /// `Conflict(ConflictKind::BoardArchived)`.
     fn create_invite(

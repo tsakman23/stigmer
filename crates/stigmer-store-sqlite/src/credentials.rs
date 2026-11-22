@@ -138,6 +138,52 @@ pub(crate) fn revoke_board(
     u64::try_from(changed).map_err(backend)
 }
 
+/// Revokes every live instance credential but `keep`.
+pub(crate) fn revoke_instance_except(
+    conn: &mut Connection,
+    keep: &TokenId,
+    now_ms: i64,
+) -> Result<u64, StoreError> {
+    let tx = immediate(conn)?;
+    let revoked = revoke_other_instance(&tx, keep, now_ms)?;
+    tx.commit().map_err(backend)?;
+    Ok(revoked)
+}
+
+/// Stores a new instance credential and revokes every other live one, in one transaction.
+pub(crate) fn replace_instance(
+    conn: &mut Connection,
+    credential: NewCredential,
+    now_ms: i64,
+) -> Result<u64, StoreError> {
+    if credential.scope != CredentialScope::Instance {
+        return Err(StoreError::Backend(
+            "a replacement instance credential must have the instance scope".into(),
+        ));
+    }
+    let tx = immediate(conn)?;
+    insert_credential(&tx, &credential, None, now_ms)?;
+    let revoked = revoke_other_instance(&tx, &credential.id, now_ms)?;
+    tx.commit().map_err(backend)?;
+    Ok(revoked)
+}
+
+/// Revokes, inside the caller's transaction, every live instance credential but `keep`.
+fn revoke_other_instance(
+    tx: &Transaction<'_>,
+    keep: &TokenId,
+    now_ms: i64,
+) -> Result<u64, StoreError> {
+    let changed = tx
+        .execute(
+            "UPDATE credentials SET revoked_at_ms = ?2
+             WHERE board_id IS NULL AND revoked_at_ms IS NULL AND id <> ?1",
+            (keep.as_str(), now_ms),
+        )
+        .map_err(backend)?;
+    u64::try_from(changed).map_err(backend)
+}
+
 /// What an unknown invite id is compared against: no stored invite has this hash's secret.
 const UNKNOWN_INVITE_HASH: [u8; 32] = [0; 32];
 

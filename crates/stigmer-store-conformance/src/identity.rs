@@ -39,6 +39,14 @@ where
     identity_credentials::credential_roundtrip_and_find_unknown_is_none(factory().await).await;
     identity_credentials::revoke_credential_is_idempotent(factory().await).await;
     identity_credentials::archive_style_revoke_keeps_admins_when_asked(factory().await).await;
+    identity_credentials::revoke_instance_credentials_except_spares_the_kept_one_and_board_credentials(
+        factory().await,
+    )
+    .await;
+    identity_credentials::replace_instance_credential_stores_the_new_one_and_revokes_the_rest_atomically(
+        factory().await,
+    )
+    .await;
     identity_invites::invite_consumes_once(factory().await).await;
     identity_invites::invite_expired_is_not_found(factory().await).await;
     identity_invites::invite_wrong_hash_is_not_found_and_not_consumed(factory().await).await;

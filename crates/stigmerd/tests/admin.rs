@@ -356,6 +356,165 @@ fn new_instance_token_rejects_out_of_range_expiry() {
     }
 }
 
+// ---- revoke-token and --revoke-others ----
+
+/// The public id (`stg1_<id>_...`) of a full token.
+fn token_id_of(token: &str) -> String {
+    let (id, _) = parse_secret(SecretKind::Token, token).expect("token shape");
+    id.as_str().to_owned()
+}
+
+fn whoami_status(server: &common::Server, token: &str) -> u16 {
+    let bearer = format!("Bearer {token}");
+    common::http(
+        &server.addr,
+        "GET",
+        "/v1/whoami",
+        &[("Authorization", &bearer)],
+        "",
+    )
+    .0
+}
+
+#[test]
+fn revoke_token_revokes_an_instance_token_and_the_next_request_is_401() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let data = dir.path().join("data");
+    let first = stdout(&admin(&data, &["enable-auth", "--no-main-invite"]));
+    let old = labelled(&first, "instance token: ").to_owned();
+    let second = stdout(&admin(&data, &["new-instance-token"]));
+    let kept = labelled(&second, "instance token: ").to_owned();
+    let id = token_id_of(&old);
+
+    let out = admin(&data, &["revoke-token", &id]);
+    assert_eq!(out.status.code(), Some(0), "stderr: {}", stderr(&out));
+    assert_eq!(stdout(&out), format!("revoked {id}\n"));
+    with_store(&data, |store| async move {
+        let log = store.security_log(1).await.expect("log");
+        assert_eq!(log[0].kind, SecurityEventKind::TokenRevoked);
+        assert_eq!(log[0].principal.as_deref(), Some("instance-admin"));
+        assert!(log[0].detail.contains(&id), "{:?}", log[0]);
+    });
+
+    let server = common::start(&data);
+    assert_eq!(whoami_status(&server, &old), 401);
+    assert_eq!(whoami_status(&server, &kept), 200);
+}
+
+#[test]
+fn revoke_token_revokes_a_board_token_too() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let data = dir.path().join("data");
+    network_with_members(&data, false);
+    let issued = stdout(&issue(&data, &["--board", "main", "--member", "alice"]));
+    let token = labelled(&issued, "member token: ").to_owned();
+    let out = admin(&data, &["revoke-token", &token_id_of(&token)]);
+    assert_eq!(out.status.code(), Some(0), "stderr: {}", stderr(&out));
+    let server = common::start(&data);
+    assert_eq!(whoami_status(&server, &token), 401);
+}
+
+#[test]
+fn revoke_token_unknown_id_is_exit_2() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let data = dir.path().join("data");
+    admin(&data, &["enable-auth", "--no-main-invite"]);
+    let out = admin(&data, &["revoke-token", "0123456789abcdef"]);
+    assert_eq!(out.status.code(), Some(2), "stderr: {}", stderr(&out));
+    assert!(
+        stderr(&out).contains("no token with id 0123456789abcdef"),
+        "stderr: {}",
+        stderr(&out)
+    );
+    assert!(out.stdout.is_empty());
+    // A malformed id, such as a whole token pasted by mistake, is refused without being echoed.
+    let pasted = generate_secret(SecretKind::Token).expect("secret").full;
+    for raw in ["not-an-id", pasted.as_str()] {
+        let out = admin(&data, &["revoke-token", raw]);
+        assert_eq!(out.status.code(), Some(2), "stderr: {}", stderr(&out));
+        assert!(stderr(&out).contains("not a token id"), "{}", stderr(&out));
+        assert!(!stderr(&out).contains(raw), "{}", stderr(&out));
+        assert!(out.stdout.is_empty());
+    }
+}
+
+#[test]
+fn revoke_token_is_idempotent() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let data = dir.path().join("data");
+    let first = stdout(&admin(&data, &["enable-auth", "--no-main-invite"]));
+    let id = token_id_of(labelled(&first, "instance token: "));
+    for _ in 0..2 {
+        let out = admin(&data, &["revoke-token", &id]);
+        assert_eq!(out.status.code(), Some(0), "stderr: {}", stderr(&out));
+        assert_eq!(stdout(&out), format!("revoked {id}\n"));
+    }
+    with_store(&data, |store| async move {
+        let log = store.security_log(10).await.expect("log");
+        let revoked = log
+            .iter()
+            .filter(|e| e.kind == SecurityEventKind::TokenRevoked)
+            .count();
+        assert_eq!(revoked, 1, "a repeat revoke is not a new event: {log:?}");
+    });
+}
+
+#[test]
+fn revoke_token_requires_network_mode() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let data = dir.path().join("data");
+    let out = admin(&data, &["revoke-token", "0123456789abcdef"]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(
+        stderr(&out).contains("requires network mode"),
+        "stderr: {}",
+        stderr(&out)
+    );
+    assert!(out.stdout.is_empty());
+}
+
+#[test]
+fn new_instance_token_revoke_others_leaves_only_the_new_token_valid() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let data = dir.path().join("data");
+    network_with_members(&data, false);
+    let first = stdout(&admin(&data, &["new-instance-token"]));
+    let older = labelled(&first, "instance token: ").to_owned();
+    let issued = stdout(&issue(&data, &["--board", "main", "--member", "alice"]));
+    let member = labelled(&issued, "member token: ").to_owned();
+
+    let out = admin(&data, &["new-instance-token", "--revoke-others"]);
+    assert_eq!(out.status.code(), Some(0), "stderr: {}", stderr(&out));
+    let text = stdout(&out);
+    assert_eq!(text.lines().count(), 1, "stdout: {text:?}");
+    let newest = labelled(&text, "instance token: ").to_owned();
+    assert!(
+        stderr(&out).contains("revoked 2 other instance tokens"),
+        "stderr: {}",
+        stderr(&out)
+    );
+    with_store(&data, |store| async move {
+        let log = store.security_log(2).await.expect("log");
+        let kinds: Vec<_> = log.iter().map(|e| e.kind).collect();
+        assert_eq!(
+            kinds,
+            [
+                SecurityEventKind::TokenRevoked,
+                SecurityEventKind::InstanceTokenIssued
+            ]
+        );
+    });
+
+    let server = common::start(&data);
+    assert_eq!(whoami_status(&server, &older), 401);
+    assert_eq!(whoami_status(&server, &newest), 200);
+    assert_eq!(
+        whoami_status(&server, &member),
+        200,
+        "board tokens are untouched"
+    );
+}
+
 // ---- issue-member-token ----
 
 /// A network-mode data dir whose board `main` has member `alice`, plus board `ops` with member
@@ -883,6 +1042,7 @@ fn admin_commands_fail_while_serve_holds_the_lock() {
     for args in [
         &["enable-auth"][..],
         &["new-instance-token"],
+        &["revoke-token", "0123456789abcdef"],
         &["map-local-principals", "--admin", "alice"],
         &["security-log"],
     ] {

@@ -129,6 +129,23 @@ impl IdentityStore for SqliteStore {
         self.run(move |conn| credentials::revoke_board(conn, &board, keep_admins, now_ms))
     }
 
+    fn revoke_instance_credentials_except(
+        &self,
+        keep: &TokenId,
+        now_ms: i64,
+    ) -> impl Future<Output = Result<u64, StoreError>> + Send {
+        let keep = keep.clone();
+        self.run(move |conn| credentials::revoke_instance_except(conn, &keep, now_ms))
+    }
+
+    fn replace_instance_credential(
+        &self,
+        credential: NewCredential,
+        now_ms: i64,
+    ) -> impl Future<Output = Result<u64, StoreError>> + Send {
+        self.run(move |conn| credentials::replace_instance(conn, credential, now_ms))
+    }
+
     fn create_invite(
         &self,
         invite: NewInvite,
