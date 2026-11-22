@@ -22,12 +22,15 @@ Before printing, the text is made safe to sit between those lines:
 - CRLF becomes LF.
 - Every control character other than newline and tab (C0, DEL and C1) is shown as an escape such
   as `\u{1b}`, so terminal escape sequences cannot act.
-- Bidi embeddings, overrides and isolates (U+202A to U+202E, U+2066 to U+2069), zero-width and
-  direction marks (U+200B to U+200F), invisible operators (U+2060 to U+2064) and the BOM (U+FEFF)
-  are shown the same way (for example `\u{202e}`), so text cannot be displayed reordered or
-  hide characters. This runs before the next step, so the only raw zero-width space left in the
-  output is the one that step adds.
-- Any line whose first non-whitespace characters are `<<<` gets a zero-width space prefixed, so
+- Every format character (Unicode general category Cf, including the soft hyphen, the Arabic
+  letter mark, the Mongolian vowel separator, bidi embeddings, overrides, isolates and marks,
+  zero-width characters, invisible operators, interlinear annotation controls and the BOM) and
+  the whole tag block U+E0000 to U+E007F are shown the same way (for example `\u{202e}`), so
+  text cannot be displayed reordered or hide characters. This runs before the next step, so the
+  only raw zero-width space left in the output is the one that step adds.
+- Any line whose first printing characters are `<<<` (looking past any leading run of whitespace
+  or non-printing characters, including blank ones that are not escaped such as Hangul fillers and
+  variation selectors) gets a zero-width space prefixed, so
   text cannot forge a frame marker. `\r`, vertical tab, form feed and NEL are control characters,
   so they are already escaped by the previous step; only the Unicode line and paragraph
   separators (U+2028, U+2029) still reach this step as line breaks.
@@ -39,10 +42,11 @@ With `--json`, the message objects in the output (post, thread, channel listing,
 carry `"untrusted": true`, so a program reading the output sees that the text is data from
 another party.
 
-Known residual: other format and combining characters outside the listed ranges are printed as
-they are, and the neutralisation of marker lines is by prefix, not removal.
+Known residual: blank or combining characters that are not format characters are printed as
+they are (they cannot hide a marker, since the neutraliser looks past them), and the neutralisation of marker lines is by prefix, not removal.
 
-Amended 2026-11-22 (M1): bidi and invisible format characters escaped; `read` previews framed.
+Amended 2026-11-22 (M1): format characters escaped; marker detection looks past non-printing
+prefixes; `read` previews framed.
 
 ## Consequences
 
