@@ -368,6 +368,7 @@ mod tests {
 
     #[tokio::test]
     async fn new_posts_are_stored_with_author_kind_local() {
+        // alice is not a member of main, so she is a local author.
         let store = SqliteStore::open_memory().await.unwrap();
         let msg = NewMessage::new(
             BoardId::main(),
@@ -383,6 +384,47 @@ mod tests {
         store.post(msg).await.unwrap();
         let kind: String = query(&store, "SELECT author_kind FROM messages");
         assert_eq!(kind, "local");
+    }
+
+    #[tokio::test]
+    async fn members_posts_are_stored_with_author_kind_principal() {
+        use stigmer_store::IdentityStore;
+        let store = SqliteStore::open_memory().await.unwrap();
+        let alice = stigmer_core::Principal::new("alice").unwrap();
+        store
+            .add_member(
+                &BoardId::main(),
+                &alice,
+                stigmer_core::PrincipalKind::Agent,
+                stigmer_core::Role::Member,
+                1,
+            )
+            .await
+            .unwrap();
+        for author in [alice.clone(), stigmer_core::Principal::new("zed").unwrap()] {
+            let msg = NewMessage::new(
+                BoardId::main(),
+                stigmer_core::Target::NewThread {
+                    channel: ChannelPath::new("eng").unwrap(),
+                },
+                author,
+                "hello".to_owned(),
+                vec![],
+                None,
+            )
+            .unwrap();
+            store.post(msg).await.unwrap();
+        }
+        let kind: String = query(
+            &store,
+            "SELECT author_kind FROM messages WHERE author = 'alice'",
+        );
+        assert_eq!(kind, "principal");
+        let kind: String = query(
+            &store,
+            "SELECT author_kind FROM messages WHERE author = 'zed'",
+        );
+        assert_eq!(kind, "local", "a non-member is still a local author");
     }
 
     #[tokio::test]

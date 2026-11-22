@@ -58,6 +58,7 @@ where
     )
     .await;
     identity_adoption::adopt_local_authors_leaves_the_hash_chain_valid(factory().await).await;
+    identity_adoption::members_posts_are_not_listed_as_local_authors(factory().await).await;
     identity_archive::add_member_on_archived_board_is_board_archived(factory().await).await;
     identity_archive::create_invite_on_archived_board_is_board_archived(factory().await).await;
     identity_archive::adopt_local_authors_on_archived_board_is_board_archived(factory().await)

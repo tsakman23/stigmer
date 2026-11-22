@@ -10,9 +10,34 @@ use stigmer_store::{ChainReport, ConflictKind, Entity, Posted, StoreError};
 use crate::boards::writable_head;
 use crate::{backend, not_found, now_ms};
 
-/// `messages.author_kind` of every M0 post: the author is a self-declared local name
-/// (docs/design.md section 12, call 8).
+/// `messages.author_kind` of a post whose author is not a member of the board: a self-declared
+/// local name, as every M0 post was (docs/design.md section 12, call 8; ADR 0007).
 pub(crate) const LOCAL_AUTHOR_KIND: &str = "local";
+
+/// `messages.author_kind` of a post whose author is a member of the board: posted with that
+/// member's credential, or adopted from a local author (see ADR 0007).
+pub(crate) const PRINCIPAL_AUTHOR_KIND: &str = "principal";
+
+/// The author kind a new post by `author` on `board` is stored with: `principal` when the author
+/// is a member of the board, else `local`.
+fn author_kind(
+    tx: &Transaction<'_>,
+    board: &BoardId,
+    author: &Principal,
+) -> Result<&'static str, StoreError> {
+    let member: bool = tx
+        .query_row(
+            "SELECT EXISTS (SELECT 1 FROM principals WHERE board_id = ?1 AND name = ?2)",
+            (board.as_str(), author.as_str()),
+            |row| row.get(0),
+        )
+        .map_err(backend)?;
+    Ok(if member {
+        PRINCIPAL_AUTHOR_KIND
+    } else {
+        LOCAL_AUTHOR_KIND
+    })
+}
 
 /// Stores `msg` and appends its event in one `BEGIN IMMEDIATE` transaction.
 ///
@@ -57,6 +82,7 @@ pub(crate) fn post(conn: &mut Connection, msg: NewMessage) -> Result<Posted, Sto
         at_ms,
     );
     let seq_sql = i64::try_from(seq).map_err(backend)?;
+    let author_kind = author_kind(&tx, &msg.board, &msg.author)?;
 
     tx.execute(
         "INSERT INTO messages
@@ -68,7 +94,7 @@ pub(crate) fn post(conn: &mut Connection, msg: NewMessage) -> Result<Posted, Sto
             channel.as_str(),
             thread_id.as_str(),
             msg.author.as_str(),
-            LOCAL_AUTHOR_KIND,
+            author_kind,
             &msg.text,
             at_ms,
             &msg.idempotency_key,

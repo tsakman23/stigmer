@@ -58,6 +58,46 @@ pub(crate) async fn list_local_authors_returns_distinct_sorted_authors<S: Store 
     );
 }
 
+/// A post by a member of the board is not a local author's; a non-member's still is, even if it
+/// is a member of another board.
+pub(crate) async fn members_posts_are_not_listed_as_local_authors<S: Store + IdentityStore>(
+    store: S,
+) {
+    const SCENARIO: &str = "members_posts_are_not_listed_as_local_authors";
+    let (main, other) = (BoardId::main(), board("other"));
+    ok(store.create_board(&other, None).await, SCENARIO);
+    ok(
+        store
+            .add_member(
+                &main,
+                &principal("alice"),
+                PrincipalKind::Agent,
+                Role::Member,
+                NOW,
+            )
+            .await,
+        SCENARIO,
+    );
+    ok(
+        store
+            .add_member(
+                &other,
+                &principal("bob"),
+                PrincipalKind::Agent,
+                Role::Member,
+                NOW,
+            )
+            .await,
+        SCENARIO,
+    );
+    post_as(&store, &main, &["alice", "bob", "zed", "alice"], SCENARIO).await;
+    assert_eq!(
+        store.list_local_authors(&main).await,
+        Ok(vec![principal("bob"), principal("zed")]),
+        "{SCENARIO}: alice is a member of main; bob only of another board"
+    );
+}
+
 pub(crate) async fn adopt_local_authors_creates_members_and_flips_author_kind_atomically<
     S: Store + IdentityStore,
 >(

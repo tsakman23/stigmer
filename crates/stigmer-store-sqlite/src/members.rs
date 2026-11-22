@@ -5,11 +5,8 @@ use stigmer_core::{BoardId, Principal, PrincipalKind, Role};
 use stigmer_store::{Adoption, ConflictKind, Entity, Member, Mode, StoreError};
 
 use crate::boards::{require, require_writable};
-use crate::posts::LOCAL_AUTHOR_KIND;
+use crate::posts::{LOCAL_AUTHOR_KIND, PRINCIPAL_AUTHOR_KIND};
 use crate::{backend, not_found};
-
-/// `messages.author_kind` of an author adopted as a real principal (see ADR 0007).
-const PRINCIPAL_AUTHOR_KIND: &str = "principal";
 
 const MEMBER_COLUMNS: &str = "SELECT name, kind, role, created_at_ms FROM principals";
 
