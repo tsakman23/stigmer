@@ -12,7 +12,7 @@ use crate::{backend, not_found, now_ms};
 
 /// `messages.author_kind` of every M0 post: the author is a self-declared local name
 /// (docs/design.md section 12, call 8).
-const LOCAL_AUTHOR_KIND: &str = "local";
+pub(crate) const LOCAL_AUTHOR_KIND: &str = "local";
 
 /// Stores `msg` and appends its event in one `BEGIN IMMEDIATE` transaction.
 ///

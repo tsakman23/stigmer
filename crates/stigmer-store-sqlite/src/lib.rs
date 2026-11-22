@@ -3,7 +3,10 @@
 //! One connection behind a mutex; every database call runs on tokio's blocking pool.
 
 mod boards;
+mod credentials;
 mod events;
+mod identity;
+mod members;
 mod notify;
 mod posts;
 mod reads;
