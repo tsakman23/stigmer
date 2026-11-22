@@ -86,6 +86,9 @@ impl From<StoreError> for ApiError {
             StoreError::Conflict(ConflictKind::BoardArchived) => {
                 Self::new(ErrorCode::BoardArchived, err.to_string())
             }
+            StoreError::Conflict(kind @ ConflictKind::BoardProtected) => {
+                Self::new(ErrorCode::Conflict, kind.to_string())
+            }
             StoreError::Conflict(_) => Self::new(ErrorCode::Conflict, err.to_string()),
             // Backend text may carry SQL or file paths; never send it to a client.
             StoreError::Backend(_) => Self::new(ErrorCode::Internal, "internal error"),

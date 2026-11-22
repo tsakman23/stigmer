@@ -61,7 +61,11 @@ pub(crate) fn list(conn: &mut Connection) -> Result<Vec<BoardInfo>, StoreError> 
 }
 
 /// Sets the board's archive time unless it is already set; returns the board as stored.
+/// `main` is refused with `BoardProtected`.
 pub(crate) fn archive(conn: &mut Connection, id: &BoardId) -> Result<BoardInfo, StoreError> {
+    if *id == BoardId::main() {
+        return Err(StoreError::Conflict(ConflictKind::BoardProtected));
+    }
     let tx = conn
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(backend)?;

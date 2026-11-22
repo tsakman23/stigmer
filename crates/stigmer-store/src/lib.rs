@@ -54,6 +54,8 @@ pub enum ConflictKind {
     NameTaken,
     /// The instance is already in network mode; the switch is one-way.
     AlreadyNetwork,
+    /// The board may not be archived: `main` always exists and always takes posts.
+    BoardProtected,
 }
 
 impl fmt::Display for ConflictKind {
@@ -64,6 +66,7 @@ impl fmt::Display for ConflictKind {
             ConflictKind::BoardArchived => "board is archived",
             ConflictKind::NameTaken => "principal name already taken on this board",
             ConflictKind::AlreadyNetwork => "already in network mode",
+            ConflictKind::BoardProtected => "the main board cannot be archived",
         })
     }
 }
@@ -123,7 +126,8 @@ pub trait Store: Send + Sync + 'static {
     /// `Conflict(ConflictKind::BoardArchived)`, while reads, `events_after`, `head`,
     /// `wait_past` and `verify_chain` keep working. Archiving an archived board changes nothing
     /// and returns it as it is, first archive time kept. An unknown board is `NotFound` with
-    /// `Entity::Board`.
+    /// `Entity::Board`. The board `main` is never archived: it is
+    /// `Conflict(ConflictKind::BoardProtected)` and changes nothing.
     fn archive_board(
         &self,
         id: &BoardId,
@@ -263,6 +267,10 @@ mod tests {
             "not found: message msg_y"
         );
         assert_eq!(StoreError::InvalidCursor.to_string(), "invalid cursor");
+        assert_eq!(
+            ConflictKind::BoardProtected.to_string(),
+            "the main board cannot be archived"
+        );
         assert_eq!(
             StoreError::Conflict(ConflictKind::IdempotencyKeyReused).to_string(),
             "conflict: idempotency key reused with a different request"

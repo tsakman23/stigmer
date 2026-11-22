@@ -1,7 +1,9 @@
 //! Adopting local (M0) authors as members of a board.
 
 use stigmer_core::{BoardId, EventFilter, PrincipalKind, Role};
-use stigmer_store::{Adoption, ConflictKind, IdentityStore, Store, StoreError};
+use stigmer_store::{
+    Adoption, ConflictKind, IdentityStore, SecurityEvent, SecurityEventKind, Store, StoreError,
+};
 
 use crate::identity::{member, NOW};
 use crate::support::{board, new_thread_on, ok, post_ok, principal, reply_on, valid_chain};
@@ -194,6 +196,53 @@ pub(crate) async fn adopt_local_authors_creates_members_and_flips_author_kind_at
             Ok(Some(_))
         ),
         "{SCENARIO}: frank is a member"
+    );
+}
+
+pub(crate) async fn adopt_local_authors_writes_one_audit_row_and_a_failure_writes_none<
+    S: Store + IdentityStore,
+>(
+    store: S,
+) {
+    const SCENARIO: &str = "adopt_local_authors_writes_one_audit_row_and_a_failure_writes_none";
+    let main = BoardId::main();
+    post_as(&store, &main, &["alice", "bob", "alice"], SCENARIO).await;
+    let (human, agent) = (PrincipalKind::Human, PrincipalKind::Agent);
+
+    let taken = [
+        adoption("alice", human, Role::Admin),
+        adoption("alice", human, Role::Admin),
+    ];
+    assert_eq!(
+        store.adopt_local_authors(&main, &taken, NOW).await,
+        Err(StoreError::Conflict(ConflictKind::NameTaken)),
+        "{SCENARIO}: a failing adoption"
+    );
+    assert_eq!(
+        store.security_log(10).await,
+        Ok(vec![]),
+        "{SCENARIO}: a failed adoption writes no row"
+    );
+
+    let adoptions = [
+        adoption("alice", human, Role::Admin),
+        adoption("bob", agent, Role::Member),
+    ];
+    assert_eq!(
+        store.adopt_local_authors(&main, &adoptions, NOW + 1).await,
+        Ok(3),
+        "{SCENARIO}"
+    );
+    assert_eq!(
+        store.security_log(10).await,
+        Ok(vec![SecurityEvent {
+            at_ms: NOW + 1,
+            kind: SecurityEventKind::PrincipalsAdopted,
+            board: Some(main.clone()),
+            principal: Some("instance-admin".to_owned()),
+            detail: "adopted 2 authors (3 messages) into board main".to_owned(),
+        }]),
+        "{SCENARIO}: exactly one row, in the adoption's transaction"
     );
 }
 

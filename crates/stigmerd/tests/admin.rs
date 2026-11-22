@@ -123,18 +123,20 @@ fn enable_auth_twice_refuses_and_prints_no_token() {
     assert!(!stderr(&out).contains("stg1_") && !stderr(&out).contains("stgi1_"));
 }
 
-/// The failure is injected by archiving board main before enable-auth, so minting the main
-/// admin invite is refused by the store (step b), before the mode switch (step c).
+/// The failure is injected with a trigger that refuses every invite insert, so minting the main
+/// admin invite fails in the store (step b), before the mode switch (step c).
 #[test]
 fn enable_auth_failure_before_the_mode_switch_leaves_local_mode_and_a_retry_succeeds() {
     let dir = tempfile::tempdir().expect("tempdir");
     let data = dir.path().join("data");
-    with_store(&data_dir_ready(&data), |store| async move {
-        store
-            .archive_board(&BoardId::main())
-            .await
-            .expect("archive main");
-    });
+    with_store(&data_dir_ready(&data), |_store| async move {});
+    let db = rusqlite::Connection::open(data.join("stigmer.db")).expect("open db");
+    db.execute_batch(
+        "CREATE TRIGGER refuse_invites BEFORE INSERT ON invites
+         BEGIN SELECT RAISE(ABORT, 'injected failure'); END;",
+    )
+    .expect("create trigger");
+    drop(db);
 
     let failed = admin(&data, &["enable-auth"]);
     assert_eq!(failed.status.code(), Some(1), "stderr: {}", stderr(&failed));
@@ -986,6 +988,19 @@ fn map_local_principals_apply_keeps_verify_chain_valid_and_content_readable() {
         stdout(&out).contains("adopted 3 authors and 4 messages"),
         "stdout: {}",
         stdout(&out)
+    );
+    let log = admin(&data, &["security-log", "--limit", "1"]);
+    let line = stdout(&log);
+    let fields: Vec<&str> = line.trim_end().split('\t').collect();
+    assert_eq!(
+        fields[1..],
+        [
+            "principals_adopted",
+            "main",
+            "instance-admin",
+            "adopted 3 authors (4 messages) into board main"
+        ],
+        "security log: {line:?}"
     );
 
     with_store(&data, |store| async move {

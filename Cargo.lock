@@ -1248,6 +1248,7 @@ dependencies = [
  "hyper",
  "hyper-util",
  "rcgen",
+ "rusqlite",
  "rustls",
  "stigmer-api",
  "stigmer-core",

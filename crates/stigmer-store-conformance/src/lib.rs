@@ -75,4 +75,5 @@ where
         .await;
     archive::archived_board_is_still_readable(factory().await).await;
     archive::archive_is_idempotent_and_keeps_first_timestamp(factory().await).await;
+    archive::archive_main_is_refused_and_main_stays_writable(factory().await).await;
 }

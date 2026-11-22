@@ -368,14 +368,15 @@ async fn touch_updates_last_seen() {
 #[tokio::test]
 async fn post_to_archived_board_is_409_board_archived() {
     let net = network().await;
-    let main = BoardId::main();
-    let token = member_token(&net.store, &main, "alice", Role::Admin).await;
-    net.store.archive_board(&main).await.unwrap();
+    let ops = BoardId::new("ops").unwrap();
+    net.store.create_board(&ops, None).await.unwrap();
+    let token = member_token(&net.store, &ops, "alice", Role::Admin).await;
+    net.store.archive_board(&ops).await.unwrap();
     let reply = send(
         &net.app,
         request(
             Method::POST,
-            "/v1/boards/main/messages",
+            "/v1/boards/ops/messages",
             Some(&token),
             Some(&json!({"channel": "eng", "text": "late"})),
         ),
@@ -385,7 +386,7 @@ async fn post_to_archived_board_is_409_board_archived() {
     assert_eq!(reply.json()["error"]["code"], "board_archived");
     let reply = send(
         &net.app,
-        request(Method::GET, "/v1/boards/main/events", Some(&token), None),
+        request(Method::GET, "/v1/boards/ops/events", Some(&token), None),
     )
     .await;
     assert_eq!(

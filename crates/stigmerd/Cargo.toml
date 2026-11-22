@@ -28,4 +28,6 @@ rcgen = { version = "0.14.10", default-features = false, features = ["crypto", "
 # tls12 exists only so the test client can attempt TLS 1.2 and see the server refuse it; the
 # server itself is built and configured for TLS 1.3 only.
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+# Only to inject a storage failure (a trigger) that no command can cause.
+rusqlite = { version = "0.43.0", features = ["bundled"] }
 tempfile = "3.27.0"

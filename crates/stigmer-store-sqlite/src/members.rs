@@ -2,11 +2,17 @@
 
 use rusqlite::{Connection, Row, Transaction, TransactionBehavior};
 use stigmer_core::{BoardId, Principal, PrincipalKind, Role};
-use stigmer_store::{Adoption, ConflictKind, Entity, Member, Mode, StoreError};
+use stigmer_store::{
+    Adoption, ConflictKind, Entity, Member, Mode, SecurityEvent, SecurityEventKind, StoreError,
+};
 
 use crate::boards::{require, require_writable};
+use crate::credentials::log_security;
 use crate::posts::{LOCAL_AUTHOR_KIND, PRINCIPAL_AUTHOR_KIND};
 use crate::{backend, not_found};
+
+/// Who adopts local authors: only the operator, through `stigmerd admin map-local-principals`.
+const INSTANCE_ADMIN: &str = "instance-admin";
 
 const MEMBER_COLUMNS: &str = "SELECT name, kind, role, created_at_ms FROM principals";
 
@@ -165,8 +171,9 @@ pub(crate) fn local_authors(
     Ok(authors)
 }
 
-/// Creates each adopted member and marks their local messages on the board, all or nothing.
-/// Only `messages.author_kind` changes, which the event hash does not cover.
+/// Creates each adopted member, marks their local messages on the board and writes the
+/// `PrincipalsAdopted` log row, all or nothing. Only `messages.author_kind` changes, which the
+/// event hash does not cover.
 pub(crate) fn adopt(
     conn: &mut Connection,
     board: &BoardId,
@@ -199,6 +206,19 @@ pub(crate) fn adopt(
             .map_err(backend)?;
         marked += u64::try_from(changed).map_err(backend)?;
     }
+    log_security(
+        &tx,
+        SecurityEvent {
+            at_ms: now_ms,
+            kind: SecurityEventKind::PrincipalsAdopted,
+            board: Some(board.clone()),
+            principal: Some(INSTANCE_ADMIN.to_owned()),
+            detail: format!(
+                "adopted {} authors ({marked} messages) into board {board}",
+                adoptions.len()
+            ),
+        },
+    )?;
     tx.commit().map_err(backend)?;
     Ok(marked)
 }

@@ -165,10 +165,12 @@ pub enum SecurityEventKind {
     InstanceTokenIssued,
     /// A board credential for an existing member was issued from the command line.
     MemberTokenIssued,
+    /// Local (M0) authors were adopted as members of a board.
+    PrincipalsAdopted,
 }
 
 impl SecurityEventKind {
-    const ALL: [SecurityEventKind; 11] = [
+    const ALL: [SecurityEventKind; 12] = [
         SecurityEventKind::Join,
         SecurityEventKind::TokenRevoked,
         SecurityEventKind::MemberRemoved,
@@ -180,6 +182,7 @@ impl SecurityEventKind {
         SecurityEventKind::ModeEnabled,
         SecurityEventKind::InstanceTokenIssued,
         SecurityEventKind::MemberTokenIssued,
+        SecurityEventKind::PrincipalsAdopted,
     ];
 
     /// The stored name, in snake case.
@@ -196,6 +199,7 @@ impl SecurityEventKind {
             SecurityEventKind::ModeEnabled => "mode_enabled",
             SecurityEventKind::InstanceTokenIssued => "instance_token_issued",
             SecurityEventKind::MemberTokenIssued => "member_token_issued",
+            SecurityEventKind::PrincipalsAdopted => "principals_adopted",
         }
     }
 
@@ -284,10 +288,11 @@ pub trait IdentityStore: Send + Sync + 'static {
         board: &BoardId,
     ) -> impl Future<Output = Result<Vec<Principal>, StoreError>> + Send;
 
-    /// In one transaction: makes each adoption a member of `board` at `now_ms` and marks that
-    /// author's messages on the board as written by a real principal. Returns the number of
-    /// messages marked. Authors not adopted stay local. The event log and its hashes are not
-    /// touched. A name already on the board is `Conflict(ConflictKind::NameTaken)` and an
+    /// In one transaction: makes each adoption a member of `board` at `now_ms`, marks that
+    /// author's messages on the board as written by a real principal and appends one
+    /// `SecurityEventKind::PrincipalsAdopted` row (principal `instance-admin`, detail
+    /// "adopted N authors (M messages) into board B"). Returns the number of messages marked.
+    /// Authors not adopted stay local. The event log and its hashes are not touched. A name already on the board is `Conflict(ConflictKind::NameTaken)` and an
     /// archived board is `Conflict(ConflictKind::BoardArchived)`; either changes nothing.
     fn adopt_local_authors(
         &self,
@@ -425,6 +430,7 @@ mod tests {
                 "instance_token_issued",
             ),
             (SecurityEventKind::MemberTokenIssued, "member_token_issued"),
+            (SecurityEventKind::PrincipalsAdopted, "principals_adopted"),
         ];
         for (kind, name) in kinds {
             assert_eq!(kind.as_str(), name);

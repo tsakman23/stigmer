@@ -12,6 +12,28 @@ use crate::support::{
 
 const SHORT: Duration = Duration::from_millis(150);
 
+pub(crate) async fn archive_main_is_refused_and_main_stays_writable<S: Store>(store: S) {
+    const SCENARIO: &str = "archive_main_is_refused_and_main_stays_writable";
+    let main = BoardId::main();
+    assert_eq!(
+        store.archive_board(&main).await.map(|_| ()),
+        Err(StoreError::Conflict(ConflictKind::BoardProtected)),
+        "{SCENARIO}: archive main"
+    );
+    let info = ok(store.get_board(&main).await, SCENARIO);
+    assert_eq!(
+        info.archived_at_ms, None,
+        "{SCENARIO}: main is not archived"
+    );
+    let posted = post_ok(
+        &store,
+        new_thread_on(&main, "eng", "alice", "still open"),
+        SCENARIO,
+    )
+    .await;
+    assert_eq!(posted.event.seq, 1, "{SCENARIO}: main takes posts");
+}
+
 pub(crate) async fn post_to_archived_board_is_board_archived_and_uses_no_sequence_number<
     S: Store,
 >(

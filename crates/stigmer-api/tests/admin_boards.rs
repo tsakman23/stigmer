@@ -87,18 +87,93 @@ async fn board_admin_gets_403_creating_boards_and_sees_only_own_board_in_list() 
     .await;
     assert_eq!(other.status, StatusCode::NOT_FOUND);
     // An archived own board is still listed, so its admin can see why posts fail.
+    let ops_admin = member_token(&net.store, &board("ops"), "oda", Role::Admin).await;
     let archive = send(
         &net.app,
-        request(Method::POST, "/v1/boards/main/archive", Some(&admin), None),
+        request(
+            Method::POST,
+            "/v1/boards/ops/archive",
+            Some(&ops_admin),
+            None,
+        ),
     )
     .await;
     assert_eq!(archive.status, StatusCode::OK, "{}", archive.body);
     let list = send(
         &net.app,
-        request(Method::GET, "/v1/boards", Some(&admin), None),
+        request(Method::GET, "/v1/boards", Some(&ops_admin), None),
     )
     .await;
+    assert_eq!(ids(&list), ["ops"]);
     assert_eq!(list.json()["boards"][0]["archived"], true);
+}
+
+const MAIN_PROTECTED: &str = "the main board cannot be archived";
+
+#[tokio::test]
+async fn archiving_main_is_409_for_the_instance_admin_and_its_board_admin() {
+    let net = network().await;
+    let root = instance_token(&net.store).await;
+    let admin = member_token(&net.store, &board("main"), "ann", Role::Admin).await;
+    let member = member_token(&net.store, &board("main"), "bob", Role::Member).await;
+    for token in [&root, &admin] {
+        let reply = send(
+            &net.app,
+            request(Method::POST, "/v1/boards/main/archive", Some(token), None),
+        )
+        .await;
+        assert_eq!(reply.status, StatusCode::CONFLICT, "{}", reply.body);
+        assert_eq!(reply.json()["error"]["code"], "conflict");
+        assert_eq!(reply.json()["error"]["message"], MAIN_PROTECTED);
+    }
+    assert_eq!(
+        net.store
+            .get_board(&board("main"))
+            .await
+            .unwrap()
+            .archived_at_ms,
+        None
+    );
+    // Nothing was revoked: the member still posts to main.
+    let post = send(
+        &net.app,
+        request(
+            Method::POST,
+            "/v1/boards/main/messages",
+            Some(&member),
+            Some(&json!({"channel": "eng", "text": "still open"})),
+        ),
+    )
+    .await;
+    assert_eq!(post.status, StatusCode::CREATED, "{}", post.body);
+}
+
+#[tokio::test]
+async fn archiving_main_is_409_in_local_mode() {
+    let store = Arc::new(SqliteStore::open_memory().await.unwrap());
+    let (_tx, rx) = watch::channel(false);
+    let app = router(store, AllowAll, rx, ApiConfig::local());
+    let as_alice = |method, uri: &str, body: Option<&Value>| {
+        let mut req = request(method, uri, None, body);
+        req.headers_mut()
+            .insert("x-stigmer-as", "alice".parse().unwrap());
+        req
+    };
+    let reply = send(
+        &app,
+        as_alice(Method::POST, "/v1/boards/main/archive", None),
+    )
+    .await;
+    assert_eq!(reply.status, StatusCode::CONFLICT, "{}", reply.body);
+    assert_eq!(reply.json()["error"]["code"], "conflict");
+    assert_eq!(reply.json()["error"]["message"], MAIN_PROTECTED);
+    let body = json!({"channel": "eng", "text": "still open"});
+    let post = send(
+        &app,
+        as_alice(Method::POST, "/v1/boards/main/messages", Some(&body)),
+    )
+    .await;
+    assert_eq!(post.status, StatusCode::CREATED, "{}", post.body);
 }
 
 #[tokio::test]
