@@ -33,12 +33,18 @@ impl fmt::Display for Entity {
 pub enum ConflictKind {
     /// An idempotency key was sent again with a request that differs from the stored one.
     IdempotencyKeyReused,
+    /// A board with this id already exists.
+    BoardExists,
+    /// The board is archived and accepts no more posts.
+    BoardArchived,
 }
 
 impl fmt::Display for ConflictKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
             ConflictKind::IdempotencyKeyReused => "idempotency key reused with a different request",
+            ConflictKind::BoardExists => "board already exists",
+            ConflictKind::BoardArchived => "board is archived",
         })
     }
 }
@@ -170,6 +176,15 @@ mod tests {
         assert_eq!(
             ConflictKind::IdempotencyKeyReused.to_string(),
             "idempotency key reused with a different request"
+        );
+        assert_eq!(
+            ConflictKind::BoardExists.to_string(),
+            "board already exists"
+        );
+        assert_eq!(ConflictKind::BoardArchived.to_string(), "board is archived");
+        assert_eq!(
+            StoreError::Conflict(ConflictKind::BoardArchived).to_string(),
+            "conflict: board is archived"
         );
     }
 
