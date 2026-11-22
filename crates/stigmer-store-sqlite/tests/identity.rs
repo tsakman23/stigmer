@@ -1,7 +1,7 @@
 //! SQLite-only identity checks: what the database file actually holds.
 
 use rusqlite::Connection;
-use stigmer_core::{generate_secret, BoardId, PrincipalKind, Role, SecretKind};
+use stigmer_core::{generate_secret, parse_secret, BoardId, PrincipalKind, Role, SecretKind};
 use stigmer_store::{
     CredentialScope, Entity, IdentityStore, NewCredential, NewInvite, NewJoinCredential,
     SecurityEvent, SecurityEventKind, StoreError,
@@ -114,12 +114,14 @@ async fn secret_hashes_not_stored_in_plain_text() {
         vec![token.hash.to_vec(), invite.hash.to_vec()]
     );
 
-    for secret in [&token, &invite] {
-        let secret_part = secret.full.rsplit('_').next().unwrap();
+    for (kind, secret) in [(SecretKind::Token, &token), (SecretKind::Invite, &invite)] {
+        // The whole 43-character secret, never `rsplit('_')`: a base64url secret can contain or
+        // end in '_', which would leave an empty or one-character needle that always matches.
+        let (_, secret_part) = parse_secret(kind, &secret.full).unwrap();
         for table in ["credentials", "invites", "security_log", "principals"] {
             for cell in cells(&conn, table) {
                 assert!(!cell.contains(&secret.full), "full secret in {table}");
-                assert!(!cell.contains(secret_part), "secret part in {table}");
+                assert!(!cell.contains(&secret_part), "secret part in {table}");
             }
         }
         for cell in cells(&conn, "security_log") {
@@ -260,10 +262,12 @@ async fn join_row_holds_public_ids_but_no_secret_bytes() {
             invite.id, token.id
         )
     );
-    for secret in [&invite, &token] {
-        let secret_part = secret.full.rsplit('_').next().unwrap();
+    for (kind, secret) in [(SecretKind::Invite, &invite), (SecretKind::Token, &token)] {
+        // The whole 43-character secret, never `rsplit('_')`: a base64url secret can contain or
+        // end in '_', which would leave an empty or one-character needle that always matches.
+        let (_, secret_part) = parse_secret(kind, &secret.full).unwrap();
         for cell in cells(&conn, "security_log") {
-            assert!(!cell.contains(&secret.full) && !cell.contains(secret_part));
+            assert!(!cell.contains(&secret.full) && !cell.contains(&secret_part));
             assert!(!cell.contains(&hex(&secret.hash)));
         }
     }
