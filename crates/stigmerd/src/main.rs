@@ -14,10 +14,12 @@ use stigmer_api::{router, AllowAll, ApiConfig, RoleAuthorize};
 use stigmer_store::{IdentityStore, Mode};
 use stigmer_store_sqlite::SqliteStore;
 use tokio::sync::watch;
+use tokio_rustls::TlsAcceptor;
 
 mod admin;
 mod lock;
 mod serve;
+mod tls;
 
 /// How long in-flight requests get to finish after a shutdown signal.
 const DRAIN_LIMIT: Duration = Duration::from_secs(5);
@@ -54,6 +56,12 @@ struct ServeArgs {
     /// How long a client may take to send its request headers, in ms (for tests).
     #[arg(long, default_value_t = 10_000, hide = true, value_parser = clap::value_parser!(u64).range(1..))]
     header_read_timeout_ms: u64,
+    /// Serve TLS 1.3 with this PEM certificate chain (requires --tls-key).
+    #[arg(long, value_name = "PEM", requires = "tls_key")]
+    tls_cert: Option<PathBuf>,
+    /// The PEM private key (PKCS#8, RSA or SEC1) of --tls-cert.
+    #[arg(long, value_name = "PEM", requires = "tls_cert")]
+    tls_key: Option<PathBuf>,
 }
 
 /// Milliseconds since the Unix epoch; the only place this binary reads the clock.
@@ -97,6 +105,8 @@ async fn serve(args: ServeArgs) -> Result<(), Failure> {
         bind,
         max_connections,
         header_read_timeout_ms,
+        tls_cert,
+        tls_key,
     } = args;
     let signals = Signals::install()
         .map_err(|e| Failure::Runtime(format!("cannot register signal handlers: {e}")))?;
@@ -105,6 +115,13 @@ async fn serve(args: ServeArgs) -> Result<(), Failure> {
     if !data_dir.exists() {
         check_bind(bind, Mode::Local)?;
     }
+    // Clap guarantees the two flags come together.
+    let tls_files = match (tls_cert, tls_key) {
+        (Some(cert), Some(key)) => Some(tls::PairFiles { cert, key }),
+        _ => None,
+    };
+    // A bad pair is refused before the data dir is touched.
+    let tls = tls_files.as_ref().map(start_tls).transpose()?;
     let data = DataDir::open(&data_dir)?;
     let db_path = data.db_path();
     let store = SqliteStore::open(&db_path).await.map_err(|e| {
@@ -136,8 +153,9 @@ async fn serve(args: ServeArgs) -> Result<(), Failure> {
         ),
     };
 
+    let scheme = if tls.is_some() { "https" } else { "http" };
     println!(
-        "listening on http://{local} (data in {})",
+        "listening on {scheme}://{local} (data in {})",
         data_dir.display()
     );
     std::io::stdout()
@@ -148,6 +166,7 @@ async fn serve(args: ServeArgs) -> Result<(), Failure> {
         // u32 always fits a usize on the platforms Rust supports for this server.
         max_connections: usize::try_from(max_connections).unwrap_or(usize::MAX),
         header_read_timeout: Duration::from_millis(header_read_timeout_ms),
+        tls,
     };
     let server = serve::run(listener, app, listen, shutdown_rx);
     tokio::pin!(server);
@@ -160,6 +179,16 @@ async fn serve(args: ServeArgs) -> Result<(), Failure> {
     let _ = shutdown_tx.send(true);
     let _ = tokio::time::timeout(DRAIN_LIMIT, server).await;
     Ok(())
+}
+
+/// Loads the certificate pair and builds the TLS acceptor that serves it.
+fn start_tls(files: &tls::PairFiles) -> Result<TlsAcceptor, Failure> {
+    let provider = tls::provider();
+    let pair = tls::load_pair(files, &provider).map_err(Failure::Runtime)?;
+    tls::warn_if_key_exposed(&files.key);
+    let current = Arc::new(tls::CurrentPair::new(pair));
+    let config = tls::server_config(provider, current).map_err(Failure::Runtime)?;
+    Ok(TlsAcceptor::from(config))
 }
 
 /// Refuses a non-loopback bind. TLS and trusted-proxy support are not in this build, so

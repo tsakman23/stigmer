@@ -1,6 +1,6 @@
 //! The accept loop: owns every connection so it can cap how many are open, bound how long a
-//! client may take to send its request headers, tag each request with the peer address and end
-//! connections gracefully at shutdown.
+//! client may take to send its request headers (and finish a TLS handshake), tag each request
+//! with the peer address, add HSTS on TLS and end connections gracefully at shutdown.
 
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
@@ -8,6 +8,8 @@ use std::time::Duration;
 
 use axum::body::{Bytes, HttpBody};
 use axum::extract::Request;
+use axum::http::header::STRICT_TRANSPORT_SECURITY;
+use axum::http::HeaderValue;
 use axum::Router;
 use hyper::body::Incoming;
 use hyper_util::rt::{TokioExecutor, TokioIo, TokioTimer};
@@ -17,7 +19,10 @@ use stigmer_api::PeerAddr;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, watch, OwnedSemaphorePermit, Semaphore};
+use tokio_rustls::TlsAcceptor;
 use tower::ServiceExt;
+
+use crate::tls::HSTS;
 
 /// How long to back off after a failed accept (out of file descriptors, say) before trying again.
 const ACCEPT_BACKOFF: Duration = Duration::from_millis(50);
@@ -26,14 +31,20 @@ const ACCEPT_BACKOFF: Duration = Duration::from_millis(50);
 pub(crate) struct Listen {
     /// Connections open at once; the excess is accepted and dropped without a response.
     pub(crate) max_connections: usize,
-    /// How long a client may take to send complete request headers.
+    /// How long a client may take to send complete request headers, and to finish a TLS
+    /// handshake.
     pub(crate) header_read_timeout: Duration,
+    /// Serve TLS (only) when set.
+    pub(crate) tls: Option<TlsAcceptor>,
 }
 
 /// What every connection task shares.
 struct Shared {
     app: Router,
     http1: Builder<TokioExecutor>,
+    http2: Builder<TokioExecutor>,
+    tls: Option<TlsAcceptor>,
+    handshake_timeout: Duration,
 }
 
 /// Serves `app` on `listener` until `shutdown` turns true, then lets every open connection
@@ -44,12 +55,22 @@ pub(crate) async fn run(
     listen: Listen,
     mut shutdown: watch::Receiver<bool>,
 ) {
+    // The protocol is fixed per connection (ALPN on TLS, HTTP/1.1 otherwise) rather than sniffed,
+    // so a client that sends nothing still meets the header timeout.
     let mut http1 = Builder::new(TokioExecutor::new()).http1_only();
     http1
         .http1()
         .timer(TokioTimer::new())
         .header_read_timeout(listen.header_read_timeout);
-    let shared = Arc::new(Shared { app, http1 });
+    let mut http2 = Builder::new(TokioExecutor::new()).http2_only();
+    http2.http2().timer(TokioTimer::new());
+    let shared = Arc::new(Shared {
+        app,
+        http1,
+        http2,
+        tls: listen.tls,
+        handshake_timeout: listen.header_read_timeout,
+    });
     let slots = Arc::new(Semaphore::new(listen.max_connections));
     // Every connection task holds a sender; the channel closes once the last one ends.
     let (alive, mut all_closed) = mpsc::channel::<()>(1);
@@ -94,19 +115,35 @@ async fn connection(
     _permit: OwnedSemaphorePermit,
     _alive: mpsc::Sender<()>,
 ) {
+    let Some(acceptor) = &shared.tls else {
+        let service = tagged(&shared.app, peer.ip(), false);
+        return drive(stream, &shared.http1, service, shutdown).await;
+    };
+    // A failed or slow handshake (plain HTTP, TLS 1.2, a stalled client) just ends here.
+    let Ok(Ok(stream)) =
+        tokio::time::timeout(shared.handshake_timeout, acceptor.accept(stream)).await
+    else {
+        return;
+    };
+    let builder = match stream.get_ref().1.alpn_protocol() {
+        Some(b"h2") => &shared.http2,
+        _ => &shared.http1,
+    };
     drive(
         stream,
-        &shared.http1,
-        tagged(&shared.app, peer.ip()),
+        builder,
+        tagged(&shared.app, peer.ip(), true),
         shutdown,
     )
     .await;
 }
 
-/// The router with `PeerAddr(peer)` inserted into every request's extensions.
+/// The router with `PeerAddr(peer)` inserted into every request's extensions and, on TLS
+/// connections, `Strict-Transport-Security` added to every response.
 fn tagged<B>(
     app: &Router,
     peer: IpAddr,
+    tls: bool,
 ) -> impl tower::Service<
     Request<B>,
     Response = axum::response::Response,
@@ -119,10 +156,19 @@ where
     B: HttpBody<Data = Bytes> + Send + 'static,
     B::Error: Into<axum::BoxError>,
 {
-    app.clone().map_request(move |mut request: Request<B>| {
-        request.extensions_mut().insert(PeerAddr(peer));
-        request
-    })
+    app.clone()
+        .map_request(move |mut request: Request<B>| {
+            request.extensions_mut().insert(PeerAddr(peer));
+            request
+        })
+        .map_response(move |mut response: axum::response::Response| {
+            if tls {
+                response
+                    .headers_mut()
+                    .insert(STRICT_TRANSPORT_SECURITY, HeaderValue::from_static(HSTS));
+            }
+            response
+        })
 }
 
 /// Runs the HTTP connection to completion, switching to a graceful shutdown (finish the
@@ -169,7 +215,7 @@ mod tests {
             .header("authorization", "Bearer garbage")
             .body(Body::empty())
             .unwrap();
-        let service = tagged(app, peer.parse().unwrap());
+        let service = tagged(app, peer.parse().unwrap(), false);
         service.oneshot(request).await.unwrap().status()
     }
 

@@ -1,6 +1,8 @@
 //! Helpers shared by the stigmerd end-to-end tests.
 #![allow(dead_code)] // each test crate uses a different subset
 
+pub mod tls;
+
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
 use std::path::Path;
