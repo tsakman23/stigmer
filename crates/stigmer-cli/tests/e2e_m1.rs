@@ -21,6 +21,8 @@ const ANSWER: &str = "TLS 1.3 only.";
 const UNAUTHORIZED_HINT: &str = "next: run stigmer join <invite> --as <name> or stigmer login";
 /// How long a blocked wait, or the SDK example, may take before the test fails.
 const WAKE_TIMEOUT: Duration = Duration::from_secs(60);
+/// How long one npm step of the SDK build may take before it is killed.
+const NPM_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// One CLI user of the TLS server: its own HOME and XDG_CONFIG_HOME, and every run goes to the
 /// server's URL trusting the test CA.
@@ -397,6 +399,56 @@ fn enable_auth_and_map_local_principals_on_m0_data_keeps_the_chain_valid() {
     // The local workflow is gone: a name without a token is refused.
     let anonymous = user.run(&["--url", &url, "--as", "alice", "read", "research/"]);
     assert_eq!(anonymous.code, 6, "{anonymous:?}");
+    // carol is a member who never was a local author: her post is not a local author's.
+    let carol_reply = carol.run(&["--url", &url, "reply", &thread, "Noted, thanks."]);
+    assert_eq!(carol_reply.code, 0, "{carol_reply:?}");
+
+    // The adopted alice gets a token from the operator and carries on under her own name.
+    server.stop();
+    let issued = server.admin(&["issue-member-token", "--board", "main", "--member", "alice"]);
+    assert_eq!(issued.code, 0, "{issued:?}");
+    let alice_token = value(&issued.stdout, "member token: ");
+    server.start_again();
+    let alice = CliUser::new();
+    let login = alice.run_stdin(&["--url", &url, "login"], &format!("{alice_token}\n"));
+    assert_eq!(login.code, 0, "{login:?}");
+    assert!(!login.all().contains(&alice_token), "{login:?}");
+    let old = alice.run(&["--url", &url, "thread", &thread]);
+    assert_eq!(old.code, 0, "{old:?}");
+    assert!(
+        old.stdout
+            .contains(&format!("<<<message {thread} from alice at ")),
+        "{old:?}"
+    );
+    assert!(old.stdout.contains(" from bob at "), "{old:?}");
+    let posted = alice.run(&["--url", &url, "post", "research/ops", "Rotation done."]);
+    assert_eq!(posted.code, 0, "{posted:?}");
+    assert!(posted.stdout.contains(" as alice\n"), "{posted:?}");
+    server.stop();
+
+    let (chain, locals) = block_on(async {
+        let store = SqliteStore::open(&db).await.expect("open the database");
+        (
+            store.verify_chain(&main).await.expect("verify chain"),
+            store
+                .list_local_authors(&main)
+                .await
+                .expect("local authors"),
+        )
+    });
+    assert!(chain.valid, "{chain:?}");
+    assert_eq!(
+        chain.checked,
+        before.0.checked + 2,
+        "carol's and alice's posts"
+    );
+    // Every author is a member now (the mapping adopts every local author of main, and new
+    // posts by members are stored as theirs), so nothing is local and a second mapping is a
+    // clean no-op instead of a name-taken refusal.
+    assert!(locals.is_empty(), "{locals:?}");
+    let again = server.admin(&["map-local-principals", "--admin", "alice", "--apply"]);
+    assert_eq!(again.code, 0, "{again:?}");
+    assert_eq!(again.stdout, "nothing to map\n");
 }
 
 #[test]
@@ -435,50 +487,64 @@ fn no_secret_appears_in_server_output_and_login_files_are_private() {
     assert_eq!(spent.code, 6, "{spent:?}");
 
     let mut secrets = vec![
-        ex.server.instance_token.clone().unwrap(),
-        ex.server.main_invite.clone().unwrap(),
-        a_token,
-        c_token,
-        forged,
+        ("instance token", ex.server.instance_token.clone().unwrap()),
+        ("main admin invite", ex.server.main_invite.clone().unwrap()),
+        ("agent-a token", a_token),
+        ("agent-c token", c_token),
+        ("forged token", forged),
     ];
-    secrets.extend(ex.invites.iter().cloned());
-    let halves: Vec<String> = secrets
+    for (n, invite) in ex.invites.iter().enumerate() {
+        let label = if n == 0 {
+            "first board invite"
+        } else {
+            "second board invite"
+        };
+        secrets.push((label, invite.clone()));
+    }
+    // Each secret in full and its secret half, labelled; a failure names the label, never the
+    // value, and never dumps the captured output.
+    let needles: Vec<(String, String)> = secrets
         .iter()
-        .map(|full| {
+        .flat_map(|(label, full)| {
             let kind = if full.starts_with("stgi1_") {
                 SecretKind::Invite
             } else {
                 SecretKind::Token
             };
-            parse_secret(kind, full).expect("secret shape").1
+            let half = parse_secret(kind, full).expect("secret shape").1;
+            [
+                (format!("{label} (full)"), full.clone()),
+                (format!("{label} (secret half)"), half),
+            ]
         })
         .collect();
 
     ex.server.stop();
-    let output = format!("{}{}", ex.server.stdout.text(), ex.server.stderr.text());
-    for (full, half) in secrets.iter().zip(&halves) {
-        assert!(
-            !output.contains(full.as_str()),
-            "a secret in server output: {output}"
-        );
-        assert!(
-            !output.contains(half.as_str()),
-            "a secret half in server output: {output}"
-        );
+    for (stream, text) in [
+        ("stdout", ex.server.stdout.text()),
+        ("stderr", ex.server.stderr.text()),
+    ] {
+        for (label, needle) in &needles {
+            if let Some(at) = text.find(needle.as_str()) {
+                panic!("{label} found in server {stream} at byte {at}");
+            }
+        }
     }
 
     for entry in std::fs::read_dir(ex.server.data_path()).expect("data dir") {
         let path = entry.expect("dir entry").path();
         let bytes = std::fs::read(&path).expect("read data file");
-        for half in &halves {
-            assert!(
-                !bytes.windows(half.len()).any(|w| w == half.as_bytes()),
-                "a secret half is stored in {}",
-                path.display()
-            );
+        for (label, needle) in &needles {
+            if let Some(at) = bytes
+                .windows(needle.len())
+                .position(|w| w == needle.as_bytes())
+            {
+                panic!("{label} stored in {} at byte {at}", path.display());
+            }
         }
     }
 
+    #[cfg(unix)]
     for agent in [&ex.admin, &ex.a, &ex.c] {
         let file = agent.user.logins_path();
         assert_eq!(mode(&file), 0o600, "{}", file.display());
@@ -501,16 +567,26 @@ fn sdk_example_reproduces_the_exit_exchange() {
         return;
     }
     let sdk = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../sdk/typescript");
-    if !sdk.join("dist/src/index.js").exists() {
-        for args in [&["ci"][..], &["run", "build"][..]] {
-            let status = Command::new("npm")
-                .args(args)
-                .current_dir(&sdk)
-                .stdout(Stdio::null())
-                .status()
-                .expect("run npm");
-            assert!(status.success(), "npm {args:?} failed in {}", sdk.display());
-        }
+    // Dependencies once; the build every time (it is quick), so a stale dist is never run.
+    let mut steps: Vec<&[&str]> = Vec::new();
+    if !sdk.join("node_modules").exists() {
+        steps.push(&["ci"]);
+    }
+    steps.push(&["run", "build"]);
+    for args in steps {
+        let mut npm = Command::new("npm");
+        npm.args(args)
+            .current_dir(&sdk)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let run = finish(Guard::spawn(&mut npm), NPM_TIMEOUT);
+        assert_eq!(
+            run.code,
+            0,
+            "npm {args:?} failed in {}: {run:?}",
+            sdk.display()
+        );
     }
 
     let ex = Exchange::start();
