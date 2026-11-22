@@ -177,7 +177,12 @@ async fn connection(
 }
 
 /// The router with `PeerAddr(peer)` inserted into every request's extensions and, on TLS
-/// connections, `Strict-Transport-Security` added to every response.
+/// connections, `Strict-Transport-Security` added to every response the router produces
+/// (including its 404 and 405 fallbacks).
+///
+/// Responses hyper writes itself for malformed HTTP (400, 431 for oversized headers) never reach
+/// the router and carry no HSTS. That is accepted: such a client is not a browser that would
+/// learn the policy, and every well-formed request gets it.
 fn tagged<B>(
     app: &Router,
     peer: IpAddr,

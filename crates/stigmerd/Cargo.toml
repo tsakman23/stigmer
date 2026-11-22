@@ -24,5 +24,7 @@ tower = { version = "0.5", features = ["util"] }
 
 [dev-dependencies]
 rcgen = { version = "0.14.10", default-features = false, features = ["crypto", "pem", "ring"] }
+# tls12 exists only so the test client can attempt TLS 1.2 and see the server refuse it; the
+# server itself is built and configured for TLS 1.3 only.
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 tempfile = "3.27.0"

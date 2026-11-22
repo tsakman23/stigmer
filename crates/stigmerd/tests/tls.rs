@@ -54,7 +54,21 @@ fn tls_serves_https_and_rejects_tls12_clients() {
     );
     assert_eq!(reply.peer_cert, leaf);
     let refused = https_raw(&server.addr, ca.client(&TLS12), &get("/healthz", &[]));
-    assert!(refused.is_err(), "a TLS 1.2 client must not get a response");
+    let err = match refused {
+        Ok(reply) => panic!("a TLS 1.2 client got a response: {}", reply.response),
+        Err(err) => err,
+    };
+    // The server offers no protocol version the client speaks. (The dev-dependency's tls12
+    // feature exists only so this client can attempt TLS 1.2.)
+    assert!(
+        matches!(
+            tls_error(&err),
+            Some(rustls::Error::AlertReceived(
+                rustls::AlertDescription::ProtocolVersion
+            ))
+        ),
+        "{err:?}"
+    );
 }
 
 #[test]
@@ -107,6 +121,20 @@ fn hsts_header_present_on_tls_only() {
             reply.response
         );
     }
+    // Wrong method on a known route: the 405 carries HSTS too.
+    let wrong = request("POST", "/healthz", &[], "");
+    let reply = https_raw(&server.addr, ca.client(&TLS13), &wrong).expect("tls exchange");
+    assert!(
+        reply.response.starts_with("HTTP/1.1 405"),
+        "{}",
+        reply.response
+    );
+    assert_eq!(
+        header(&reply.response, "strict-transport-security"),
+        Some("max-age=31536000"),
+        "{}",
+        reply.response
+    );
     let plain_dir = tempfile::tempdir().expect("tempdir");
     let plain = start(&network_data(plain_dir.path()));
     let reply = raw(&plain.addr, &get("/healthz", &[]));
