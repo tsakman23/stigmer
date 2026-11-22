@@ -1,4 +1,5 @@
-//! In-memory token buckets for failed authentications, and throttling of their log rows.
+//! In-memory token buckets for failed authentications per source, and throttling of their log
+//! rows.
 //!
 //! A bucket holds up to `per_minute` tokens and refills continuously at `per_minute` per
 //! minute. Every request reserves one token before its credential is verified, under the same
@@ -11,8 +12,6 @@ use std::collections::HashMap;
 use std::fmt;
 use std::net::IpAddr;
 use std::sync::{Mutex, PoisonError};
-
-use stigmer_core::TokenId;
 
 const MINUTE_MS: i64 = 60_000;
 
@@ -33,13 +32,6 @@ impl fmt::Display for Source {
     }
 }
 
-/// What a bucket is kept for.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub(crate) enum Key {
-    Source(Source),
-    Token(TokenId),
-}
-
 /// A security log row kind that is written at most once per source per minute.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum Logged {
@@ -55,12 +47,12 @@ struct Bucket {
 
 #[derive(Default)]
 struct Inner {
-    buckets: HashMap<Key, Bucket>,
+    buckets: HashMap<Source, Bucket>,
     logged: HashMap<(Source, Logged), i64>,
     pruned_at_ms: i64,
 }
 
-/// Failure buckets for a set of keys, all with the same rate.
+/// Failure buckets per source, all with the same rate.
 pub(crate) struct FailureLimiter {
     per_minute: u32,
     inner: Mutex<Inner>,
@@ -74,56 +66,51 @@ impl FailureLimiter {
         }
     }
 
-    /// Takes one token from each of `keys`, all or none, under one lock. `Err(seconds)` when any
-    /// of them has no whole token left: the time until all of them do. A request that turns out
-    /// not to be a failure hands its tokens back with [`FailureLimiter::refund`].
-    pub(crate) fn reserve(&self, keys: &[Key], now_ms: i64) -> Result<(), u64> {
+    /// Takes one token from `source`'s bucket under one lock. `Err(seconds)` when it has no
+    /// whole token left: the time until it does. A request that turns out not to be a failure
+    /// hands its token back with [`FailureLimiter::refund`].
+    pub(crate) fn reserve(&self, source: Source, now_ms: i64) -> Result<(), u64> {
         let mut inner = self.lock();
         self.prune(&mut inner, now_ms);
-        let full = self.full(now_ms);
-        let refilled: Vec<f64> = keys
-            .iter()
-            .map(|key| self.refilled(inner.buckets.get(key).copied().unwrap_or(full), now_ms))
-            .collect();
-        let wait_ms = refilled
-            .iter()
-            .map(|tokens| self.wait_ms(*tokens))
-            .max()
-            .unwrap_or(0);
+        let bucket = inner
+            .buckets
+            .get(&source)
+            .copied()
+            .unwrap_or(self.full(now_ms));
+        let tokens = self.refilled(bucket, now_ms);
+        let wait_ms = self.wait_ms(tokens);
         if wait_ms > 0 {
             return Err(wait_ms.div_ceil(1000).max(1));
         }
-        for (key, tokens) in keys.iter().zip(refilled) {
-            let bucket = Bucket {
+        inner.buckets.insert(
+            source,
+            Bucket {
                 tokens: tokens - 1.0,
                 at_ms: now_ms,
-            };
-            inner.buckets.insert(key.clone(), bucket);
-        }
+            },
+        );
         Ok(())
     }
 
-    /// Gives back the tokens a successful request reserved; a bucket that is full again is
+    /// Gives back the token a successful request reserved; a bucket that is full again is
     /// dropped.
-    pub(crate) fn refund(&self, keys: &[Key], now_ms: i64) {
+    pub(crate) fn refund(&self, source: Source, now_ms: i64) {
         let mut inner = self.lock();
+        let Some(bucket) = inner.buckets.get(&source).copied() else {
+            return;
+        };
         let cap = f64::from(self.per_minute);
-        for key in keys {
-            let Some(bucket) = inner.buckets.get(key).copied() else {
-                continue;
-            };
-            let tokens = (self.refilled(bucket, now_ms) + 1.0).min(cap);
-            if tokens >= cap {
-                inner.buckets.remove(key);
-            } else {
-                inner.buckets.insert(
-                    key.clone(),
-                    Bucket {
-                        tokens,
-                        at_ms: now_ms,
-                    },
-                );
-            }
+        let tokens = (self.refilled(bucket, now_ms) + 1.0).min(cap);
+        if tokens >= cap {
+            inner.buckets.remove(&source);
+        } else {
+            inner.buckets.insert(
+                source,
+                Bucket {
+                    tokens,
+                    at_ms: now_ms,
+                },
+            );
         }
     }
 
@@ -198,58 +185,48 @@ impl FailureLimiter {
 mod tests {
     use super::*;
 
-    fn ip(s: &str) -> Key {
-        Key::Source(Source::Ip(s.parse().unwrap()))
+    fn ip(s: &str) -> Source {
+        Source::Ip(s.parse().unwrap())
     }
 
     #[test]
     fn allows_per_minute_failures_then_limits_until_refilled() {
         let limiter = FailureLimiter::new(6);
-        let keys = [ip("192.0.2.1")];
+        let a = ip("192.0.2.1");
         for _ in 0..6 {
-            assert_eq!(limiter.reserve(&keys, 0), Ok(()));
+            assert_eq!(limiter.reserve(a, 0), Ok(()));
         }
         // Six a minute refill one every 10 s.
-        assert_eq!(limiter.reserve(&keys, 0), Err(10));
-        assert_eq!(limiter.reserve(&keys, 9_001), Err(1));
-        assert_eq!(limiter.reserve(&keys, 10_000), Ok(()));
-        assert_eq!(limiter.reserve(&[ip("192.0.2.2")], 0), Ok(()));
+        assert_eq!(limiter.reserve(a, 0), Err(10));
+        assert_eq!(limiter.reserve(a, 9_001), Err(1));
+        assert_eq!(limiter.reserve(a, 10_000), Ok(()));
+        assert_eq!(limiter.reserve(ip("192.0.2.2"), 0), Ok(()));
     }
 
     #[test]
     fn refunded_reservations_cost_nothing() {
         let limiter = FailureLimiter::new(2);
-        let keys = [ip("192.0.2.1")];
+        let a = ip("192.0.2.1");
         for _ in 0..100 {
-            limiter.reserve(&keys, 0).unwrap();
-            limiter.refund(&keys, 0);
+            limiter.reserve(a, 0).unwrap();
+            limiter.refund(a, 0);
         }
         assert_eq!(limiter.tracked(), (0, 0));
-        limiter.reserve(&keys, 0).unwrap();
-        limiter.reserve(&keys, 0).unwrap();
-        assert_eq!(limiter.reserve(&keys, 0), Err(30));
-    }
-
-    #[test]
-    fn any_limited_key_limits_the_request_and_takes_nothing() {
-        let limiter = FailureLimiter::new(1);
-        let token = Key::Token(TokenId::new("0123456789abcdef").unwrap());
-        limiter.reserve(std::slice::from_ref(&token), 0).unwrap();
-        let both = [ip("192.0.2.1"), token];
-        assert_eq!(limiter.reserve(&both, 0), Err(60));
-        assert_eq!(limiter.reserve(&both[..1], 0), Ok(()));
+        limiter.reserve(a, 0).unwrap();
+        limiter.reserve(a, 0).unwrap();
+        assert_eq!(limiter.reserve(a, 0), Err(30));
     }
 
     #[test]
     fn zero_per_minute_limits_everything() {
         let limiter = FailureLimiter::new(0);
-        assert_eq!(limiter.reserve(&[ip("192.0.2.1")], 0), Err(60));
+        assert_eq!(limiter.reserve(ip("192.0.2.1"), 0), Err(60));
     }
 
     #[test]
     fn log_marks_are_once_a_minute_per_source_and_kind() {
         let limiter = FailureLimiter::new(10);
-        let a = Source::Ip("192.0.2.1".parse().unwrap());
+        let a = ip("192.0.2.1");
         assert!(limiter.should_log(a, Logged::AuthFailed, 0));
         assert!(!limiter.should_log(a, Logged::AuthFailed, 59_999));
         assert!(limiter.should_log(a, Logged::RateLimited, 1));
@@ -260,19 +237,19 @@ mod tests {
     #[test]
     fn idle_buckets_and_old_log_marks_are_pruned() {
         let limiter = FailureLimiter::new(2);
-        limiter.reserve(&[ip("192.0.2.1")], 0).unwrap();
+        limiter.reserve(ip("192.0.2.1"), 0).unwrap();
         limiter.should_log(Source::Unknown, Logged::AuthFailed, 0);
         assert_eq!(limiter.tracked(), (1, 1));
         // Refilled (one failure at 2 a minute is back after 30 s) and a minute old.
-        limiter.reserve(&[], 60_000).unwrap();
-        assert_eq!(limiter.tracked(), (0, 0));
+        limiter.reserve(ip("192.0.2.9"), 60_000).unwrap();
+        assert_eq!(limiter.tracked(), (1, 0));
     }
 
     #[test]
     fn clock_going_backwards_does_not_refill() {
         let limiter = FailureLimiter::new(1);
-        let keys = [ip("192.0.2.1")];
-        limiter.reserve(&keys, 10_000).unwrap();
-        assert_eq!(limiter.reserve(&keys, 0), Err(60));
+        let a = ip("192.0.2.1");
+        limiter.reserve(a, 10_000).unwrap();
+        assert_eq!(limiter.reserve(a, 0), Err(60));
     }
 }

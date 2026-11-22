@@ -5,8 +5,8 @@
 //! membership, then stamp the credential as seen. Every failure is the same 401. Nothing here
 //! logs, echoes or stores the presented token.
 //!
-//! Failed authentications are limited per source address and per token id, checked before any
-//! credential is looked at, and written to the security log at most once a minute per source.
+//! Failed authentications are limited per source address, checked before any credential is
+//! looked at, and written to the security log at most once a minute per source.
 
 use std::hint::black_box;
 use std::net::IpAddr;
@@ -24,7 +24,7 @@ use stigmer_store::{
 use crate::authz::{Authenticated, Authorize};
 use crate::error::ApiError;
 use crate::ipnet::IpNet;
-use crate::ratelimit::{Key, Logged, Source};
+use crate::ratelimit::{Logged, Source};
 use crate::routes::{reader, AppState};
 
 /// The address of the connection a request came in on. The server inserts it as a request
@@ -71,7 +71,7 @@ fn local_caller(headers: &HeaderMap) -> Result<Authenticated, ApiError> {
     })
 }
 
-/// Network mode: 429 when the source or the token id has no failures left, else the verified
+/// Network mode: 429 when the source has no failures left, else the verified
 /// caller (its reserved failure refunded), else 401 (the failure kept).
 async fn network_caller<S: IdentityStore, A: Authorize>(
     state: &AppState<S, A>,
@@ -81,9 +81,7 @@ async fn network_caller<S: IdentityStore, A: Authorize>(
     let now = (state.config.clock)();
     let parsed = bearer(headers).and_then(|raw| parse_secret(SecretKind::Token, raw).ok());
     let token = parsed.as_ref().map(|(id, _)| id.clone());
-    let mut keys = vec![Key::Source(source)];
-    keys.extend(token.clone().map(Key::Token));
-    if let Err(retry_after) = state.auth_failures.reserve(&keys, now) {
+    if let Err(retry_after) = state.auth_failures.reserve(source, now) {
         if state
             .auth_failures
             .should_log(source, Logged::RateLimited, now)
@@ -97,7 +95,7 @@ async fn network_caller<S: IdentityStore, A: Authorize>(
     }
     // The reservation is kept by a failure (and by a storage error, conservatively).
     if let Some(who) = verify(&*state.store, parsed, now).await? {
-        state.auth_failures.refund(&keys, now);
+        state.auth_failures.refund(source, now);
         return Ok(who);
     }
     if state

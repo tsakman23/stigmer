@@ -5,7 +5,7 @@
 pub struct Limits {
     /// Events requests that may wait (`timeout_s > 0`) at the same time; more get 429.
     pub max_waits: usize,
-    /// Failed authentications allowed per source address, and per token id, per minute.
+    /// Failed authentications allowed per source address per minute.
     pub auth_failures_per_minute: u32,
     /// Join attempts allowed per source address per minute.
     pub join_per_minute: u32,

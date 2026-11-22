@@ -701,26 +701,6 @@ async fn failed_auth_is_rate_limited_per_source_with_429_and_retry_after() {
 }
 
 #[tokio::test]
-async fn failed_auth_is_rate_limited_per_token_id_across_sources() {
-    let net = network_with(RoleAuthorize, |c| c.limits.auth_failures_per_minute = 3).await;
-    let good = member_token(&net.store, &BoardId::main(), "alice", Role::Member).await;
-    let wrong = format!("{}AAAA", &good[..good.len() - 4]);
-    for i in 0..3 {
-        let reply = send(
-            &net.app,
-            from_peer(events_with(&wrong), &format!("192.0.2.{i}")),
-        )
-        .await;
-        assert_eq!(reply.status, StatusCode::UNAUTHORIZED);
-    }
-    let reply = send(&net.app, from_peer(events_with(&wrong), "192.0.2.50")).await;
-    assert_rate_limited(&reply);
-    let failed = log_of(&net.store, SecurityEventKind::AuthFailed).await;
-    let id = token_id(&good);
-    assert!(failed.iter().all(|d| d.contains(id.as_str())), "{failed:?}");
-}
-
-#[tokio::test]
 async fn requests_without_a_peer_address_share_one_bucket() {
     let net = network_with(RoleAuthorize, |c| c.limits.auth_failures_per_minute = 2).await;
     for _ in 0..2 {

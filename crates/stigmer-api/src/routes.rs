@@ -87,6 +87,11 @@ pub fn router<S: Store + IdentityStore, A: Authorize>(
             state.clone(),
             authenticate::<S, A>,
         ));
+    // Request order: the host guard (outermost) refuses foreign Host/Origin first; then, on board
+    // routes only, the authentication layer answers 429 -> 401; then each handler answers 404
+    // (board not visible) -> 403 (authorizer) -> the request's own errors. Health checks are
+    // open, and the unknown-route 404 and wrong-method 405 fallbacks are unauthenticated by
+    // design: they reveal only the public shape of the routes.
     Router::new()
         .route("/healthz", get(healthz))
         .route("/readyz", get(readyz::<S, A>))
