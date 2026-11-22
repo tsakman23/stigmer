@@ -229,6 +229,7 @@ pub(crate) fn consume_invite(
     let board = BoardId::new(&stored.board).map_err(backend)?;
     let (role, kind) = (parse_role(&stored.role)?, parse_kind(&stored.kind)?);
     let member = insert(&tx, &board, name, kind, role, now_ms)?;
+    let token_id = join.id.clone();
     let credential = NewCredential {
         id: join.id,
         secret_hash: join.secret_hash,
@@ -249,7 +250,11 @@ pub(crate) fn consume_invite(
             kind: SecurityEventKind::Join,
             board: Some(board.clone()),
             principal: Some(name.to_string()),
-            detail: format!("joined as {}/{}", kind.as_str(), role.as_str()),
+            detail: format!(
+                "joined as {}/{} via invite {id} token {token_id}",
+                kind.as_str(),
+                role.as_str()
+            ),
         },
     )?;
     tx.commit().map_err(backend)?;

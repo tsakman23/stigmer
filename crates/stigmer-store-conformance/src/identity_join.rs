@@ -71,7 +71,12 @@ pub(crate) async fn join_creates_member_credential_and_audit_row_atomically<
             kind: SecurityEventKind::Join,
             board: Some(research.clone()),
             principal: Some("dave".to_owned()),
-            detail: "joined as agent/member".to_owned(),
+            // Public ids only; never a secret or a hash.
+            detail: format!(
+                "joined as agent/member via invite {} token {}",
+                token_id(1),
+                token_id(JOIN_CREDENTIAL)
+            ),
         }],
         "{SCENARIO}: audit row"
     );

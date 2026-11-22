@@ -216,3 +216,55 @@ async fn refused_join_leaves_no_credential_member_or_join_row_in_the_file() {
         0
     );
 }
+
+#[tokio::test]
+async fn join_row_holds_public_ids_but_no_secret_bytes() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("board.db");
+    let store = SqliteStore::open(&path).await.unwrap();
+    let invite = generate_secret(SecretKind::Invite).unwrap();
+    let token = generate_secret(SecretKind::Token).unwrap();
+    let new = NewInvite {
+        id: invite.id.clone(),
+        secret_hash: invite.hash,
+        board: BoardId::main(),
+        role: Role::Member,
+        kind: PrincipalKind::Agent,
+        created_by: stigmer_core::Principal::new("root").unwrap(),
+        expires_at_ms: NOW + 1,
+    };
+    store.create_invite(new, NOW).await.unwrap();
+    let join = NewJoinCredential {
+        id: token.id.clone(),
+        secret_hash: token.hash,
+        expires_at_ms: NOW + 1,
+    };
+    let dave = stigmer_core::Principal::new("dave").unwrap();
+    store
+        .consume_invite(&invite.id, &invite.hash, &dave, NOW, join)
+        .await
+        .unwrap();
+
+    let conn = Connection::open(&path).unwrap();
+    let row: String = conn
+        .query_row(
+            "SELECT detail FROM security_log WHERE kind = 'join'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        row,
+        format!(
+            "joined as agent/member via invite {} token {}",
+            invite.id, token.id
+        )
+    );
+    for secret in [&invite, &token] {
+        let secret_part = secret.full.rsplit('_').next().unwrap();
+        for cell in cells(&conn, "security_log") {
+            assert!(!cell.contains(&secret.full) && !cell.contains(secret_part));
+            assert!(!cell.contains(&hex(&secret.hash)));
+        }
+    }
+}

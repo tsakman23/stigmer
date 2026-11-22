@@ -351,8 +351,15 @@ async fn every_mutation_writes_a_security_log_row_without_secrets() {
     for event in &log {
         assert_eq!(event.board, Some(board("ops")));
         if event.kind == SecurityEventKind::Join {
-            // Written by the store in the join transaction: kind and role words only.
-            assert_eq!(event.detail, "joined as agent/member");
+            // Written by the store in the join transaction: kind, role and public ids only.
+            let invite_id = &invite["stgi1_".len().."stgi1_".len() + 16];
+            assert_eq!(
+                event.detail,
+                format!(
+                    "joined as agent/member via invite {invite_id} token {}",
+                    token_id(&token)
+                )
+            );
         } else {
             assert!(event.detail.contains("source=192.0.2.7"), "{event:?}");
         }
