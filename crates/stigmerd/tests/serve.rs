@@ -206,3 +206,61 @@ fn lock_file_is_0600() {
         .mode();
     assert_eq!(mode & 0o777, 0o600, "mode {mode:o}");
 }
+
+fn run_stigmerd(args: &[&str], data: &std::path::Path) -> std::process::Output {
+    Command::new(env!("CARGO_BIN_EXE_stigmerd"))
+        .args(args)
+        .arg("--data-dir")
+        .arg(data)
+        .output()
+        .expect("run stigmerd")
+}
+
+#[test]
+fn serve_refuses_non_loopback_bind_in_local_mode() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let out = run_stigmerd(&["serve", "--bind", "0.0.0.0:0"], dir.path());
+    assert_eq!(out.status.code(), Some(2));
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("0.0.0.0:0"), "stderr: {err}");
+    assert!(err.contains("needs network mode"), "stderr: {err}");
+    assert!(out.stdout.is_empty());
+}
+
+#[test]
+fn serve_refuses_non_loopback_in_network_mode_without_tls_or_trusted_proxy() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let enable = run_stigmerd(&["admin", "enable-auth"], dir.path());
+    assert_eq!(enable.status.code(), Some(0));
+    let out = run_stigmerd(&["serve", "--bind", "0.0.0.0:0"], dir.path());
+    assert_eq!(out.status.code(), Some(2));
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("0.0.0.0:0"), "stderr: {err}");
+    assert!(
+        err.contains("requires TLS or a trusted proxy"),
+        "stderr: {err}"
+    );
+    assert!(
+        err.contains("--tls-cert/--tls-key/--trusted-proxy are not available yet in this build"),
+        "stderr: {err}"
+    );
+    assert!(out.stdout.is_empty());
+}
+
+#[test]
+fn network_mode_on_loopback_serves_plain_http_and_requires_auth() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let data = dir.path().join("data");
+    let enable = run_stigmerd(&["admin", "enable-auth"], &data);
+    assert_eq!(enable.status.code(), Some(0));
+    let server = start(&data);
+    assert_eq!(http(&server.addr, "GET", "/healthz", &[], "").0, 200);
+    let (status, _) = http(
+        &server.addr,
+        "GET",
+        "/v1/boards/main/events?timeout_s=0",
+        &[],
+        "",
+    );
+    assert_eq!(status, 401);
+}

@@ -11,7 +11,7 @@ use std::time::Duration;
 use admin::AdminCommand;
 use clap::{Parser, Subcommand};
 use lock::DataDir;
-use stigmer_api::{require_loopback, router, AllowAll, ApiConfig, RoleAuthorize};
+use stigmer_api::{router, AllowAll, ApiConfig, RoleAuthorize};
 use stigmer_store::{IdentityStore, Mode};
 use stigmer_store_sqlite::SqliteStore;
 use tokio::sync::{oneshot, watch};
@@ -36,7 +36,7 @@ enum Command {
         /// Directory holding the board database (created if missing).
         #[arg(long, default_value = "./.stigmer")]
         data_dir: PathBuf,
-        /// Address to listen on. Must be a loopback address.
+        /// Address to listen on. Must be a loopback address for now.
         #[arg(long, default_value = "127.0.0.1:7878")]
         bind: SocketAddr,
     },
@@ -83,7 +83,6 @@ async fn main() -> ExitCode {
 }
 
 async fn serve(data_dir: PathBuf, bind: SocketAddr) -> Result<(), Failure> {
-    require_loopback(&bind).map_err(|e| Failure::Config(e.to_string()))?;
     let signals = Signals::install()
         .map_err(|e| Failure::Runtime(format!("cannot register signal handlers: {e}")))?;
 
@@ -93,17 +92,18 @@ async fn serve(data_dir: PathBuf, bind: SocketAddr) -> Result<(), Failure> {
         Failure::Runtime(format!("cannot open database {}: {e}", db_path.display()))
     })?;
 
+    let mode = store
+        .mode()
+        .await
+        .map_err(|e| Failure::Runtime(format!("cannot read instance mode: {e}")))?;
+    check_bind(bind, mode)?;
+
     let listener = tokio::net::TcpListener::bind(bind)
         .await
         .map_err(|e| Failure::Runtime(format!("cannot bind {bind}: {e}")))?;
     let local = listener
         .local_addr()
         .map_err(|e| Failure::Runtime(format!("cannot read bound address: {e}")))?;
-
-    let mode = store
-        .mode()
-        .await
-        .map_err(|e| Failure::Runtime(format!("cannot read instance mode: {e}")))?;
 
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let store = Arc::new(store);
@@ -145,6 +145,24 @@ async fn serve(data_dir: PathBuf, bind: SocketAddr) -> Result<(), Failure> {
             }
         } => Ok(()),
     }
+}
+
+/// Refuses a non-loopback bind. TLS and trusted-proxy support are not in this build, so
+/// network mode cannot serve beyond loopback yet either.
+fn check_bind(bind: SocketAddr, mode: Mode) -> Result<(), Failure> {
+    if bind.ip().is_loopback() {
+        return Ok(());
+    }
+    Err(Failure::Config(match mode {
+        Mode::Local => format!(
+            "refusing to bind {bind}: a non-loopback address needs network mode; \
+             run stigmerd admin enable-auth first"
+        ),
+        Mode::Network => format!(
+            "refusing to bind {bind}: a non-loopback address requires TLS or a trusted proxy \
+             (--tls-cert/--tls-key/--trusted-proxy are not available yet in this build)"
+        ),
+    }))
 }
 
 /// Shutdown signal streams, registered up front so a signal that arrives during
