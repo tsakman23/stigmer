@@ -2,6 +2,7 @@
 
 mod error;
 mod event;
+mod identity;
 mod ids;
 mod labels;
 mod message;
@@ -10,6 +11,7 @@ mod wire;
 
 pub use error::CoreError;
 pub use event::{event_hash, Cursor, Event, EventKind, GENESIS_HASH, HASH_VERSION};
+pub use identity::{PrincipalKind, Role};
 pub use ids::{
     BoardId, ChannelPath, MessageId, Principal, MAX_CHANNEL_SEGMENTS, MAX_PRINCIPAL_CHARS,
 };
