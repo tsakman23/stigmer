@@ -42,6 +42,10 @@ impl DataDir {
                 )));
             }
         }
+        #[cfg(unix)]
+        for name in [DB_FILE, "stigmer.db-wal", "stigmer.db-shm"] {
+            tighten_permissions(&path.join(name))?;
+        }
         let db = path.join(DB_FILE);
         open_private(&db).map_err(|e| {
             Failure::Runtime(format!("cannot create database {}: {e}", db.display()))
@@ -55,6 +59,34 @@ impl DataDir {
     pub fn db_path(&self) -> PathBuf {
         self.path.join(DB_FILE)
     }
+}
+
+/// Sets an existing file to 0600 when group or others can access it, and says so on stderr.
+/// A file that is not there is left alone.
+#[cfg(unix)]
+fn tighten_permissions(file: &Path) -> Result<(), Failure> {
+    use std::os::unix::fs::PermissionsExt;
+    let mode = match std::fs::metadata(file) {
+        Ok(meta) => meta.permissions().mode(),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => {
+            return Err(Failure::Runtime(format!(
+                "cannot read {}: {e}",
+                file.display()
+            )));
+        }
+    };
+    if mode & 0o077 == 0 {
+        return Ok(());
+    }
+    std::fs::set_permissions(file, std::fs::Permissions::from_mode(0o600)).map_err(|e| {
+        Failure::Runtime(format!(
+            "cannot tighten permissions on {}: {e}",
+            file.display()
+        ))
+    })?;
+    eprintln!("stigmerd: tightened permissions on {}", file.display());
+    Ok(())
 }
 
 /// Opens `path` for writing, creating it private to the owner (0600) on unix. Existing

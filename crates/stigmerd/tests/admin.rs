@@ -163,6 +163,42 @@ fn enable_auth_failure_before_the_mode_switch_leaves_local_mode_and_a_retry_succ
     });
 }
 
+#[cfg(unix)]
+#[test]
+fn existing_database_files_are_tightened_to_0600() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let data = dir.path().join("data");
+    std::fs::create_dir_all(&data).expect("data dir");
+    std::fs::set_permissions(&data, std::fs::Permissions::from_mode(0o700)).expect("chmod dir");
+    let names = ["stigmer.db", "stigmer.db-wal", "stigmer.db-shm"];
+    for name in names {
+        let path = data.join(name);
+        std::fs::write(&path, b"").expect("pre-create");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).expect("chmod");
+    }
+
+    let out = admin(&data, &["security-log"]);
+    assert_eq!(out.status.code(), Some(0), "stderr: {}", stderr(&out));
+    for name in names {
+        let path = data.join(name);
+        assert!(
+            stderr(&out).contains(&format!("tightened permissions on {}", path.display())),
+            "no notice for {name}: {}",
+            stderr(&out)
+        );
+        // SQLite may delete -wal and -shm on a clean close; any that remain must be private.
+        if let Ok(meta) = std::fs::metadata(&path) {
+            assert_eq!(meta.permissions().mode() & 0o777, 0o600, "{name}");
+        }
+    }
+    let db_mode = std::fs::metadata(data.join("stigmer.db"))
+        .expect("db")
+        .permissions()
+        .mode();
+    assert_eq!(db_mode & 0o777, 0o600);
+}
+
 /// Creates the data dir with a database, as a first admin or serve run would.
 fn data_dir_ready(data: &Path) -> std::path::PathBuf {
     std::fs::create_dir_all(data).expect("create data dir");
