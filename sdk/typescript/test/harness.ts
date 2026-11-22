@@ -6,6 +6,8 @@ import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
+import type { Stigmer, WaitOptions, WaitResult } from "../src/index.js";
+
 const execFileAsync = promisify(execFile);
 const START_TIMEOUT_MS = 15_000;
 
@@ -74,7 +76,7 @@ export async function startServer(dataDir?: string): Promise<TestServer> {
     });
     child.stdout?.on("data", (chunk: Buffer) => {
       out += chunk.toString();
-      const match = /^listening on (https?:\/\/\S+)/m.exec(out);
+      const match = /^listening on (https?:\/\/\S+)[^\n]*\n/m.exec(out);
       if (match?.[1]) {
         clearTimeout(timer);
         resolveUrl(match[1]);
@@ -100,6 +102,16 @@ export async function startServer(dataDir?: string): Promise<TestServer> {
       await rm(dir, { recursive: true, force: true });
     },
   };
+}
+
+/**
+ * Starts a wait that cannot miss a post made after this function resolves: it takes the board's
+ * head first and waits `after` it (from the start when the board is empty). No sleeping needed.
+ */
+export async function waitFromHead(client: Stigmer, opts: Omit<WaitOptions, "after" | "fromNow"> = {}): Promise<{ done: Promise<WaitResult> }> {
+  const head = await client.events({ fromNow: true, timeoutS: 0 });
+  // Wrapped: returning the promise itself from an async function would await the whole wait.
+  return { done: client.wait({ ...opts, ...(head.cursor === null ? {} : { after: head.cursor }) }) };
 }
 
 export interface Secrets {

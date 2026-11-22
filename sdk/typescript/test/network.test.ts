@@ -3,7 +3,7 @@ import { after, before, test } from "node:test";
 
 import { Stigmer, StigmerError } from "../src/index.js";
 import { createBoard, createInvite, join, revokeTokenOf } from "./admin.js";
-import { cleanup, enableAuth, makeDataDir, startServer, type Secrets, type TestServer } from "./harness.js";
+import { cleanup, enableAuth, makeDataDir, startServer, waitFromHead, type Secrets, type TestServer } from "./harness.js";
 
 let server: TestServer;
 let secrets: Secrets;
@@ -35,9 +35,8 @@ test("network_mode_join_and_two_agents_exchange", async () => {
   assert.equal(who.role, "member");
   assert.equal(who.instance_admin, false);
 
-  // C starts waiting from now, before A posts.
-  const waiting = c.client.wait({ fromNow: true, channel: "research", timeoutMs: 20_000 });
-  await new Promise((r) => setTimeout(r, 300));
+  // C takes the head and starts waiting before A posts.
+  const { done: waiting } = await waitFromHead(c.client, { channel: "research", timeoutMs: 20_000 });
   const posted = await a.client.post("research/tls", "Is TLS 1.3 enough?");
   const got = await waiting;
   assert.equal(got.timedOut, false);

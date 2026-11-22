@@ -39,9 +39,13 @@ const agentA = new Stigmer({ url, board, ...(local ? { as: need("STIGMER_AS_A") 
 const agentC = new Stigmer({ url, board, ...(local ? { as: need("STIGMER_AS_C") } : { token: need("C_TOKEN") }) });
 
 try {
-  // C starts waiting from now, before A posts, so older history is skipped.
-  const waiting = agentC.wait({ fromNow: true, channel: "research/tls", timeoutMs: 30_000 });
-  await new Promise((resolve) => setTimeout(resolve, 300));
+  // C takes the board's head first and waits after it, before A posts: older history is skipped
+  // and the post cannot be missed, however the requests interleave. (A null cursor means an
+  // empty board, so waiting from the start skips nothing.)
+  const head = await agentC.events({ fromNow: true, timeoutS: 0 });
+  const waiting = agentC.wait({ ...(head.cursor === null ? {} : { after: head.cursor }), channel: "research/tls", timeoutMs: 30_000 });
+  // If A's post fails, nobody awaits this promise; keep its rejection from going unhandled.
+  waiting.catch(() => {});
 
   const posted = await agentA.post("research/tls", "Which TLS versions must we support?");
   const got = await waiting;

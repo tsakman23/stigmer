@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 
 import { Stigmer, StigmerError } from "../src/index.js";
-import { cleanup, startServer, type TestServer } from "./harness.js";
+import { cleanup, startServer, waitFromHead, type TestServer } from "./harness.js";
 
 let server: TestServer;
 before(async () => {
@@ -66,8 +66,7 @@ test("events_filters_by_channel_thread_label", async () => {
 });
 
 test("wait_returns_when_another_client_posts", async () => {
-  const waiting = as("carol").wait({ fromNow: true, channel: "rt/wake", timeoutMs: 20_000 });
-  await new Promise((r) => setTimeout(r, 300));
+  const { done: waiting } = await waitFromHead(as("carol"), { channel: "rt/wake", timeoutMs: 20_000 });
   const posted = await as("alice").post("rt/wake", "wake up");
   const result = await waiting;
   assert.equal(result.timedOut, false);
@@ -90,6 +89,17 @@ test("wait_from_now_skips_history_but_a_bare_wait_replays_it", async () => {
   const resumed = await alice.wait({ after: bare.cursor ?? undefined, channel: "rt/hist", timeoutMs: 1000 });
   assert.equal(resumed.timedOut, true);
   assert.deepEqual(resumed.events, []);
+});
+
+test("wait_after_the_head_cursor_sees_a_post_that_landed_before_the_wait_was_sent", async () => {
+  const alice = as("alice");
+  const head = await alice.events({ fromNow: true, timeoutS: 0 });
+  const posted = await alice.post("rt/early", "posted first");
+  // The old pattern (from_now after the post) skips it; resuming from the head cursor does not.
+  const skipped = await alice.wait({ fromNow: true, channel: "rt/early", timeoutMs: 1000 });
+  assert.equal(skipped.timedOut, true);
+  const seen = await alice.wait({ ...(head.cursor === null ? {} : { after: head.cursor }), channel: "rt/early", timeoutMs: 5000 });
+  assert.deepEqual(seen.events.map((e) => e.message_id), [posted.message.id]);
 });
 
 test("wait_timeout_returns_timedOut_true", async () => {
