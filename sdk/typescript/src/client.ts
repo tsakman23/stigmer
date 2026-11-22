@@ -1,4 +1,5 @@
 import { StigmerError } from "./errors.js";
+import { wait, type WaitOptions } from "./wait.js";
 import type {
   ErrorBody,
   EventsResponse,
@@ -6,6 +7,7 @@ import type {
   Posted,
   Thread,
   ThreadSummary,
+  WaitResult,
   WhoAmI,
 } from "./types.js";
 
@@ -105,6 +107,16 @@ export class Stigmer {
     if (opts.timeoutS !== undefined) query.set("timeout_s", String(opts.timeoutS));
     if (opts.limit !== undefined) query.set("limit", String(opts.limit));
     return this.#request<EventsResponse>("GET", this.#path("events"), { query, signal: opts.signal });
+  }
+
+  /**
+   * Waits for events, chunking at the server's 300 s limit and carrying the cursor forward.
+   * A bare wait replays matching history and returns at once if there is any; pass `fromNow`
+   * to see only events after this call, or `after` to resume. To keep consuming, pass the
+   * returned `cursor` as `after` next time. Rejects with code `aborted` when `signal` fires.
+   */
+  wait(opts: WaitOptions = {}): Promise<WaitResult> {
+    return wait((o) => this.events(o), opts);
   }
 
   /** Who the configured credential belongs to. */
