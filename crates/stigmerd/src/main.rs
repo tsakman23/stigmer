@@ -1,6 +1,5 @@
 //! stigmerd: the Stigmer board server.
 
-use std::future::IntoFuture;
 use std::io::Write;
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -9,15 +8,16 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use admin::AdminCommand;
-use clap::{Parser, Subcommand};
+use clap::{Args, Parser, Subcommand};
 use lock::DataDir;
 use stigmer_api::{router, AllowAll, ApiConfig, RoleAuthorize};
 use stigmer_store::{IdentityStore, Mode};
 use stigmer_store_sqlite::SqliteStore;
-use tokio::sync::{oneshot, watch};
+use tokio::sync::watch;
 
 mod admin;
 mod lock;
+mod serve;
 
 /// How long in-flight requests get to finish after a shutdown signal.
 const DRAIN_LIMIT: Duration = Duration::from_secs(5);
@@ -31,20 +31,29 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Serve the board over local HTTP.
-    Serve {
-        /// Directory holding the board database (created if missing).
-        #[arg(long, default_value = "./.stigmer")]
-        data_dir: PathBuf,
-        /// Address to listen on. Must be a loopback address for now.
-        #[arg(long, default_value = "127.0.0.1:7878")]
-        bind: SocketAddr,
-    },
+    /// Serve the board over HTTP.
+    Serve(ServeArgs),
     /// Administer a data directory directly (the server must not be running).
     Admin {
         #[command(subcommand)]
         command: AdminCommand,
     },
+}
+
+#[derive(Args)]
+struct ServeArgs {
+    /// Directory holding the board database (created if missing).
+    #[arg(long, default_value = "./.stigmer")]
+    data_dir: PathBuf,
+    /// Address to listen on. Must be a loopback address for now.
+    #[arg(long, default_value = "127.0.0.1:7878")]
+    bind: SocketAddr,
+    /// Most connections open at once; further connections are closed without a response.
+    #[arg(long, default_value_t = 1024, value_parser = clap::value_parser!(u32).range(1..))]
+    max_connections: u32,
+    /// How long a client may take to send its request headers, in ms (for tests).
+    #[arg(long, default_value_t = 10_000, hide = true, value_parser = clap::value_parser!(u64).range(1..))]
+    header_read_timeout_ms: u64,
 }
 
 /// Milliseconds since the Unix epoch; the only place this binary reads the clock.
@@ -66,7 +75,7 @@ pub enum Failure {
 #[tokio::main]
 async fn main() -> ExitCode {
     let result = match Cli::parse().command {
-        Command::Serve { data_dir, bind } => serve(data_dir, bind).await,
+        Command::Serve(args) => serve(args).await,
         Command::Admin { command } => admin::run(command).await,
     };
     match result {
@@ -82,7 +91,13 @@ async fn main() -> ExitCode {
     }
 }
 
-async fn serve(data_dir: PathBuf, bind: SocketAddr) -> Result<(), Failure> {
+async fn serve(args: ServeArgs) -> Result<(), Failure> {
+    let ServeArgs {
+        data_dir,
+        bind,
+        max_connections,
+        header_read_timeout_ms,
+    } = args;
     let signals = Signals::install()
         .map_err(|e| Failure::Runtime(format!("cannot register signal handlers: {e}")))?;
 
@@ -112,8 +127,13 @@ async fn serve(data_dir: PathBuf, bind: SocketAddr) -> Result<(), Failure> {
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let store = Arc::new(store);
     let app = match mode {
-        Mode::Local => router(store, AllowAll, shutdown_rx, ApiConfig::local()),
-        Mode::Network => router(store, RoleAuthorize, shutdown_rx, ApiConfig::network()),
+        Mode::Local => router(store, AllowAll, shutdown_rx.clone(), ApiConfig::local()),
+        Mode::Network => router(
+            store,
+            RoleAuthorize,
+            shutdown_rx.clone(),
+            ApiConfig::network(),
+        ),
     };
 
     println!(
@@ -124,31 +144,22 @@ async fn serve(data_dir: PathBuf, bind: SocketAddr) -> Result<(), Failure> {
         .flush()
         .map_err(|e| Failure::Runtime(format!("cannot write to stdout: {e}")))?;
 
-    let (signalled_tx, signalled_rx) = oneshot::channel::<()>();
-    let graceful = async move {
-        signals.wait().await;
-        // Ends every pending wait so the connections can drain.
-        let _ = shutdown_tx.send(true);
-        let _ = signalled_tx.send(());
+    let listen = serve::Listen {
+        // u32 always fits a usize on the platforms Rust supports for this server.
+        max_connections: usize::try_from(max_connections).unwrap_or(usize::MAX),
+        header_read_timeout: Duration::from_millis(header_read_timeout_ms),
     };
-    let server = axum::serve(listener, app)
-        .with_graceful_shutdown(graceful)
-        .into_future();
+    let server = serve::run(listener, app, listen, shutdown_rx);
     tokio::pin!(server);
-
     tokio::select! {
-        result = &mut server => {
-            result.map_err(|e| Failure::Runtime(format!("server error: {e}")))
-        }
-        () = async {
-            // Only start the drain clock once a signal has arrived.
-            if signalled_rx.await.is_ok() {
-                tokio::time::sleep(DRAIN_LIMIT).await;
-            } else {
-                std::future::pending::<()>().await;
-            }
-        } => Ok(()),
+        () = &mut server => return Ok(()),
+        () = signals.wait() => {}
     }
+    // Ends every pending wait and starts each connection's graceful shutdown, then gives the
+    // in-flight requests a bounded time to finish.
+    let _ = shutdown_tx.send(true);
+    let _ = tokio::time::timeout(DRAIN_LIMIT, server).await;
+    Ok(())
 }
 
 /// Refuses a non-loopback bind. TLS and trusted-proxy support are not in this build, so

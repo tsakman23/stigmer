@@ -11,11 +11,14 @@ workspace = true
 [dependencies]
 axum = "0.8.9"
 clap = { version = "4", features = ["derive"] }
+hyper = { version = "1", features = ["server", "http1", "http2"] }
+hyper-util = { version = "0.1.21", features = ["server-auto", "tokio", "http1", "http2", "service"] }
 stigmer-api = { path = "../stigmer-api", version = "0.0.0" }
 stigmer-core = { path = "../stigmer-core", version = "0.0.0" }
 stigmer-store = { path = "../stigmer-store", version = "0.0.0" }
 stigmer-store-sqlite = { path = "../stigmer-store-sqlite", version = "0.0.0" }
-tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "net", "signal", "sync"] }
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "net", "signal", "sync", "time"] }
+tower = { version = "0.5", features = ["util"] }
 
 [dev-dependencies]
 tempfile = "3.27.0"

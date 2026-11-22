@@ -5,7 +5,7 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
-use std::sync::mpsc;
+use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 
 pub const STARTUP_TIMEOUT: Duration = Duration::from_secs(10);
@@ -24,20 +24,99 @@ impl Drop for Server {
 }
 
 pub fn start(data_dir: &Path) -> Server {
+    start_with(data_dir, &[])
+}
+
+/// `stigmerd serve` on an ephemeral loopback port with `extra` flags.
+pub fn serve_cmd(data_dir: &Path, extra: &[&str]) -> Command {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_stigmerd"));
     cmd.args(["serve", "--bind", "127.0.0.1:0", "--data-dir"])
-        .arg(data_dir);
-    spawn_guarded(cmd, STARTUP_TIMEOUT)
+        .arg(data_dir)
+        .args(extra);
+    cmd
+}
+
+pub fn start_with(data_dir: &Path, extra: &[&str]) -> Server {
+    spawn_guarded(serve_cmd(data_dir, extra), STARTUP_TIMEOUT)
+}
+
+/// Everything the server wrote to stderr so far, collected by a background thread.
+#[derive(Clone, Default)]
+pub struct Stderr(Arc<Mutex<String>>);
+
+impl Stderr {
+    pub fn text(&self) -> String {
+        self.0.lock().expect("stderr lock").clone()
+    }
+
+    /// Polls until stderr contains `needle`, failing the test after `within`.
+    pub fn wait_for(&self, needle: &str, within: Duration) -> String {
+        let deadline = Instant::now() + within;
+        loop {
+            let text = self.text();
+            if text.contains(needle) {
+                return text;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "stderr never contained {needle:?}: {text}"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+}
+
+/// Like `start_with`, but stderr is captured instead of inherited.
+pub fn start_capturing(data_dir: &Path, extra: &[&str]) -> (Server, Stderr) {
+    let mut cmd = serve_cmd(data_dir, extra);
+    cmd.stderr(Stdio::piped());
+    let mut server = spawn_guarded(cmd, STARTUP_TIMEOUT);
+    let stderr = Stderr::default();
+    let pipe = server.child.stderr.take().expect("piped stderr");
+    let sink = stderr.clone();
+    std::thread::spawn(move || {
+        let mut lines = BufReader::new(pipe);
+        let mut line = String::new();
+        while lines.read_line(&mut line).is_ok_and(|n| n > 0) {
+            sink.0.lock().expect("stderr lock").push_str(&line);
+            line.clear();
+        }
+    });
+    (server, stderr)
+}
+
+/// Writes `request` as is on a fresh connection and returns everything read until the server
+/// closes it (or `RAW_READ_TIMEOUT` passes, which fails the test).
+pub fn raw(addr: &str, request: &[u8]) -> String {
+    let mut stream = TcpStream::connect(addr).expect("connect");
+    stream.write_all(request).expect("write");
+    read_to_close(&mut stream)
+}
+
+pub const RAW_READ_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Reads until EOF or a reset; a stream still open after `RAW_READ_TIMEOUT` fails the test.
+pub fn read_to_close(stream: &mut TcpStream) -> String {
+    stream
+        .set_read_timeout(Some(RAW_READ_TIMEOUT))
+        .expect("set read timeout");
+    let mut raw = Vec::new();
+    let mut buf = [0u8; 4096];
+    loop {
+        match stream.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => raw.extend_from_slice(&buf[..n]),
+            Err(e) if e.kind() == std::io::ErrorKind::ConnectionReset => break,
+            Err(e) => panic!("connection still open after {RAW_READ_TIMEOUT:?}: {e}"),
+        }
+    }
+    String::from_utf8_lossy(&raw).into_owned()
 }
 
 /// Spawns the command under the Drop guard at once, then waits (bounded) for the
 /// listening line. A wrong or missing line fails the test without leaking the child.
 pub fn spawn_guarded(mut cmd: Command, wait: Duration) -> Server {
-    let mut child = cmd
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
-        .spawn()
-        .expect("spawn child");
+    let mut child = cmd.stdout(Stdio::piped()).spawn().expect("spawn child");
     let stdout = child.stdout.take().expect("piped stdout");
     let mut server = Server {
         child,
@@ -54,6 +133,7 @@ pub fn spawn_guarded(mut cmd: Command, wait: Duration) -> Server {
         .unwrap_or_else(|_| panic!("no listening line within {wait:?}"));
     server.addr = line
         .strip_prefix("listening on http://")
+        .or_else(|| line.strip_prefix("listening on https://"))
         .and_then(|rest| rest.split_whitespace().next())
         .unwrap_or_else(|| panic!("unexpected first line: {line:?}"))
         .to_owned();

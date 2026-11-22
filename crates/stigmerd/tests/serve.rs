@@ -5,7 +5,9 @@ mod common;
 use std::process::Command;
 use std::time::Duration;
 
-use common::{http, run_bounded, sigterm, spawn_guarded, start, wait_for_exit};
+use common::{
+    http, raw, read_to_close, run_bounded, sigterm, spawn_guarded, start, start_with, wait_for_exit,
+};
 
 #[test]
 fn serve_starts_and_healthz_answers() {
@@ -273,4 +275,66 @@ fn network_mode_on_loopback_serves_plain_http_and_requires_auth() {
         "",
     );
     assert_eq!(status, 401);
+}
+
+#[test]
+fn max_connections_closes_the_excess_connection() {
+    use std::io::{Read, Write};
+    let dir = tempfile::tempdir().expect("tempdir");
+    let server = start_with(&dir.path().join("data"), &["--max-connections", "1"]);
+    // A keep-alive connection that has been answered is certainly accepted and holds the slot.
+    let mut first = std::net::TcpStream::connect(&server.addr).expect("connect");
+    first
+        .write_all(format!("GET /healthz HTTP/1.1\r\nHost: {}\r\n\r\n", server.addr).as_bytes())
+        .expect("write");
+    let mut buf = [0u8; 1024];
+    let n = first.read(&mut buf).expect("read first response");
+    assert!(String::from_utf8_lossy(&buf[..n]).starts_with("HTTP/1.1 200"));
+
+    let excess = raw(
+        &server.addr,
+        b"GET /healthz HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n",
+    );
+    assert!(excess.is_empty(), "the excess connection got: {excess:?}");
+
+    // Closing the first connection frees its slot.
+    drop(first);
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let reply = raw(
+            &server.addr,
+            b"GET /healthz HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+        );
+        if reply.starts_with("HTTP/1.1 200") {
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline, "slot never freed");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+#[test]
+fn slow_header_connection_is_closed_after_the_timeout() {
+    use std::io::Write;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let server = start_with(
+        &dir.path().join("data"),
+        &["--header-read-timeout-ms", "300"],
+    );
+    // Half a request line, then nothing; and a connection that sends no bytes at all.
+    for partial in [&b"GET /healthz HTTP/1.1\r\nHost: 127.0"[..], &b""[..]] {
+        let started = std::time::Instant::now();
+        let mut stream = std::net::TcpStream::connect(&server.addr).expect("connect");
+        stream.write_all(partial).expect("write");
+        let reply = read_to_close(&mut stream);
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed < Duration::from_secs(3),
+            "closed only after {elapsed:?}"
+        );
+        assert!(!reply.contains(" 200 "), "reply: {reply:?}");
+    }
+    // A prompt request is still served.
+    let (status, _) = http(&server.addr, "GET", "/healthz", &[], "");
+    assert_eq!(status, 200);
 }
