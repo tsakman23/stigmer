@@ -11,8 +11,9 @@ workspace = true
 [dependencies]
 axum = "0.8.9"
 clap = { version = "4", features = ["derive"] }
-hyper = { version = "1", features = ["server", "http1", "http2"] }
-hyper-util = { version = "0.1.21", features = ["server-auto", "tokio", "http1", "http2", "service"] }
+# HTTP/1.1 only: no http2 (or server-auto, which implies it) so no HTTP/2 path exists (ADR 0010).
+hyper = { version = "1", features = ["server", "http1"] }
+hyper-util = { version = "0.1.21", features = ["server", "tokio", "http1", "service"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 stigmer-api = { path = "../stigmer-api", version = "0.0.0" }
 stigmer-core = { path = "../stigmer-core", version = "0.0.0" }

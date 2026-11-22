@@ -12,8 +12,8 @@ use axum::http::header::STRICT_TRANSPORT_SECURITY;
 use axum::http::HeaderValue;
 use axum::Router;
 use hyper::body::Incoming;
-use hyper_util::rt::{TokioExecutor, TokioIo, TokioTimer};
-use hyper_util::server::conn::auto::Builder;
+use hyper::server::conn::http1::Builder;
+use hyper_util::rt::{TokioIo, TokioTimer};
 use hyper_util::service::TowerToHyperService;
 use stigmer_api::{IpNet, PeerAddr};
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -69,8 +69,9 @@ pub(crate) struct Listen {
 struct Shared {
     app: Router,
     /// HTTP/1 only, on plain and TLS connections alike, so the header read timeout bounds every
-    /// connection (hyper has no such timeout for HTTP/2).
-    http1: Builder<TokioExecutor>,
+    /// connection (hyper has no such timeout for HTTP/2). HTTP/2 is not even compiled in: the
+    /// hyper and hyper-util `http2` features are off.
+    http1: Builder,
     tls: Option<TlsAcceptor>,
     handshake_timeout: Duration,
 }
@@ -85,9 +86,8 @@ pub(crate) async fn run(
 ) {
     // HTTP/1.1 is fixed rather than sniffed, so a client that sends nothing still meets the
     // header timeout; TLS offers only http/1.1 by ALPN for the same reason.
-    let mut http1 = Builder::new(TokioExecutor::new()).http1_only();
+    let mut http1 = Builder::new();
     http1
-        .http1()
         .timer(TokioTimer::new())
         .header_read_timeout(listen.header_read_timeout);
     let shared = Arc::new(Shared {
@@ -216,12 +216,8 @@ where
 
 /// Runs the HTTP connection to completion, switching to a graceful shutdown (finish the
 /// in-flight request, accept no new one) once `shutdown` turns true.
-async fn drive<I, S>(
-    io: I,
-    builder: &Builder<TokioExecutor>,
-    service: S,
-    mut shutdown: watch::Receiver<bool>,
-) where
+async fn drive<I, S>(io: I, builder: &Builder, service: S, mut shutdown: watch::Receiver<bool>)
+where
     I: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     S: tower::Service<
             Request<Incoming>,
