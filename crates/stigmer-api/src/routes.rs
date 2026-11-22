@@ -74,7 +74,10 @@ pub fn router<S: Store + IdentityStore, A: Authorize>(
         store,
         authz,
         shutdown,
-        auth_failures: Arc::new(FailureLimiter::new(config.limits.auth_failures_per_minute)),
+        auth_failures: Arc::new(FailureLimiter::new(
+            config.limits.auth_failures_per_minute,
+            config.limits.max_tracked_sources,
+        )),
         waits: Arc::new(Semaphore::new(config.limits.max_waits)),
         config: Arc::new(config),
     };

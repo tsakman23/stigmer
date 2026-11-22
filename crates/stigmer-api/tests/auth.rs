@@ -609,6 +609,7 @@ fn api_config_defaults() {
             max_waits: 256,
             auth_failures_per_minute: 10,
             join_per_minute: 10,
+            max_tracked_sources: 10_000,
         }
     );
     assert!(local.allowed_hosts.is_empty());
@@ -884,4 +885,69 @@ async fn successful_requests_do_not_consume_the_failure_budget() {
         let reply = send(&net.app, from_peer(events_with("garbage"), "203.0.113.6")).await;
         assert_eq!(reply.status, StatusCode::UNAUTHORIZED);
     }
+}
+
+#[tokio::test]
+async fn ipv6_sources_in_one_slash_64_share_a_bucket() {
+    let net = network_with(RoleAuthorize, |c| c.limits.auth_failures_per_minute = 2).await;
+    for peer in ["2001:db8::1", "2001:db8::2"] {
+        let reply = send(&net.app, from_peer(events_with("garbage"), peer)).await;
+        assert_eq!(reply.status, StatusCode::UNAUTHORIZED, "{peer}");
+    }
+    let same_64 = send(
+        &net.app,
+        from_peer(events_with("garbage"), "2001:db8::ffff:1"),
+    )
+    .await;
+    assert_rate_limited(&same_64);
+    let next_64 = send(
+        &net.app,
+        from_peer(events_with("garbage"), "2001:db8:0:1::1"),
+    )
+    .await;
+    assert_eq!(next_64.status, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn limiter_fails_closed_for_new_keys_at_the_cap() {
+    let net = network_with(RoleAuthorize, |c| {
+        c.limits.auth_failures_per_minute = 1;
+        c.limits.max_tracked_sources = 2;
+    })
+    .await;
+    let good = member_token(&net.store, &BoardId::main(), "alice", Role::Member).await;
+    for peer in ["192.0.2.1", "192.0.2.2"] {
+        let reply = send(&net.app, from_peer(events_with("garbage"), peer)).await;
+        assert_eq!(reply.status, StatusCode::UNAUTHORIZED, "{peer}");
+    }
+    // Both slots hold drained buckets: a new source is refused, even with a good token.
+    let reply = send(&net.app, from_peer(events_with(&good), "192.0.2.3")).await;
+    assert_eq!(assert_rate_limited(&reply), 60);
+    // Once the tracked buckets have refilled they are pruned and the new source gets in.
+    net.now.fetch_add(60_000, Ordering::SeqCst);
+    let reply = send(&net.app, from_peer(events_with(&good), "192.0.2.3")).await;
+    assert_eq!(reply.status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn limiter_memory_does_not_grow_with_forged_forwarded_for_from_untrusted_peers() {
+    let net = network_with(RoleAuthorize, |c| {
+        c.limits.auth_failures_per_minute = 2;
+        c.limits.max_tracked_sources = 2;
+    })
+    .await;
+    for i in 0..50 {
+        let req = forwarded(
+            from_peer(events_with("garbage"), "198.51.100.7"),
+            &format!("192.0.2.{i}"),
+        );
+        let status = send(&net.app, req).await.status;
+        assert!(
+            status == StatusCode::UNAUTHORIZED || status == StatusCode::TOO_MANY_REQUESTS,
+            "{status}"
+        );
+    }
+    // The forged hops took no slots: a fresh source still has room for a bucket of its own.
+    let reply = send(&net.app, from_peer(events_with("garbage"), "198.51.100.8")).await;
+    assert_eq!(reply.status, StatusCode::UNAUTHORIZED);
 }

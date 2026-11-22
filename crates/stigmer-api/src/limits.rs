@@ -9,6 +9,9 @@ pub struct Limits {
     pub auth_failures_per_minute: u32,
     /// Join attempts allowed per source address per minute.
     pub join_per_minute: u32,
+    /// Most sources a limiter tracks at once (IPv6 grouped by /64). When full, a source it is not
+    /// tracking yet is refused (429) until idle entries are pruned.
+    pub max_tracked_sources: usize,
 }
 
 impl Default for Limits {
@@ -17,6 +20,7 @@ impl Default for Limits {
             max_waits: 256,
             auth_failures_per_minute: 10,
             join_per_minute: 10,
+            max_tracked_sources: 10_000,
         }
     }
 }

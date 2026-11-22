@@ -7,10 +7,15 @@
 //! request that authenticates gives its token back; a failure keeps it. A key with less than one
 //! token left is limited until it refills. Buckets that are full are dropped, so idle keys and
 //! successful traffic cost nothing.
+//!
+//! Memory is bounded by count as well as time. IPv6 sources are grouped by their /64 (one
+//! subscriber's whole allocation), IPv4 sources stay per address. At most `max_keys` buckets and
+//! `max_keys` log marks are kept; when full, idle entries are pruned at once, and if none are
+//! idle a source not yet tracked is refused (fail closed) and its log row skipped.
 
 use std::collections::HashMap;
 use std::fmt;
-use std::net::IpAddr;
+use std::net::{IpAddr, Ipv6Addr};
 use std::sync::{Mutex, PoisonError};
 
 const MINUTE_MS: i64 = 60_000;
@@ -52,16 +57,30 @@ struct Inner {
     pruned_at_ms: i64,
 }
 
+/// The key a source is tracked under: an IPv6 address stands for its /64.
+fn group(source: Source) -> Source {
+    match source {
+        Source::Ip(IpAddr::V6(v6)) => {
+            let net = u128::from(v6) & !(u128::MAX >> 64);
+            Source::Ip(IpAddr::V6(Ipv6Addr::from(net)))
+        }
+        other => other,
+    }
+}
+
 /// Failure buckets per source, all with the same rate.
 pub(crate) struct FailureLimiter {
     per_minute: u32,
+    max_keys: usize,
     inner: Mutex<Inner>,
 }
 
 impl FailureLimiter {
-    pub(crate) fn new(per_minute: u32) -> Self {
+    /// `per_minute` failures per source per minute; at most `max_keys` sources tracked.
+    pub(crate) fn new(per_minute: u32, max_keys: usize) -> Self {
         Self {
             per_minute,
+            max_keys,
             inner: Mutex::new(Inner::default()),
         }
     }
@@ -69,14 +88,25 @@ impl FailureLimiter {
     /// Takes one token from `source`'s bucket under one lock. `Err(seconds)` when it has no
     /// whole token left: the time until it does. A request that turns out not to be a failure
     /// hands its token back with [`FailureLimiter::refund`].
+    ///
+    /// A source not tracked yet while `max_keys` busy buckets are tracked is refused for a
+    /// minute: by then every tracked bucket has refilled and can be pruned.
     pub(crate) fn reserve(&self, source: Source, now_ms: i64) -> Result<(), u64> {
+        let source = group(source);
         let mut inner = self.lock();
-        self.prune(&mut inner, now_ms);
-        let bucket = inner
-            .buckets
-            .get(&source)
-            .copied()
-            .unwrap_or(self.full(now_ms));
+        self.prune_if_due(&mut inner, now_ms);
+        let bucket = match inner.buckets.get(&source).copied() {
+            Some(bucket) => bucket,
+            None => {
+                if inner.buckets.len() >= self.max_keys {
+                    self.prune(&mut inner, now_ms);
+                }
+                if inner.buckets.len() >= self.max_keys {
+                    return Err(MINUTE_MS as u64 / 1000);
+                }
+                self.full(now_ms)
+            }
+        };
         let tokens = self.refilled(bucket, now_ms);
         let wait_ms = self.wait_ms(tokens);
         if wait_ms > 0 {
@@ -95,6 +125,7 @@ impl FailureLimiter {
     /// Gives back the token a successful request reserved; a bucket that is full again is
     /// dropped.
     pub(crate) fn refund(&self, source: Source, now_ms: i64) {
+        let source = group(source);
         let mut inner = self.lock();
         let Some(bucket) = inner.buckets.get(&source).copied() else {
             return;
@@ -114,13 +145,25 @@ impl FailureLimiter {
         }
     }
 
-    /// True, at most once a minute per source and kind, when a log row should be written.
+    /// True, at most once a minute per source and kind, when a log row should be written. False
+    /// also when `max_keys` recent marks are kept and none can be pruned.
     pub(crate) fn should_log(&self, source: Source, kind: Logged, now_ms: i64) -> bool {
+        let key = (group(source), kind);
         let mut inner = self.lock();
-        match inner.logged.get(&(source, kind)) {
+        match inner.logged.get(&key) {
             Some(&last) if now_ms.saturating_sub(last) < MINUTE_MS => false,
-            _ => {
-                inner.logged.insert((source, kind), now_ms);
+            Some(_) => {
+                inner.logged.insert(key, now_ms);
+                true
+            }
+            None => {
+                if inner.logged.len() >= self.max_keys {
+                    self.prune(&mut inner, now_ms);
+                }
+                if inner.logged.len() >= self.max_keys {
+                    return false;
+                }
+                inner.logged.insert(key, now_ms);
                 true
             }
         }
@@ -156,12 +199,15 @@ impl FailureLimiter {
         ((1.0 - tokens) / per_ms).ceil() as u64
     }
 
-    /// At most once a minute: drops buckets that have refilled completely and log marks older
-    /// than a minute.
-    fn prune(&self, inner: &mut Inner, now_ms: i64) {
-        if now_ms.saturating_sub(inner.pruned_at_ms) < MINUTE_MS {
-            return;
+    /// Prunes when a minute has passed since the last prune.
+    fn prune_if_due(&self, inner: &mut Inner, now_ms: i64) {
+        if now_ms.saturating_sub(inner.pruned_at_ms) >= MINUTE_MS {
+            self.prune(inner, now_ms);
         }
+    }
+
+    /// Drops buckets that have refilled completely and log marks older than a minute.
+    fn prune(&self, inner: &mut Inner, now_ms: i64) {
         inner.pruned_at_ms = now_ms;
         let cap = f64::from(self.per_minute);
         let buckets = std::mem::take(&mut inner.buckets);
@@ -191,7 +237,7 @@ mod tests {
 
     #[test]
     fn allows_per_minute_failures_then_limits_until_refilled() {
-        let limiter = FailureLimiter::new(6);
+        let limiter = FailureLimiter::new(6, 100);
         let a = ip("192.0.2.1");
         for _ in 0..6 {
             assert_eq!(limiter.reserve(a, 0), Ok(()));
@@ -205,7 +251,7 @@ mod tests {
 
     #[test]
     fn refunded_reservations_cost_nothing() {
-        let limiter = FailureLimiter::new(2);
+        let limiter = FailureLimiter::new(2, 100);
         let a = ip("192.0.2.1");
         for _ in 0..100 {
             limiter.reserve(a, 0).unwrap();
@@ -219,13 +265,13 @@ mod tests {
 
     #[test]
     fn zero_per_minute_limits_everything() {
-        let limiter = FailureLimiter::new(0);
+        let limiter = FailureLimiter::new(0, 100);
         assert_eq!(limiter.reserve(ip("192.0.2.1"), 0), Err(60));
     }
 
     #[test]
     fn log_marks_are_once_a_minute_per_source_and_kind() {
-        let limiter = FailureLimiter::new(10);
+        let limiter = FailureLimiter::new(10, 100);
         let a = ip("192.0.2.1");
         assert!(limiter.should_log(a, Logged::AuthFailed, 0));
         assert!(!limiter.should_log(a, Logged::AuthFailed, 59_999));
@@ -236,7 +282,7 @@ mod tests {
 
     #[test]
     fn idle_buckets_and_old_log_marks_are_pruned() {
-        let limiter = FailureLimiter::new(2);
+        let limiter = FailureLimiter::new(2, 100);
         limiter.reserve(ip("192.0.2.1"), 0).unwrap();
         limiter.should_log(Source::Unknown, Logged::AuthFailed, 0);
         assert_eq!(limiter.tracked(), (1, 1));
@@ -247,9 +293,44 @@ mod tests {
 
     #[test]
     fn clock_going_backwards_does_not_refill() {
-        let limiter = FailureLimiter::new(1);
+        let limiter = FailureLimiter::new(1, 100);
         let a = ip("192.0.2.1");
         limiter.reserve(a, 10_000).unwrap();
         assert_eq!(limiter.reserve(a, 0), Err(60));
+    }
+
+    #[test]
+    fn ipv6_is_grouped_by_64_and_ipv4_by_address() {
+        let limiter = FailureLimiter::new(1, 100);
+        limiter.reserve(ip("2001:db8:1:2::1"), 0).unwrap();
+        assert_eq!(limiter.reserve(ip("2001:db8:1:2:ffff::9"), 0), Err(60));
+        assert_eq!(limiter.reserve(ip("2001:db8:1:3::1"), 0), Ok(()));
+        limiter.reserve(ip("192.0.2.1"), 0).unwrap();
+        assert_eq!(limiter.reserve(ip("192.0.2.2"), 0), Ok(()));
+        let a = ip("2001:db8:1:2::1");
+        assert!(limiter.should_log(a, Logged::AuthFailed, 0));
+        assert!(!limiter.should_log(ip("2001:db8:1:2::2"), Logged::AuthFailed, 0));
+    }
+
+    #[test]
+    fn maps_never_exceed_the_cap_and_new_keys_fail_closed() {
+        let limiter = FailureLimiter::new(1, 3);
+        for i in 0..3 {
+            limiter.reserve(ip(&format!("192.0.2.{i}")), 0).unwrap();
+            assert!(limiter.should_log(ip(&format!("192.0.2.{i}")), Logged::AuthFailed, 0));
+        }
+        for i in 3..1000 {
+            let source = ip(&format!("10.0.{}.{}", i / 256, i % 256));
+            assert_eq!(limiter.reserve(source, 1), Err(60));
+            assert!(!limiter.should_log(source, Logged::AuthFailed, 1));
+        }
+        assert_eq!(limiter.tracked(), (3, 3));
+        // Tracked keys keep working at the cap.
+        assert_eq!(limiter.reserve(ip("192.0.2.0"), 1), Err(60));
+        // Once the tracked entries are idle, a full map makes room at once.
+        let fresh = ip("198.51.100.1");
+        assert_eq!(limiter.reserve(fresh, 60_000), Ok(()));
+        assert!(limiter.should_log(fresh, Logged::AuthFailed, 60_000));
+        assert_eq!(limiter.tracked(), (1, 1));
     }
 }
