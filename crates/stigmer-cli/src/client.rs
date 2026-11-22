@@ -9,6 +9,7 @@ use stigmer_core::{
     PostRequest, Posted, Principal, SecretKind, Thread,
 };
 use ureq::http::Response;
+use ureq::tls::TlsConfig;
 use ureq::{Agent, Body, RequestBuilder};
 
 use crate::exit::{CliError, Exit};
@@ -65,8 +66,9 @@ pub(crate) struct Client {
 
 impl Client {
     /// A client for `board` on the server at `base_url`, identified by `auth`.
-    pub(crate) fn new(base_url: &str, board: BoardId, auth: Auth) -> Self {
+    pub(crate) fn new(base_url: &str, board: BoardId, auth: Auth, tls: TlsConfig) -> Self {
         let agent: Agent = Agent::config_builder()
+            .tls_config(tls)
             .http_status_as_error(false)
             .timeout_global(Some(REQUEST_TIMEOUT))
             .build()
@@ -268,7 +270,12 @@ mod tests {
 
     #[test]
     fn json_request_timeout_code_differs_from_wait_timeout() {
-        let client = Client::new("http://127.0.0.1:7878", BoardId::main(), Auth::Local(None));
+        let client = Client::new(
+            "http://127.0.0.1:7878",
+            BoardId::main(),
+            Auth::Local(None),
+            TlsConfig::default(),
+        );
         let request = client.network_error(ureq::Error::Timeout(ureq::Timeout::Global));
         assert_eq!(
             (request.exit, request.code),

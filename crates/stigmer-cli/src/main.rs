@@ -63,6 +63,9 @@ struct Cli {
         value_name = "NAME"
     )]
     board: String,
+    /// Extra CA certificates (PEM) to trust for https, besides the usual public roots.
+    #[arg(long, env = "STIGMER_CA_CERT", global = true, value_name = "FILE")]
+    ca_cert: Option<std::path::PathBuf>,
     /// Allow sending a credential over plain http to a host that is not loopback.
     #[arg(long, global = true)]
     insecure: bool,
@@ -209,7 +212,9 @@ fn main() -> ExitCode {
     };
     let json = cli.json;
     let outcome = commands::board_id(&cli.board).and_then(|board| {
+        let tls = tls::tls_config(cli.ca_cert.as_deref())?;
         let ctx = Ctx {
+            tls,
             url: cli.url,
             who: cli.who,
             json,

@@ -1,10 +1,54 @@
-//! Transport security: when a credential may go over plain HTTP.
+//! Transport security: the roots https is verified against, and when a credential may go over
+//! plain HTTP.
 
 use std::net::IpAddr;
+use std::path::Path;
+use std::sync::Arc;
 
 use ureq::http::Uri;
+use ureq::tls::{parse_pem, Certificate, PemItem, RootCerts, TlsConfig};
 
 use crate::exit::CliError;
+
+const CA_HINT: &str =
+    "pass a readable PEM file of CA certificates to --ca-cert (or STIGMER_CA_CERT)";
+
+/// The TLS settings for https: Mozilla's roots (webpki), plus every certificate in the PEM file
+/// `ca_cert` when given. An unreadable file or one without a certificate is a usage error.
+pub(crate) fn tls_config(ca_cert: Option<&Path>) -> Result<TlsConfig, CliError> {
+    let Some(path) = ca_cert else {
+        return Ok(TlsConfig::builder().root_certs(RootCerts::WebPki).build());
+    };
+    let pem = std::fs::read(path).map_err(|e| {
+        CliError::usage(
+            format!(
+                "cannot read the CA certificate file {}: {e}",
+                path.display()
+            ),
+            CA_HINT,
+        )
+    })?;
+    let extra: Vec<Certificate<'static>> = parse_pem(&pem)
+        .filter_map(|item| match item {
+            Ok(PemItem::Certificate(cert)) => Some(cert),
+            _ => None,
+        })
+        .collect();
+    if extra.is_empty() {
+        return Err(CliError::usage(
+            format!("no CA certificate found in {}", path.display()),
+            CA_HINT,
+        ));
+    }
+    let roots: Vec<Certificate<'static>> = webpki_root_certs::TLS_SERVER_ROOT_CERTS
+        .iter()
+        .map(|der| Certificate::from_der(der.as_ref()).to_owned())
+        .chain(extra)
+        .collect();
+    Ok(TlsConfig::builder()
+        .root_certs(RootCerts::Specific(Arc::new(roots)))
+        .build())
+}
 
 /// Refuses to send a credential (token or invite) over plain HTTP to a host that is not
 /// loopback, unless `insecure` (`--insecure`) says the network is trusted.
@@ -75,6 +119,30 @@ mod tests {
             Ok(())
         );
         assert_eq!(check_credential_transport("http://10.0.0.1", true), Ok(()));
+    }
+
+    #[test]
+    fn ca_file_adds_its_certificates_to_the_webpki_roots() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ca.pem");
+        let pem = |name: &str| {
+            let key = rcgen::KeyPair::generate().unwrap();
+            let params = rcgen::CertificateParams::new(vec![name.to_owned()]).unwrap();
+            params.self_signed(&key).unwrap().pem()
+        };
+        std::fs::write(&path, format!("{}{}", pem("one.test"), pem("two.test"))).unwrap();
+        let config = tls_config(Some(&path)).unwrap();
+        let RootCerts::Specific(roots) = config.root_certs() else {
+            panic!("expected specific roots");
+        };
+        assert_eq!(
+            roots.len(),
+            webpki_root_certs::TLS_SERVER_ROOT_CERTS.len() + 2
+        );
+        assert!(matches!(
+            tls_config(None).unwrap().root_certs(),
+            RootCerts::WebPki
+        ));
     }
 
     #[test]

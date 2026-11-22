@@ -14,6 +14,7 @@ use crate::exit::{too_long_hint, CliError, Exit};
 use crate::logins::{Logins, Scope};
 use crate::render::render_message;
 use crate::tls::check_credential_transport;
+use ureq::tls::TlsConfig;
 
 /// Characters of a thread's root text shown by `read`.
 const PREVIEW_CHARS: usize = 80;
@@ -35,6 +36,8 @@ pub(crate) struct Ctx {
     pub(crate) env_token: Option<String>,
     /// The login file, when HOME or XDG_CONFIG_HOME says where it is.
     pub(crate) logins_path: Option<PathBuf>,
+    /// The roots https is verified against.
+    pub(crate) tls: TlsConfig,
 }
 
 impl Ctx {
@@ -77,7 +80,7 @@ impl Ctx {
     }
 
     pub(crate) fn client_with(&self, auth: Auth) -> Client {
-        Client::new(&self.url, self.board.clone(), auth)
+        Client::new(&self.url, self.board.clone(), auth, self.tls.clone())
     }
 
     /// A client for this board's content routes.

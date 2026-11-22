@@ -3,6 +3,8 @@
 //! capture server that records what the CLI sends.
 #![allow(dead_code)] // each test crate uses a different subset
 
+pub mod tls;
+
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
@@ -305,6 +307,20 @@ impl Stigmerd {
     /// main admin invite it prints.
     pub fn network() -> Self {
         Self::start(true, Vec::new())
+    }
+
+    /// A network-mode server serving TLS with a leaf from a fresh test CA; returns the
+    /// server and the CA's PEM file. The PEM files live in their own temp dir.
+    pub fn tls() -> (Self, tls::TlsFiles, tempfile::TempDir) {
+        let pem_dir = tempfile::tempdir().expect("pem dir");
+        let files = tls::TlsFiles::generate(pem_dir.path());
+        let extra = vec![
+            "--tls-cert".to_owned(),
+            files.cert.display().to_string(),
+            "--tls-key".to_owned(),
+            files.key.display().to_string(),
+        ];
+        (Self::start(true, extra), files, pem_dir)
     }
 
     fn data_dir(dir: &Path) -> PathBuf {
