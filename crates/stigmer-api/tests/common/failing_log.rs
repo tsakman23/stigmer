@@ -4,6 +4,7 @@
 
 use std::future::Future;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
 use std::time::Duration;
 
 use stigmer_core::{
@@ -20,6 +21,32 @@ pub struct LogFailingStore {
     pub inner: SqliteStore,
     /// While true, `log_security` fails with a backend error.
     pub fail_log: AtomicBool,
+    /// The next `revoke_board_credentials` fails once, after which it works again.
+    pub fail_revoke_once: AtomicBool,
+    /// Runs once right after the next `revoke_board_credentials`: a join that races in there.
+    pub join_after_revoke: Mutex<Option<JoinAttempt>>,
+    /// What that join got.
+    pub join_result: Mutex<Option<Result<Consumed, StoreError>>>,
+}
+
+/// A `consume_invite` call to make at a chosen moment.
+pub struct JoinAttempt {
+    pub id: TokenId,
+    pub secret_hash: [u8; 32],
+    pub name: Principal,
+    pub credential: NewJoinCredential,
+}
+
+impl LogFailingStore {
+    pub fn new(inner: SqliteStore) -> Self {
+        Self {
+            inner,
+            fail_log: AtomicBool::new(false),
+            fail_revoke_once: AtomicBool::new(false),
+            join_after_revoke: Mutex::new(None),
+            join_result: Mutex::new(None),
+        }
+    }
 }
 
 impl Store for LogFailingStore {
@@ -202,14 +229,28 @@ impl IdentityStore for LogFailingStore {
         self.inner.revoke_credential(id, now_ms)
     }
 
-    fn revoke_board_credentials(
+    async fn revoke_board_credentials(
         &self,
         board: &BoardId,
         keep_admins: bool,
         now_ms: i64,
-    ) -> impl Future<Output = Result<u64, StoreError>> + Send {
-        self.inner
+    ) -> Result<u64, StoreError> {
+        if self.fail_revoke_once.swap(false, Ordering::SeqCst) {
+            return Err(StoreError::Backend("revoke unavailable".into()));
+        }
+        let revoked = self
+            .inner
             .revoke_board_credentials(board, keep_admins, now_ms)
+            .await;
+        let racer = self.join_after_revoke.lock().unwrap().take();
+        if let Some(j) = racer {
+            let joined = self
+                .inner
+                .consume_invite(&j.id, &j.secret_hash, &j.name, now_ms, j.credential)
+                .await;
+            *self.join_result.lock().unwrap() = Some(joined);
+        }
+        revoked
     }
 
     fn create_invite(

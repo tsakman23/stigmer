@@ -187,8 +187,13 @@ async fn get_board<S: Store + IdentityStore, A: Authorize>(
     Ok(Json(summary(&info)))
 }
 
-/// Archives a board: first every non-admin credential is revoked, then the board is archived.
-/// Both steps are idempotent, so when the second fails (500) a retry completes the archive.
+/// Archives a board, then revokes every non-admin credential on it.
+///
+/// The order matters: once the board is archived no join can get a new credential (the store
+/// refuses invites into it), so the revoke step that follows sees every credential there will
+/// ever be. Revoking first would leave a window in which a join gets a live credential that is
+/// never revoked. Both steps are idempotent, so when the second fails (500) the board is
+/// already archived and a retry completes the revoke.
 async fn archive_board<S: Store + IdentityStore, A: Authorize>(
     State(state): State<AppState<S, A>>,
     Extension(who): Extension<Authenticated>,
@@ -202,11 +207,11 @@ async fn archive_board<S: Store + IdentityStore, A: Authorize>(
         .check(&who, action, &board_scope(&board))
         .await?;
     let at_ms = now(&state);
+    let info = state.store.archive_board(&board).await?;
     state
         .store
         .revoke_board_credentials(&board, true, at_ms)
         .await?;
-    let info = state.store.archive_board(&board).await?;
     let audit = Audit {
         at_ms,
         source,

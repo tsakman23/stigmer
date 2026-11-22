@@ -2,7 +2,7 @@
 
 mod common;
 
-use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use axum::http::{Method, StatusCode};
@@ -24,10 +24,7 @@ struct Rig {
 async fn rig() -> Rig {
     let inner = SqliteStore::open_memory().await.unwrap();
     inner.enable_network_mode().await.unwrap();
-    let store = Arc::new(LogFailingStore {
-        inner,
-        fail_log: AtomicBool::new(false),
-    });
+    let store = Arc::new(LogFailingStore::new(inner));
     let warnings = Arc::new(Mutex::new(Vec::new()));
     let sink = Arc::clone(&warnings);
     let now = Arc::new(AtomicI64::new(NOW));

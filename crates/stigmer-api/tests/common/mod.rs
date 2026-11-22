@@ -5,7 +5,7 @@
 
 mod failing_log;
 #[allow(unused_imports)]
-pub use failing_log::LogFailingStore;
+pub use failing_log::{JoinAttempt, LogFailingStore};
 
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
