@@ -38,7 +38,11 @@ impl ApiError {
             ErrorCode::MethodNotAllowed => StatusCode::METHOD_NOT_ALLOWED,
             ErrorCode::Conflict => StatusCode::CONFLICT,
             ErrorCode::Forbidden => StatusCode::FORBIDDEN,
-            ErrorCode::Internal => StatusCode::INTERNAL_SERVER_ERROR,
+            ErrorCode::Unauthorized => StatusCode::UNAUTHORIZED,
+            ErrorCode::RateLimited => StatusCode::TOO_MANY_REQUESTS,
+            ErrorCode::BoardArchived => StatusCode::CONFLICT,
+            // Servers never send Unknown; if one ever reaches here it is a bug.
+            ErrorCode::Internal | ErrorCode::Unknown => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
 }

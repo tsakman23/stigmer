@@ -124,6 +124,26 @@ impl CliError {
                 "internal",
                 "check the stigmerd logs, then retry".into(),
             ),
+            ErrorCode::Unauthorized => (
+                Exit::Failure,
+                "unauthorized",
+                "check your credentials".into(),
+            ),
+            ErrorCode::RateLimited => (
+                Exit::Failure,
+                "rate_limited",
+                "wait a moment, then retry".into(),
+            ),
+            ErrorCode::BoardArchived => (
+                Exit::Failure,
+                "board_archived",
+                "the board is archived and read-only".into(),
+            ),
+            ErrorCode::Unknown => (
+                Exit::Failure,
+                "unknown",
+                "this server is newer than the CLI; see the message above".into(),
+            ),
         };
         Self::new(exit, code, detail.message, next)
     }

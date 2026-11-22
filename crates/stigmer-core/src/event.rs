@@ -82,10 +82,14 @@ pub enum EventKind {
     ThreadCreated,
     #[serde(rename = "message.replied")]
     MessageReplied,
+    /// A kind this version does not know. Only ever produced by deserializing a newer
+    /// server's event; never stored, hashed or listed in `ALL`.
+    #[serde(rename = "unknown", other)]
+    Unknown,
 }
 
 impl EventKind {
-    /// Every kind, for parsing and exhaustive checks.
+    /// Every kind a server produces, for parsing and exhaustive checks. Excludes `Unknown`.
     pub const ALL: &'static [EventKind] = &[EventKind::ThreadCreated, EventKind::MessageReplied];
 
     /// The kind whose wire name is `name`, if any.
@@ -98,6 +102,7 @@ impl EventKind {
         match self {
             EventKind::ThreadCreated => "thread.created",
             EventKind::MessageReplied => "message.replied",
+            EventKind::Unknown => "unknown",
         }
     }
 }
@@ -154,13 +159,28 @@ mod tests {
         // Exhaustive match: adding a variant stops compiling here until ALL is revisited.
         for kind in EventKind::ALL {
             match kind {
-                EventKind::ThreadCreated | EventKind::MessageReplied => {}
+                EventKind::ThreadCreated | EventKind::MessageReplied | EventKind::Unknown => {}
             }
             assert_eq!(EventKind::from_name(kind.as_str()), Some(*kind));
         }
         assert_eq!(EventKind::ALL.len(), 2);
         assert_eq!(EventKind::from_name("thread.deleted"), None);
         assert_eq!(EventKind::from_name(""), None);
+    }
+
+    #[test]
+    fn event_kind_all_excludes_unknown() {
+        assert!(!EventKind::ALL.contains(&EventKind::Unknown));
+        assert_eq!(EventKind::Unknown.as_str(), "unknown");
+        assert_eq!(EventKind::from_name("unknown"), None);
+    }
+
+    #[test]
+    fn event_kind_unknown_deserializes_from_a_future_value() {
+        let kind: EventKind = serde_json::from_str(r#""thread.archived""#).unwrap();
+        assert_eq!(kind, EventKind::Unknown);
+        let known: EventKind = serde_json::from_str(r#""thread.created""#).unwrap();
+        assert_eq!(known, EventKind::ThreadCreated);
     }
 
     #[test]
