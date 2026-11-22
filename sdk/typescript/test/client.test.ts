@@ -203,6 +203,103 @@ test("token_with_control_characters_is_refused_without_echoing_it", async () => 
   assert.equal(seen.length, 0);
 });
 
+test("events_2xx_with_wrong_shape_is_bad_response", async () => {
+  const bodies = [
+    { events: "nope", cursor: null, timed_out: true },
+    { events: [], cursor: 5, timed_out: true },
+    { events: [], cursor: null },
+    { events: [null], cursor: null, timed_out: false },
+    [],
+    null,
+  ];
+  const { fetch } = scriptedFetch(bodies.map((b) => json(b)));
+  const c = client(fetch);
+  for (let i = 0; i < bodies.length; i++) {
+    await assert.rejects(c.events(), (e: unknown) => {
+      assert.ok(e instanceof StigmerError, String(e));
+      assert.equal(e.code, "bad_response");
+      assert.equal(e.status, 200);
+      return true;
+    });
+  }
+});
+
+test("post_2xx_with_wrong_shape_is_bad_response", async () => {
+  const { fetch } = scriptedFetch([
+    json({ message: null, event: {}, replayed: false }, { status: 201 }),
+    json({ message: {} }, { status: 201 }),
+    json({ threads: {} }),
+    json({ root: {}, replies: null }),
+    json({ principal: 3 }),
+  ]);
+  const c = client(fetch, { as: "alice" });
+  const calls = [() => c.post("eng", "x"), () => c.reply("msg_1", "x"), () => c.readChannel("eng"), () => c.readThread("msg_1"), () => c.whoami()];
+  for (const call of calls) {
+    await assert.rejects(call(), (e: unknown) => e instanceof StigmerError && e.code === "bad_response");
+  }
+});
+
+test("token_provider_returning_empty_or_non_string_is_invalid_token_before_any_request", async () => {
+  for (const bad of ["", 42, undefined, null]) {
+    const { fetch, seen } = scriptedFetch(json(EMPTY_EVENTS));
+    const c = client(fetch, { token: () => bad });
+    await assert.rejects(c.events(), (e: unknown) => {
+      assert.ok(e instanceof StigmerError);
+      assert.equal(e.code, "invalid_token");
+      assert.equal(e.status, 0);
+      return true;
+    });
+    assert.equal(seen.length, 0);
+  }
+  const empty = scriptedFetch(json(EMPTY_EVENTS));
+  await assert.rejects(client(empty.fetch, { token: "" }).events(), (e: unknown) => e instanceof StigmerError && e.code === "invalid_token");
+  assert.equal(empty.seen.length, 0);
+});
+
+test("constructor_validation_errors_are_invalid_options_and_never_echo_the_url", () => {
+  const cases: [Record<string, unknown>, string][] = [
+    [{ url: "not a url with u:p@secret" }, "bad url"],
+    [{ url: "ftp://host" }, "bad scheme"],
+    [{ url: "http://host", board: "" }, "bad board"],
+    [{ url: "http://host", as: "bad\nname" }, "bad as"],
+  ];
+  for (const [options, why] of cases) {
+    assert.throws(
+      () => new Stigmer(options as unknown as ConstructorParameters<typeof Stigmer>[0]),
+      (e: unknown) => {
+        assert.ok(e instanceof StigmerError, why);
+        assert.equal(e.code, "invalid_options");
+        assert.equal(e.status, 0);
+        assert.ok(!e.message.includes("secret"));
+        return true;
+      },
+      why,
+    );
+  }
+});
+
+test("url_credentials_are_never_echoed_or_sent", async () => {
+  const seenUrls: string[] = [];
+  const failing = async (input: string | URL | Request): Promise<Response> => {
+    seenUrls.push(String(input));
+    throw new TypeError(`fetch failed for ${String(input)}`);
+  };
+  const c = new Stigmer({ url: "https://bob:hunter2@board.test:8443/base/", fetch: failing, token: SECRET });
+  const views = [JSON.stringify(c), String(c), inspect(c, { depth: 5 })];
+  try {
+    await c.events();
+    assert.fail("expected rejection");
+  } catch (e) {
+    views.push(String((e as Error).message), inspect(e, { depth: 10, showHidden: true }));
+    assert.ok(e instanceof StigmerError);
+    assert.equal(e.code, "network");
+  }
+  for (const v of views) {
+    assert.ok(!v.includes("hunter2") && !v.includes("bob:"), "url credentials leaked");
+  }
+  assert.ok(seenUrls[0]!.startsWith("https://board.test:8443/base/v1/boards/main/events"));
+});
+
 test("no_runtime_dependencies", async () => {
   const pkg = JSON.parse(await readFile(new URL("../../package.json", import.meta.url), "utf8"));
   assert.equal(pkg.dependencies, undefined);

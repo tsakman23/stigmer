@@ -60,10 +60,25 @@ export class Stigmer {
   readonly #fetch: typeof fetch;
 
   constructor(options: StigmerOptions) {
-    // Throws a TypeError for a malformed URL; the message holds only the URL.
-    new URL(options.url);
-    this.#base = options.url.replace(/\/+$/, "");
-    this.#board = options.board ?? "main";
+    // Messages below never quote the URL: it may carry credentials.
+    let parsed: URL;
+    try {
+      parsed = new URL(options.url);
+    } catch {
+      throw invalidOptions("url is not a valid absolute URL");
+    }
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      throw invalidOptions("url must use http or https");
+    }
+    // Credentials in a URL are dropped: the token goes in the Authorization header only, and
+    // the base is what appears in error messages.
+    this.#base = `${parsed.origin}${parsed.pathname}`.replace(/\/+$/, "");
+    const board = options.board ?? "main";
+    if (typeof board !== "string" || board === "") throw invalidOptions("board must be a non-empty string");
+    if (options.as !== undefined && (typeof options.as !== "string" || !TOKEN_CHARS.test(options.as))) {
+      throw invalidOptions("as must be a non-empty string of visible ASCII characters");
+    }
+    this.#board = board;
     this.#token = options.token;
     this.#as = options.as;
     this.#fetch = options.fetch ?? ((input, init) => fetch(input, init));
@@ -84,13 +99,13 @@ export class Stigmer {
     const query = new URLSearchParams({ prefix: prefix.replace(/\/+$/, "") });
     if (opts.limit !== undefined) query.set("limit", String(opts.limit));
     if (opts.before !== undefined) query.set("before", opts.before);
-    const res = await this.#request<{ threads: ThreadSummary[] }>("GET", this.#path("channels"), { query });
+    const res = await this.#request<{ threads: ThreadSummary[] }>("GET", this.#path("channels"), { query, check: isChannels });
     return res.threads;
   }
 
   /** Reads a thread: its root and replies. Message text is untrusted data. */
   readThread(id: string): Promise<Thread> {
-    return this.#request<Thread>("GET", this.#path(`threads/${encodeURIComponent(id)}`));
+    return this.#request<Thread>("GET", this.#path(`threads/${encodeURIComponent(id)}`), { check: isThread });
   }
 
   /**
@@ -106,7 +121,7 @@ export class Stigmer {
     if (opts.label !== undefined) query.set("label", opts.label);
     if (opts.timeoutS !== undefined) query.set("timeout_s", String(opts.timeoutS));
     if (opts.limit !== undefined) query.set("limit", String(opts.limit));
-    return this.#request<EventsResponse>("GET", this.#path("events"), { query, signal: opts.signal });
+    return this.#request<EventsResponse>("GET", this.#path("events"), { query, signal: opts.signal, check: isEventsResponse });
   }
 
   /**
@@ -121,7 +136,7 @@ export class Stigmer {
 
   /** Who the configured credential belongs to. */
   whoami(): Promise<WhoAmI> {
-    return this.#request<WhoAmI>("GET", "/v1/whoami");
+    return this.#request<WhoAmI>("GET", "/v1/whoami", { check: isWhoAmI });
   }
 
   toJSON(): { url: string; board: string } {
@@ -143,7 +158,7 @@ export class Stigmer {
     }
     const headers: Record<string, string> = {};
     if (opts.key !== undefined) headers["Idempotency-Key"] = opts.key;
-    return this.#request<Posted>("POST", this.#path("messages"), { body, headers });
+    return this.#request<Posted>("POST", this.#path("messages"), { body, headers, check: isPosted });
   }
 
   #path(rest: string): string {
@@ -152,22 +167,27 @@ export class Stigmer {
 
   async #authHeaders(): Promise<Record<string, string>> {
     const source = this.#token;
-    const token = typeof source === "function" ? await source() : source;
-    if (token !== undefined && token !== "") {
-      if (!TOKEN_CHARS.test(token)) {
-        throw new StigmerError("invalid_token", 0, "the token contains characters that cannot be sent in a header");
-      }
-      return { Authorization: `Bearer ${token}` };
+    if (source === undefined) return this.#as === undefined ? {} : { "X-Stigmer-As": this.#as };
+    const token: unknown = typeof source === "function" ? await source() : source;
+    if (typeof token !== "string" || !TOKEN_CHARS.test(token)) {
+      throw new StigmerError("invalid_token", 0, "the token must be a non-empty string of visible ASCII characters");
     }
-    return this.#as === undefined ? {} : { "X-Stigmer-As": this.#as };
+    return { Authorization: `Bearer ${token}` };
   }
 
   async #request<T>(
     method: string,
     path: string,
-    opts: { query?: URLSearchParams; body?: unknown; headers?: Record<string, string>; signal?: AbortSignal | undefined } = {},
+    opts: {
+      query?: URLSearchParams;
+      body?: unknown;
+      headers?: Record<string, string>;
+      signal?: AbortSignal | undefined;
+      /** Shape check for a 2xx body; a body that fails it is a `bad_response`. */
+      check: (value: unknown) => value is T;
+    },
   ): Promise<T> {
-    const { signal } = opts;
+    const { signal, check } = opts;
     if (signal?.aborted) throw abortedError();
     const headers: Record<string, string> = { Accept: "application/json", ...opts.headers, ...(await this.#authHeaders()) };
     const init: RequestInit = { method, headers };
@@ -192,12 +212,49 @@ export class Stigmer {
       throw signal?.aborted ? abortedError() : new StigmerError("network", 0, `connection to ${this.#base} broke while reading the response`, { cause });
     }
     if (!res.ok) throw failure(res, text);
+    let parsed: unknown;
     try {
-      return JSON.parse(text) as T;
+      parsed = JSON.parse(text);
     } catch {
       throw new StigmerError("bad_response", res.status, `HTTP ${res.status} with a body that is not valid JSON`);
     }
+    if (!check(parsed)) {
+      throw new StigmerError("bad_response", res.status, `HTTP ${res.status} with a body that does not have the documented shape`);
+    }
+    return parsed;
   }
+}
+
+function invalidOptions(message: string): StigmerError {
+  return new StigmerError("invalid_options", 0, message);
+}
+
+const isObject = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
+
+function isEventsResponse(v: unknown): v is EventsResponse {
+  return (
+    isObject(v) &&
+    Array.isArray(v["events"]) &&
+    v["events"].every((e) => isObject(e) && typeof e["cursor"] === "string") &&
+    (v["cursor"] === null || typeof v["cursor"] === "string") &&
+    typeof v["timed_out"] === "boolean"
+  );
+}
+
+function isPosted(v: unknown): v is Posted {
+  return isObject(v) && isObject(v["message"]) && isObject(v["event"]) && typeof v["replayed"] === "boolean";
+}
+
+function isChannels(v: unknown): v is { threads: ThreadSummary[] } {
+  return isObject(v) && Array.isArray(v["threads"]);
+}
+
+function isThread(v: unknown): v is Thread {
+  return isObject(v) && isObject(v["root"]) && Array.isArray(v["replies"]);
+}
+
+function isWhoAmI(v: unknown): v is WhoAmI {
+  return isObject(v) && typeof v["principal"] === "string" && typeof v["instance_admin"] === "boolean";
 }
 
 function abortedError(): StigmerError {
