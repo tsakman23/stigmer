@@ -838,3 +838,60 @@ fn m0_cli_tests_pass_unchanged() {
     assert_eq!(missing_as.code, 2, "{missing_as:?}");
     assert!(!user.logins_path().exists());
 }
+
+/// A loopback URL on which nothing listens.
+fn dead_url() -> String {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    drop(listener);
+    format!("http://{addr}")
+}
+
+/// Runs `tail` with a long timeout and returns how it ended, failing after `within`.
+fn tail_until_exit(user: &CliUser, args: &[&str], within: Duration) -> (common::Run, Duration) {
+    let started = std::time::Instant::now();
+    let mut all = args.to_vec();
+    all.extend_from_slice(&["tail", "--timeout", "60s"]);
+    let run = common::finish(Guard::spawn(&mut user.cmd(&all)), within);
+    (run, started.elapsed())
+}
+
+#[test]
+fn tail_exits_on_a_certificate_error_instead_of_retrying() {
+    let (server, _files, _pems) = Stigmerd::tls();
+    let user = CliUser::new();
+    let (run, took) = tail_until_exit(&user, &["--url", &server.url], Duration::from_secs(20));
+    assert_eq!(run.code, 1, "{run:?}");
+    assert!(took < Duration::from_secs(5), "took {took:?}");
+    assert!(!run.stderr.contains("retrying"), "{run:?}");
+    assert!(
+        run.stderr.contains("next: for a private CA pass --ca-cert"),
+        "{run:?}"
+    );
+}
+
+#[test]
+fn tail_exits_on_a_malformed_url() {
+    let user = CliUser::new();
+    let (run, took) = tail_until_exit(
+        &user,
+        &["--url", "http://exa mple.invalid"],
+        Duration::from_secs(20),
+    );
+    assert_eq!(run.code, 1, "{run:?}");
+    assert!(took < Duration::from_secs(5), "took {took:?}");
+    assert!(!run.stderr.contains("retrying"), "{run:?}");
+}
+
+#[test]
+fn tail_still_retries_after_connection_refused() {
+    let user = CliUser::new();
+    let url = dead_url();
+    let run = common::finish(
+        Guard::spawn(&mut user.cmd(&["--url", &url, "tail", "--timeout", "3s"])),
+        Duration::from_secs(20),
+    );
+    assert_eq!(run.code, 0, "tail gives up only at its deadline: {run:?}");
+    assert!(run.stderr.contains("retrying in 1s"), "{run:?}");
+    assert!(run.stderr.contains("retrying in 2s"), "{run:?}");
+}

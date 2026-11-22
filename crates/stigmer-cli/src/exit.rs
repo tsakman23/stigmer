@@ -97,7 +97,7 @@ impl CliError {
 
     /// A failure to reach the server that may pass: refused, reset or timed out.
     pub(crate) fn is_transient(&self) -> bool {
-        matches!(self.code, "unavailable" | "network" | "request_timeout")
+        crate::neterr::TRANSIENT_CODES.contains(&self.code)
     }
 
     pub(crate) fn usage(message: impl Into<String>, next: impl Into<String>) -> Self {

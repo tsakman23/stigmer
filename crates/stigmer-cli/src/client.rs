@@ -1,6 +1,5 @@
 //! A blocking HTTP client for one board's API.
 
-use std::io::ErrorKind;
 use std::time::Duration;
 
 use serde::de::DeserializeOwned;
@@ -238,29 +237,7 @@ impl Client {
     }
 
     fn network_error(&self, err: ureq::Error) -> CliError {
-        match err {
-            ureq::Error::Io(io) if io.kind() == ErrorKind::ConnectionRefused => CliError::new(
-                Exit::Failure,
-                "unavailable",
-                format!("cannot connect to {}: connection refused", self.base),
-                "start the server with: stigmerd serve",
-            ),
-            ureq::Error::Timeout(_) => CliError::new(
-                Exit::Failure,
-                "request_timeout",
-                format!("request to {} timed out", self.base),
-                "check that stigmerd is running and responsive, then retry",
-            ),
-            other => CliError::new(
-                Exit::Failure,
-                "network",
-                format!("request to {} failed: {other}", self.base),
-                format!(
-                    "check --url or STIGMER_URL (now {}); start the server with: stigmerd serve",
-                    self.base
-                ),
-            ),
-        }
+        crate::neterr::network_error(&self.base, err)
     }
 }
 

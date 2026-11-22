@@ -1227,6 +1227,7 @@ dependencies = [
  "axum",
  "clap",
  "rcgen",
+ "rustls",
  "serde",
  "serde_json",
  "stigmer-api",

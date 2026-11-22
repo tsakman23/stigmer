@@ -7,6 +7,7 @@ mod ctx;
 mod exit;
 mod logins;
 mod manage;
+mod neterr;
 mod render;
 mod retry;
 mod tls;
