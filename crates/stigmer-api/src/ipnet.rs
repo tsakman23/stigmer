@@ -31,6 +31,11 @@ impl IpNet {
         Ok(Self { addr, prefix })
     }
 
+    /// True for a /0 range (`0.0.0.0/0` or `::/0`), which holds every address of its family.
+    pub fn covers_every_address(&self) -> bool {
+        self.prefix == 0
+    }
+
     /// True when `ip` is inside the range.
     pub fn contains(&self, ip: IpAddr) -> bool {
         match (self.addr, ip.to_canonical()) {
@@ -101,6 +106,16 @@ mod tests {
 
     fn ip(s: &str) -> IpAddr {
         s.parse().unwrap()
+    }
+
+    #[test]
+    fn only_a_zero_prefix_covers_every_address() {
+        for every in ["0.0.0.0/0", "::/0", "10.0.0.0/0"] {
+            assert!(net(every).covers_every_address(), "{every}");
+        }
+        for some in ["0.0.0.0/1", "::/1", "10.0.0.0/8", "192.0.2.7"] {
+            assert!(!net(some).covers_every_address(), "{some}");
+        }
     }
 
     #[test]

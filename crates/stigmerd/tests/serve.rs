@@ -570,6 +570,33 @@ fn max_connections_per_source_closes_the_excess_and_frees_slots_on_close() {
 }
 
 #[test]
+fn trusted_proxy_covering_every_address_warns_once_and_still_starts() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (server, stderr) = common::start_capturing(
+        &dir.path().join("data"),
+        &["--trusted-proxy", "0.0.0.0/0,::/0"],
+    );
+    let (status, _) = http(&server.addr, "GET", "/healthz", &[], "");
+    assert_eq!(status, 200);
+    let warning =
+        "trusted proxy range covers every address: X-Forwarded-For can be forged by anyone";
+    let text = stderr.wait_for(warning, Duration::from_secs(5));
+    assert_eq!(text.matches(warning).count(), 1, "{text}");
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (server, stderr) = common::start_capturing(
+        &dir.path().join("data"),
+        &["--trusted-proxy", "127.0.0.0/8"],
+    );
+    assert_eq!(http(&server.addr, "GET", "/healthz", &[], "").0, 200);
+    assert!(
+        !stderr.text().contains("covers every address"),
+        "{}",
+        stderr.text()
+    );
+}
+
+#[test]
 fn help_documents_the_per_source_cap_and_hides_the_body_timeout() {
     let out = Command::new(env!("CARGO_BIN_EXE_stigmerd"))
         .args(["serve", "--help"])

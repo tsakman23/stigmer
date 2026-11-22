@@ -138,6 +138,12 @@ async fn serve(args: ServeArgs) -> Result<(), Failure> {
     let signals = Signals::install()
         .map_err(|e| Failure::Runtime(format!("cannot register signal handlers: {e}")))?;
 
+    if trusted_proxies.iter().any(IpNet::covers_every_address) {
+        eprintln!(
+            "stigmerd: warning: trusted proxy range covers every address: \
+             X-Forwarded-For can be forged by anyone"
+        );
+    }
     let secured = tls_cert.is_some() || !trusted_proxies.is_empty();
     // A missing data dir means local mode, so refuse before creating anything.
     if !data_dir.exists() {
