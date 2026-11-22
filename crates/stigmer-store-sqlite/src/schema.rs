@@ -62,6 +62,55 @@ pub(crate) const MIGRATIONS: &[&str] = &[
     "ALTER TABLE boards ADD COLUMN created_at_ms INTEGER NOT NULL DEFAULT 0;
     ALTER TABLE boards ADD COLUMN created_by TEXT;
     ALTER TABLE boards ADD COLUMN archived_at_ms INTEGER;",
+    // 6: identity (docs/superpowers/specs/2026-11-22-m1-networked-board-design.md, section 6).
+    // Every data directory starts, or stays after an upgrade, in local mode. Roles live on
+    // principals (board memberships), not on credentials. Secrets are stored only as their
+    // 32-byte sha256; a credential with no board is the instance-admin credential.
+    "CREATE TABLE instance (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        mode TEXT NOT NULL
+    );
+    INSERT INTO instance (id, mode) VALUES (1, 'local');
+    CREATE TABLE principals (
+        board_id TEXT NOT NULL REFERENCES boards(id),
+        name TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        role TEXT NOT NULL,
+        created_at_ms INTEGER NOT NULL,
+        PRIMARY KEY (board_id, name)
+    );
+    CREATE TABLE credentials (
+        id TEXT PRIMARY KEY,
+        secret_hash BLOB NOT NULL CHECK (length(secret_hash) = 32),
+        board_id TEXT REFERENCES boards(id),
+        principal TEXT NOT NULL,
+        created_at_ms INTEGER NOT NULL,
+        expires_at_ms INTEGER NOT NULL,
+        revoked_at_ms INTEGER,
+        last_seen_ms INTEGER
+    );
+    CREATE TABLE invites (
+        id TEXT PRIMARY KEY,
+        secret_hash BLOB NOT NULL CHECK (length(secret_hash) = 32),
+        board_id TEXT NOT NULL REFERENCES boards(id),
+        role TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        created_by TEXT NOT NULL,
+        created_at_ms INTEGER NOT NULL,
+        expires_at_ms INTEGER NOT NULL,
+        used_at_ms INTEGER
+    );
+    CREATE TABLE security_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        at_ms INTEGER NOT NULL,
+        kind TEXT NOT NULL,
+        board_id TEXT,
+        principal TEXT,
+        detail TEXT NOT NULL
+    );",
+    // 7: indexes for the per-board credential and member lookups.
+    "CREATE INDEX credentials_board ON credentials (board_id);
+    CREATE INDEX principals_board ON principals (board_id);",
 ];
 
 /// Brings the database up to the latest schema and makes sure board `main` exists.
@@ -295,5 +344,73 @@ mod tests {
         let report = store.verify_chain(&BoardId::main()).await.unwrap();
         assert!(report.valid);
         assert_eq!(report.checked, 2);
+    }
+
+    #[tokio::test]
+    async fn v5_database_upgrades_to_v7_in_local_mode_with_identity_tables() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("board.db");
+        write_old_database(&path, 5);
+
+        let store = SqliteStore::open(&path).await.unwrap();
+
+        let conn = Connection::open(&path).unwrap();
+        let version: i64 = conn
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, 7);
+        let mode: String = conn
+            .query_row("SELECT mode FROM instance", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(
+            mode, "local",
+            "an upgraded data directory stays in local mode"
+        );
+        let found = |kind: &str, name: &str| -> i64 {
+            conn.query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = ?1 AND name = ?2",
+                [kind, name],
+                |row| row.get(0),
+            )
+            .unwrap()
+        };
+        for table in [
+            "instance",
+            "principals",
+            "credentials",
+            "invites",
+            "security_log",
+        ] {
+            assert_eq!(found("table", table), 1, "table {table}");
+            let rows: i64 = conn
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                    row.get(0)
+                })
+                .unwrap();
+            assert_eq!(rows, i64::from(table == "instance"), "rows in {table}");
+        }
+        for index in ["credentials_board", "principals_board"] {
+            assert_eq!(found("index", index), 1, "index {index}");
+        }
+        let second_row = conn.execute("INSERT INTO instance (id, mode) VALUES (2, 'local')", []);
+        assert!(second_row.is_err(), "instance holds a single row");
+        let short_hash = conn.execute(
+            "INSERT INTO credentials (id, secret_hash, principal, created_at_ms, expires_at_ms)
+             VALUES ('0123456789abcdef', x'00', 'root', 1, 2)",
+            [],
+        );
+        assert!(short_hash.is_err(), "a secret hash is exactly 32 bytes");
+
+        let old_kind: String = conn
+            .query_row(
+                "SELECT author_kind FROM messages WHERE text = 'old message'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(old_kind, "local");
+        let report = store.verify_chain(&BoardId::main()).await.unwrap();
+        assert!(report.valid);
+        assert_eq!(report.checked, 1);
     }
 }
