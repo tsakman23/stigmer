@@ -112,9 +112,61 @@ fn enable_auth_twice_refuses_and_prints_no_token() {
     assert_eq!(admin(&data, &["enable-auth"]).status.code(), Some(0));
     let out = admin(&data, &["enable-auth"]);
     assert_eq!(out.status.code(), Some(1));
-    assert!(stderr(&out).contains("already in network mode"));
+    let err = stderr(&out);
+    assert!(err.contains("already in network mode"), "stderr: {err}");
+    assert!(
+        err.contains("if you have no instance token, run stigmerd admin new-instance-token"),
+        "stderr: {err}"
+    );
     assert!(out.stdout.is_empty(), "stdout: {}", stdout(&out));
     assert!(!stderr(&out).contains("stg1_") && !stderr(&out).contains("stgi1_"));
+}
+
+/// The failure is injected by archiving board main before enable-auth, so minting the main
+/// admin invite is refused by the store (step b), before the mode switch (step c).
+#[test]
+fn enable_auth_failure_before_the_mode_switch_leaves_local_mode_and_a_retry_succeeds() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let data = dir.path().join("data");
+    with_store(&data_dir_ready(&data), |store| async move {
+        store
+            .archive_board(&BoardId::main())
+            .await
+            .expect("archive main");
+    });
+
+    let failed = admin(&data, &["enable-auth"]);
+    assert_eq!(failed.status.code(), Some(1), "stderr: {}", stderr(&failed));
+    assert!(
+        failed.stdout.is_empty(),
+        "no secret may be shown: {}",
+        stdout(&failed)
+    );
+    with_store(&data, |store| async move {
+        assert_eq!(
+            store.mode().await,
+            Ok(Mode::Local),
+            "must stay in local mode"
+        );
+        assert_eq!(
+            store.security_log(10).await,
+            Ok(vec![]),
+            "nothing may be logged"
+        );
+    });
+
+    let retry = admin(&data, &["enable-auth", "--no-main-invite"]);
+    assert_eq!(retry.status.code(), Some(0), "stderr: {}", stderr(&retry));
+    assert!(stdout(&retry).starts_with("instance token: stg1_"));
+    with_store(&data, |store| async move {
+        assert_eq!(store.mode().await, Ok(Mode::Network));
+    });
+}
+
+/// Creates the data dir with a database, as a first admin or serve run would.
+fn data_dir_ready(data: &Path) -> std::path::PathBuf {
+    std::fs::create_dir_all(data).expect("create data dir");
+    data.to_owned()
 }
 
 #[test]

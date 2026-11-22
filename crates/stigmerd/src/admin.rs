@@ -9,7 +9,7 @@ use std::path::PathBuf;
 
 use clap::{Args, Subcommand};
 use stigmer_core::{
-    generate_secret, BoardId, NewSecret, Principal, PrincipalKind, Role, SecretKind,
+    generate_secret, BoardId, NewSecret, Principal, PrincipalKind, Role, SecretKind, TokenId,
 };
 use stigmer_store::{
     Adoption, ConflictKind, CredentialScope, IdentityStore, Mode, NewCredential, NewInvite,
@@ -100,7 +100,8 @@ pub async fn run(command: AdminCommand) -> Result<(), Failure> {
             if let Some(invite) = issued.invite {
                 lines.push_str(&format!("main admin invite: {invite}\n"));
             }
-            write_once(&mut out, &lines)
+            write_once(&mut out, &lines)?;
+            issued.log_failure.map_or(Ok(()), Err)
         }
         AdminCommand::NewInstanceToken { expires_days, .. } => {
             require_network(&store).await?;
@@ -149,45 +150,65 @@ fn write_once(out: &mut impl Write, secrets: &str) -> Result<(), Failure> {
 struct Issued {
     token: String,
     invite: Option<String>,
+    /// Set when the secrets are valid but the security log could not be written.
+    log_failure: Option<Failure>,
 }
 
+/// Enables network mode without ever stranding the instance: the credential and invite are
+/// stored while the instance is still local, the one-way switch comes next, and the secrets
+/// are returned only then. A failure before the switch leaves local mode plus at most an
+/// unused credential whose secret was never shown, so a plain retry works.
 async fn enable_auth<S: IdentityStore>(
     store: &S,
     now: i64,
     with_invite: bool,
 ) -> Result<Issued, Failure> {
+    if store
+        .mode()
+        .await
+        .map_err(|e| store_failure("cannot read instance mode", &e))?
+        == Mode::Network
+    {
+        return Err(already_network());
+    }
+    let token = store_instance_token(store, now, INSTANCE_TOKEN_DAYS).await?;
+    let invite = if with_invite {
+        Some(store_main_admin_invite(store, now).await?)
+    } else {
+        None
+    };
     match store.enable_network_mode().await {
         Ok(()) => {}
-        Err(StoreError::Conflict(ConflictKind::AlreadyNetwork)) => {
-            return Err(Failure::Runtime("already in network mode".into()));
-        }
+        Err(StoreError::Conflict(ConflictKind::AlreadyNetwork)) => return Err(already_network()),
         Err(e) => return Err(store_failure("cannot enable network mode", &e)),
     }
-    // The switch is one-way, so a failure past this point is reported with the way out.
-    let after = |e: Failure| match e {
-        Failure::Runtime(msg) => Failure::Runtime(format!(
-            "network mode is now on, but {msg}; run stigmerd admin new-instance-token"
-        )),
-        other => other,
-    };
-    log(
+    // Past the switch the secrets are valid, so a log failure must not hide them.
+    let mut logged = log(
         store,
         now,
         SecurityEventKind::ModeEnabled,
         None,
         "network mode enabled",
     )
-    .await
-    .map_err(after)?;
-    let token = issue_instance_token(store, now, INSTANCE_TOKEN_DAYS)
-        .await
-        .map_err(after)?;
-    let invite = if with_invite {
-        Some(issue_main_admin_invite(store, now).await.map_err(after)?)
-    } else {
-        None
-    };
-    Ok(Issued { token, invite })
+    .await;
+    if logged.is_ok() {
+        logged = log_token_issued(store, now, &token.id, INSTANCE_TOKEN_DAYS).await;
+    }
+    if let (Ok(()), Some(invite)) = (&logged, &invite) {
+        logged = log_invite_created(store, now, &invite.id).await;
+    }
+    Ok(Issued {
+        token: token.full,
+        invite: invite.map(|i| i.full),
+        log_failure: logged.err(),
+    })
+}
+
+fn already_network() -> Failure {
+    Failure::Runtime(
+        "already in network mode; if you have no instance token, run stigmerd admin new-instance-token"
+            .into(),
+    )
 }
 
 async fn issue_instance_token<S: IdentityStore>(
@@ -195,33 +216,68 @@ async fn issue_instance_token<S: IdentityStore>(
     now: i64,
     days: u32,
 ) -> Result<String, Failure> {
+    let secret = store_instance_token(store, now, days).await?;
+    log_token_issued(store, now, &secret.id, days).await?;
+    Ok(secret.full)
+}
+
+async fn store_instance_token<S: IdentityStore>(
+    store: &S,
+    now: i64,
+    days: u32,
+) -> Result<NewSecret, Failure> {
     let secret = new_secret(SecretKind::Token)?;
-    let principal = instance_admin()?;
     store
         .create_credential(
             NewCredential {
                 id: secret.id.clone(),
                 secret_hash: secret.hash,
                 scope: CredentialScope::Instance,
-                principal,
+                principal: instance_admin()?,
                 expires_at_ms: now + i64::from(days) * DAY_MS,
             },
             now,
         )
         .await
         .map_err(|e| store_failure("cannot store the instance token", &e))?;
+    Ok(secret)
+}
+
+async fn log_token_issued<S: IdentityStore>(
+    store: &S,
+    now: i64,
+    id: &TokenId,
+    days: u32,
+) -> Result<(), Failure> {
     log(
         store,
         now,
         SecurityEventKind::InstanceTokenIssued,
         None,
-        &format!("credential {} expires in {days} days", secret.id),
+        &format!("credential {id} expires in {days} days"),
     )
-    .await?;
-    Ok(secret.full)
+    .await
 }
 
-async fn issue_main_admin_invite<S: IdentityStore>(store: &S, now: i64) -> Result<String, Failure> {
+async fn log_invite_created<S: IdentityStore>(
+    store: &S,
+    now: i64,
+    id: &TokenId,
+) -> Result<(), Failure> {
+    log(
+        store,
+        now,
+        SecurityEventKind::InviteCreated,
+        Some(BoardId::main()),
+        &format!("invite {id} role admin kind human"),
+    )
+    .await
+}
+
+async fn store_main_admin_invite<S: IdentityStore>(
+    store: &S,
+    now: i64,
+) -> Result<NewSecret, Failure> {
     let secret = new_secret(SecretKind::Invite)?;
     store
         .create_invite(
@@ -238,15 +294,7 @@ async fn issue_main_admin_invite<S: IdentityStore>(store: &S, now: i64) -> Resul
         )
         .await
         .map_err(|e| store_failure("cannot store the main admin invite", &e))?;
-    log(
-        store,
-        now,
-        SecurityEventKind::InviteCreated,
-        Some(BoardId::main()),
-        &format!("invite {} role admin kind human", secret.id),
-    )
-    .await?;
-    Ok(secret.full)
+    Ok(secret)
 }
 
 /// Plans, and with `apply` performs, the adoption of board main's local authors.
