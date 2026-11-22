@@ -17,20 +17,35 @@ rate limiting needs the real peer address of every connection.
   always allowed; any other bind needs network mode **and** either `--tls-cert`/`--tls-key` or
   `--trusted-proxy`, else `stigmerd serve` exits 2 naming what is missing. A missing data
   directory is local mode, so a non-loopback bind is refused before anything is created.
-- `stigmerd` runs its own accept loop (hyper-util) instead of `axum::serve`. Each connection
-  inserts `PeerAddr` into its requests; in network mode the API answers 500 when it is missing
-  rather than putting every client into one rate-limit bucket. The loop caps open connections
-  (`--max-connections`, default 1024; the excess is dropped unanswered) and bounds the header
-  read and TLS handshake to 10 s.
+- `stigmerd` runs its own accept loop instead of `axum::serve`. Each connection inserts
+  `PeerAddr` into its requests. `PeerAddr` is mandatory in network mode: the outermost layer of
+  the router answers 500 `internal` to a request without it, and warns once on stderr, rather
+  than putting every client into one shared rate-limit bucket (fail closed). The loop caps open
+  connections (`--max-connections`, default 1024; the excess is dropped unanswered) and bounds
+  the header read and TLS handshake to 10 s. A failed `accept` (a reset, or running out of file
+  descriptors) is warned about on stderr by error kind only, at most once every 10 s; the loop
+  pauses 50 ms and keeps accepting.
+- Every connection is served by hyper's HTTP/1 connection builder, plain or TLS. HTTP/2 is not
+  compiled in at all: the `http2` features of hyper and hyper-util (and hyper-util's
+  `server-auto`, which implies them) are off, so no HTTP/2 path exists to reach by accident.
+- Two serve flags exist for tests only and are hidden from `--help`:
+  `--header-read-timeout-ms` (default 10000, 1 to 60000) and `--tls-reload-interval-ms`
+  (default 5000, 1 to 3600000). They are not a supported interface.
 - TLS is rustls with the ring provider, TLS 1.3 only, no client certificates, ALPN `http/1.1`
   only, and `Strict-Transport-Security: max-age=31536000` on every TLS response. The pair
   is served through a resolver over a shared cell. Every 5 s the files' modification times are
   checked; on a change both files are loaded and swapped in only if they parse and the key
   matches the certificate, so a half-written pair is never served. A bad candidate keeps the old
-  pair and is warned about once, by file name only.
+  pair and is warned about once, by file name only. A key file readable by group or others is
+  warned about at startup.
 - `--trusted-proxy <cidr,...>` lists proxy ranges whose `X-Forwarded-For` is believed. Without
   TLS, plain HTTP is accepted only from those ranges; other peers are dropped before any HTTP is
   read. With TLS any peer may connect and the ranges only govern forwarding headers.
+- `X-Forwarded-For` decides the client address used for rate limiting and the security log,
+  nothing else. From an untrusted peer it is ignored. From a trusted proxy the hops (all header
+  lines, comma separated) are walked from the right, skipping hops that are trusted proxies too;
+  the first other hop is the client. Hops to its left were written by the client and are never
+  believed, and a hop that is not an address ends the walk at the last trusted hop.
 - `--allowed-host <name>` extends the Host/Origin allow-list of ADR 0003; rebinding protection
   stays on for every other name.
 
@@ -49,3 +64,10 @@ rate limiting needs the real peer address of every connection.
   alert; browsers fall back to HTTP/1.1. Offering HTTP/2 later needs an idle bound of its own
   (for example keep-alive pings with a timeout, or a per-connection idle deadline).
 - `X-Forwarded-Proto` is not used: nothing in the API depends on the scheme yet.
+- The key-permission warning runs only at startup; a key replaced later with looser permissions
+  is reloaded without a new warning.
+- Clients behind a proxy that is not declared share the proxy's address as their source, and so
+  one failed-authentication budget ([0011](0011-authentication-policy-401-403-404.md)).
+
+Amended 2026-11-22 (M1, Task 10): HTTP/2 compiled out; `PeerAddr`, accept-error, hidden-flag
+and `X-Forwarded-For` rules recorded.

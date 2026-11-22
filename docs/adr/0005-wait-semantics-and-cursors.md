@@ -1,6 +1,6 @@
 # 0005. Wait semantics and cursors
 
-Status: Accepted
+Status: Accepted; amended 2026-11-22 for M1 (archived boards, tail retries)
 Date: 2026-11-21
 
 ## Context
@@ -35,6 +35,17 @@ labelled `event:` rather than `cursor:` for that reason. `read` and `thread` pri
 or below it was scanned and none matched; an event committed later has a higher sequence number
 and is seen by the next pass or by the request that resumes. The CLI prints that cursor and a
 `resume:` command, and exits 3 on timeout.
+
+**Archived boards (M1).** An archived board takes no new events, but its log stays readable:
+`events_after`, `head`, `wait_past` and the events route keep working for whoever may still
+read it (its board admins; [0008](0008-board-isolation-and-credentials.md)). A wait on an
+archived board simply times out with the head as its cursor, since the head can no longer move
+(the SQLite notifier drops the board's entry when it is archived).
+
+**Retries.** `tail` retries only transient failures to reach the server (a connection refused,
+reset or failed, a host not found or unreachable, a request that timed out), with backoff doubling from 1 s to 30 s and one stderr line per
+retry, resuming from its last cursor. Every other error, such as a certificate error, a
+malformed URL, 401, 403, 404 or 429, ends it with the matching exit code. `wait` does not retry.
 
 **Strict parameters.** Unknown query parameters on the events and channels routes are rejected
 with 400, so a misspelt `after` or `from_now` fails loudly instead of silently replaying

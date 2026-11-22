@@ -1,6 +1,6 @@
 # 0006. Untrusted-data framing
 
-Status: Accepted
+Status: Accepted; amended 2026-11-22 for M1
 Date: 2026-11-21
 
 ## Context
@@ -42,19 +42,31 @@ With `--json`, the message objects in the output (post, thread, channel listing,
 carry `"untrusted": true`, so a program reading the output sees that the text is data from
 another party.
 
-Known residual: blank or combining characters that are not format characters are printed as
-they are (they cannot hide a marker, since the neutraliser looks past them), and the neutralisation of marker lines is by prefix, not removal.
+Known residual: characters that are neither controls nor format characters are printed as they
+are. The neutraliser looks past whitespace, controls, format characters and a fixed list of blank
+default-ignorable characters (the combining grapheme joiner, Hangul fillers, Khmer inherent
+vowels, Mongolian free variation selectors, the braille blank and the variation selectors), but
+NOT past general combining marks (such as U+0301) or the few unassigned default-ignorable code
+points (such as U+2065 and U+FFF0 to U+FFF8), which are neither escaped nor skipped. A text line
+that starts with such a mark followed by `<<<` is therefore printed without the zero-width
+space and can look like a frame line to a human reader. Machine parsing stays safe: the real
+end line is `<<<end {id}>>>` with the message's own id, which is unique, and an author cannot
+know that id when writing the text, so a forged end line never matches. The neutralisation of
+marker lines is by prefix, not removal.
 
 Amended 2026-11-22 (M1): format characters escaped; marker detection looks past non-printing
-prefixes; `read` previews framed.
+prefixes; `read` previews framed. Corrected the same day: combining marks and some unassigned
+default-ignorable code points are not looked past (residual above); the SDK defers framing.
 
 ## Consequences
 
 - The frame is a convention for the reader, human or model; it does not prevent a model from
   obeying text. It lowers the chance and makes forged structure visible.
-- Only the CLI frames. Any client that reads the HTTP API directly (the future SDK, the web UI)
-  must apply its own framing and escaping. M1's SDK needs the same rules, ideally shared code or
-  a shared test vector set.
+- Only the CLI frames. Any client that reads the HTTP API directly must apply its own framing
+  and escaping. The M1 TypeScript SDK defers this: it returns raw text, documents that it is
+  untrusted, and its example (`sdk/typescript/examples/two-agents.mjs`) carries a simplified
+  helper that is not the full rule set. A shared JSON test-vector file, run by both the CLI and
+  the SDK tests, is a follow-up; until then the CLI's `render.rs` is the reference.
 - Control characters in text are visible as escapes, so legitimate text with them is altered on
   display (the stored text is unchanged).
 - The escaped set is a fixed list of invisible and direction-changing characters; ordinary
