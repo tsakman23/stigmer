@@ -400,6 +400,20 @@ mod tests {
             [],
         );
         assert!(short_hash.is_err(), "a secret hash is exactly 32 bytes");
+        let insert_invite = |hash: Vec<u8>| {
+            conn.execute(
+                "INSERT INTO invites
+                     (id, secret_hash, board_id, role, kind, created_by, created_at_ms,
+                      expires_at_ms)
+                 VALUES ('0123456789abcdef', ?1, 'main', 'member', 'agent', 'root', 1, 2)",
+                [hash],
+            )
+        };
+        assert!(
+            insert_invite(vec![7; 31]).is_err(),
+            "an invite hash is exactly 32 bytes"
+        );
+        assert_eq!(insert_invite(vec![7; 32]).unwrap(), 1, "32 bytes fit");
 
         let old_kind: String = conn
             .query_row(
