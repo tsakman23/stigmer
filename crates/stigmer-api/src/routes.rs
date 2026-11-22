@@ -1,4 +1,8 @@
-//! Route handlers: thin glue that authorizes, then calls the store.
+//! Route handlers: thin glue that resolves the board, authorizes, then calls the store.
+//!
+//! Every board route answers in the same order: 401 (from the authentication middleware), then
+//! 404 when the board is outside the credential's scope or does not exist, then 403 when the
+//! authorizer refuses, and only then anything about the request itself.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -7,18 +11,20 @@ use axum::body::Bytes;
 use axum::extract::rejection::{BytesRejection, PathRejection, QueryRejection};
 use axum::extract::{DefaultBodyLimit, Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
-use axum::routing::get;
-use axum::{Json, Router};
+use axum::routing::{get, post};
+use axum::{Extension, Json, Router};
 use serde::Deserialize;
 use stigmer_core::{
     parse_labels, BoardId, ChannelPath, ChannelsResponse, Cursor, ErrorCode, EventFilter,
-    EventsResponse, MessageId, NewMessage, Page, PostRequest, Posted, Principal, PrincipalKind,
-    Role, Target, Thread, MAX_WAIT_SECS,
+    EventsResponse, MessageId, NewMessage, Page, PostRequest, Posted, Principal, Target, Thread,
+    MAX_WAIT_SECS,
 };
-use stigmer_store::{CredentialScope, Store};
+use stigmer_store::{CredentialScope, IdentityStore, Mode, Store, StoreError};
 use tokio::sync::watch;
 
+use crate::auth::authenticate;
 use crate::authz::{Action, Authenticated, Authorize, Scope};
+use crate::config::ApiConfig;
 use crate::error::ApiError;
 use crate::host_guard::require_loopback_host;
 use crate::wait::read_events;
@@ -33,6 +39,7 @@ pub(crate) struct AppState<S, A> {
     pub(crate) store: Arc<S>,
     pub(crate) authz: A,
     pub(crate) shutdown: watch::Receiver<bool>,
+    pub(crate) config: Arc<ApiConfig>,
 }
 
 // Manual impl: deriving would demand `S: Clone`, and the store sits behind an `Arc`.
@@ -42,31 +49,40 @@ impl<S, A: Clone> Clone for AppState<S, A> {
             store: Arc::clone(&self.store),
             authz: self.authz.clone(),
             shutdown: self.shutdown.clone(),
+            config: Arc::clone(&self.config),
         }
     }
 }
 
 /// Builds the board's HTTP router. Flipping `shutdown` to `true` ends every pending wait.
-pub fn router<S: Store, A: Authorize>(
+///
+/// `config.mode` decides authentication; pass `AllowAll` in local mode and `RoleAuthorize` in
+/// network mode.
+pub fn router<S: Store + IdentityStore, A: Authorize>(
     store: Arc<S>,
     authz: A,
     shutdown: watch::Receiver<bool>,
+    config: ApiConfig,
 ) -> Router {
     let state = AppState {
         store,
         authz,
         shutdown,
+        config: Arc::new(config),
     };
-    Router::new()
-        .route("/healthz", get(healthz))
-        .route("/readyz", get(readyz::<S, A>))
-        .route(
-            "/v1/boards/{board}/messages",
-            axum::routing::post(post_message::<S, A>),
-        )
+    let board_routes = Router::new()
+        .route("/v1/boards/{board}/messages", post(post_message::<S, A>))
         .route("/v1/boards/{board}/channels", get(read_channels::<S, A>))
         .route("/v1/boards/{board}/events", get(read_events_route::<S, A>))
         .route("/v1/boards/{board}/threads/{id}", get(read_thread::<S, A>))
+        .route_layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            authenticate::<S, A>,
+        ));
+    Router::new()
+        .route("/healthz", get(healthz))
+        .route("/readyz", get(readyz::<S, A>))
+        .merge(board_routes)
         .fallback(unknown_route)
         .method_not_allowed_fallback(wrong_method)
         .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
@@ -95,13 +111,47 @@ async fn readyz<S: Store, A: Authorize>(
     }
 }
 
-/// M0 has one board; any other name is unknown.
-pub(crate) fn require_main_board(board: &str) -> Result<BoardId, ApiError> {
-    if board == "main" {
-        Ok(BoardId::main())
-    } else {
-        Err(ApiError::not_found(format!("no such board: {board}")))
+/// The board named in the path, if the caller may know it exists.
+///
+/// A board credential only ever sees its own board: any other name, existing or not, is the same
+/// 404 without the store being asked. The instance credential and local mode see every board
+/// the store has.
+async fn visible_board<S: Store>(
+    store: &S,
+    who: &Authenticated,
+    raw: &str,
+) -> Result<BoardId, ApiError> {
+    let no_such_board = || ApiError::not_found("no such board");
+    let board = BoardId::new(raw).map_err(|_| no_such_board())?;
+    match &who.scope {
+        CredentialScope::Board(own) if *own == board => Ok(board),
+        CredentialScope::Board(_) => Err(no_such_board()),
+        CredentialScope::Instance => match store.get_board(&board).await {
+            Ok(_) => Ok(board),
+            Err(StoreError::NotFound { .. }) => Err(no_such_board()),
+            Err(err) => Err(err.into()),
+        },
     }
+}
+
+/// The board as an authorization scope. M1 never narrows a check to a channel.
+fn board_scope(board: &BoardId) -> Scope<'_> {
+    Scope::Board {
+        board,
+        channel: None,
+    }
+}
+
+/// Resolves the path's board for `who` and checks `action` on it: 404, then 403.
+async fn authorize_board<S: Store, A: Authorize>(
+    state: &AppState<S, A>,
+    who: &Authenticated,
+    action: Action,
+    raw: &str,
+) -> Result<BoardId, ApiError> {
+    let board = visible_board(&*state.store, who, raw).await?;
+    state.authz.check(who, action, &board_scope(&board)).await?;
+    Ok(board)
 }
 
 fn principal_header(headers: &HeaderMap) -> Result<Option<Principal>, ApiError> {
@@ -114,7 +164,7 @@ fn principal_header(headers: &HeaderMap) -> Result<Option<Principal>, ApiError> 
     Ok(Some(Principal::new(raw)?))
 }
 
-/// The caller of a read: the `X-Stigmer-As` principal, else `anonymous`.
+/// The caller of a read in local mode: the `X-Stigmer-As` principal, else `anonymous`.
 pub(crate) fn reader(headers: &HeaderMap) -> Result<Principal, ApiError> {
     match principal_header(headers)? {
         Some(who) => Ok(who),
@@ -122,22 +172,13 @@ pub(crate) fn reader(headers: &HeaderMap) -> Result<Principal, ApiError> {
     }
 }
 
-/// A local-mode caller: the named principal, trusted as the instance admin.
-fn local_caller(principal: Principal) -> Authenticated {
-    Authenticated {
-        principal,
-        kind: PrincipalKind::Agent,
-        scope: CredentialScope::Instance,
-        role: Some(Role::Admin),
-        credential: None,
-    }
-}
-
-/// The whole board as an authorization scope. M1 never narrows a check to a channel.
-fn board_scope(board: &BoardId) -> Scope<'_> {
-    Scope::Board {
-        board,
-        channel: None,
+/// The author of a post. In network mode it is the credential's principal and `X-Stigmer-As`
+/// is ignored; in local mode the header is required.
+fn author(mode: Mode, who: &Authenticated, headers: &HeaderMap) -> Result<Principal, ApiError> {
+    match mode {
+        Mode::Network => Ok(who.principal.clone()),
+        Mode::Local => principal_header(headers)?
+            .ok_or_else(|| ApiError::invalid_input("X-Stigmer-As header is required")),
     }
 }
 
@@ -163,13 +204,13 @@ pub(crate) fn parse_limit(raw: Option<&str>, default: u32) -> Result<u32, ApiErr
 
 async fn post_message<S: Store, A: Authorize>(
     State(state): State<AppState<S, A>>,
+    Extension(who): Extension<Authenticated>,
     path: Result<Path<String>, PathRejection>,
     headers: HeaderMap,
     body: Result<Bytes, BytesRejection>,
 ) -> Result<(StatusCode, Json<Posted>), ApiError> {
-    let board = require_main_board(&path_or_400(path)?)?;
-    let who = principal_header(&headers)?
-        .ok_or_else(|| ApiError::invalid_input("X-Stigmer-As header is required"))?;
+    let board = authorize_board(&state, &who, Action::Post, &path_or_400(path)?).await?;
+    let author = author(state.config.mode, &who, &headers)?;
     let key = headers
         .get("idempotency-key")
         .map(|v| {
@@ -196,15 +237,7 @@ async fn post_message<S: Store, A: Authorize>(
             ))
         }
     };
-    state
-        .authz
-        .check(
-            &local_caller(who.clone()),
-            Action::Post,
-            &board_scope(&board),
-        )
-        .await?;
-    let msg = NewMessage::new(board, target, who, req.text, req.labels, key)?;
+    let msg = NewMessage::new(board, target, author, req.text, req.labels, key)?;
     let posted = state.store.post(msg).await?;
     let status = if posted.replayed {
         StatusCode::OK
@@ -226,12 +259,11 @@ struct ChannelsQuery {
 
 async fn read_channels<S: Store, A: Authorize>(
     State(state): State<AppState<S, A>>,
+    Extension(who): Extension<Authenticated>,
     path: Result<Path<String>, PathRejection>,
-    headers: HeaderMap,
     query: Result<Query<ChannelsQuery>, QueryRejection>,
 ) -> Result<Json<ChannelsResponse>, ApiError> {
-    let board = require_main_board(&path_or_400(path)?)?;
-    let who = reader(&headers)?;
+    let board = authorize_board(&state, &who, Action::Read, &path_or_400(path)?).await?;
     let q = query_or_400(query)?;
     let prefix = q
         .prefix
@@ -240,10 +272,6 @@ async fn read_channels<S: Store, A: Authorize>(
     let prefix = ChannelPath::new(prefix)?;
     let before = q.before.as_deref().map(MessageId::new).transpose()?;
     let limit = parse_limit(q.limit.as_deref(), DEFAULT_CHANNEL_LIMIT)?;
-    state
-        .authz
-        .check(&local_caller(who), Action::Read, &board_scope(&board))
-        .await?;
     let threads = state
         .store
         .read_channel(&board, &prefix, Page { limit, before })
@@ -253,17 +281,12 @@ async fn read_channels<S: Store, A: Authorize>(
 
 async fn read_thread<S: Store, A: Authorize>(
     State(state): State<AppState<S, A>>,
+    Extension(who): Extension<Authenticated>,
     path: Result<Path<(String, String)>, PathRejection>,
-    headers: HeaderMap,
 ) -> Result<Json<Thread>, ApiError> {
     let (board, id) = path_or_400(path)?;
-    let board = require_main_board(&board)?;
-    let who = reader(&headers)?;
+    let board = authorize_board(&state, &who, Action::Read, &board).await?;
     let id = MessageId::new(&id)?;
-    state
-        .authz
-        .check(&local_caller(who), Action::Read, &board_scope(&board))
-        .await?;
     let thread = state.store.read_thread(&board, &id).await?;
     Ok(Json(thread))
 }
@@ -293,12 +316,11 @@ fn parse_from_now(raw: Option<&str>) -> Result<bool, ApiError> {
 
 async fn read_events_route<S: Store, A: Authorize>(
     State(state): State<AppState<S, A>>,
+    Extension(who): Extension<Authenticated>,
     path: Result<Path<String>, PathRejection>,
-    headers: HeaderMap,
     query: Result<Query<EventsQuery>, QueryRejection>,
 ) -> Result<Json<EventsResponse>, ApiError> {
-    let board = require_main_board(&path_or_400(path)?)?;
-    let who = reader(&headers)?;
+    let board = authorize_board(&state, &who, Action::Read, &path_or_400(path)?).await?;
     let q = query_or_400(query)?;
     let from_now = parse_from_now(q.from_now.as_deref())?;
     if from_now && q.after.is_some() {
@@ -329,10 +351,6 @@ async fn read_events_route<S: Store, A: Authorize>(
         })?,
     };
     let timeout = Duration::from_secs(timeout_s.min(MAX_WAIT_SECS));
-    state
-        .authz
-        .check(&local_caller(who), Action::Read, &board_scope(&board))
-        .await?;
     // `from_now` is `after=<head>`, with the head read once here; on an empty board it is no
     // cursor at all, since nothing existed to skip.
     let after = if from_now {

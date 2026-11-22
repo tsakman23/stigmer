@@ -7,7 +7,7 @@ use std::sync::mpsc;
 use std::sync::Arc;
 
 use serde_json::Value;
-use stigmer_api::{router, AllowAll};
+use stigmer_api::{router, AllowAll, ApiConfig};
 use stigmer_store_sqlite::SqliteStore;
 use tokio::sync::watch;
 
@@ -23,7 +23,7 @@ fn server() -> String {
         runtime.block_on(async move {
             let store = Arc::new(SqliteStore::open_memory().await.unwrap());
             let (_shutdown_tx, shutdown_rx) = watch::channel(false);
-            let app = router(store, AllowAll, shutdown_rx);
+            let app = router(store, AllowAll, shutdown_rx, ApiConfig::local());
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             tx.send(listener.local_addr().unwrap()).unwrap();
             axum::serve(listener, app).await.unwrap();

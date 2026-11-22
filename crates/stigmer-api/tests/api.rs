@@ -11,12 +11,15 @@ use axum::Router;
 use http_body_util::BodyExt;
 use serde_json::{json, Value};
 use stigmer_api::require_loopback;
-use stigmer_api::{router, Action, AllowAll, Authenticated, Authorize, Denied, Scope};
+use stigmer_api::{router, Action, AllowAll, ApiConfig, Authenticated, Authorize, Denied, Scope};
 use stigmer_core::{
     BoardId, BoardInfo, ChannelPath, Cursor, Event, EventFilter, MessageId, NewMessage, Page,
-    Posted, Principal, Target, Thread, ThreadSummary,
+    Posted, Principal, PrincipalKind, Role, Target, Thread, ThreadSummary, TokenId,
 };
-use stigmer_store::{ChainReport, Store, StoreError};
+use stigmer_store::{
+    Adoption, ChainReport, Consumed, Credential, IdentityStore, Member, Mode, NewCredential,
+    NewInvite, SecurityEvent, Store, StoreError,
+};
 use stigmer_store_sqlite::SqliteStore;
 use tokio::sync::watch;
 use tower::ServiceExt;
@@ -30,7 +33,7 @@ async fn harness() -> Harness {
     let store = Arc::new(SqliteStore::open_memory().await.unwrap());
     let (tx, rx) = watch::channel(false);
     Harness {
-        app: router(store, AllowAll, rx),
+        app: router(store, AllowAll, rx, ApiConfig::local()),
         shutdown: tx,
     }
 }
@@ -323,7 +326,7 @@ impl Authorize for DenyAll {
 async fn denied_authorizer_returns_403() {
     let store = Arc::new(SqliteStore::open_memory().await.unwrap());
     let (_tx, rx) = watch::channel(false);
-    let app = router(store, DenyAll, rx);
+    let app = router(store, DenyAll, rx, ApiConfig::local());
     let (status, body) = call_json(
         &app,
         post_req(Some("alice"), None, json!({"channel": "eng", "text": "x"})),
@@ -771,6 +774,148 @@ impl Store for RacingStore {
     }
 }
 
+// The router needs the identity half of the backend too; it is passed straight through.
+impl IdentityStore for RacingStore {
+    fn mode(&self) -> impl Future<Output = Result<Mode, StoreError>> + Send {
+        self.inner.mode()
+    }
+
+    fn enable_network_mode(&self) -> impl Future<Output = Result<(), StoreError>> + Send {
+        self.inner.enable_network_mode()
+    }
+
+    fn add_member(
+        &self,
+        board: &BoardId,
+        name: &Principal,
+        kind: PrincipalKind,
+        role: Role,
+        now_ms: i64,
+    ) -> impl Future<Output = Result<Member, StoreError>> + Send {
+        self.inner.add_member(board, name, kind, role, now_ms)
+    }
+
+    fn get_member(
+        &self,
+        board: &BoardId,
+        name: &Principal,
+    ) -> impl Future<Output = Result<Option<Member>, StoreError>> + Send {
+        self.inner.get_member(board, name)
+    }
+
+    fn list_members(
+        &self,
+        board: &BoardId,
+    ) -> impl Future<Output = Result<Vec<Member>, StoreError>> + Send {
+        self.inner.list_members(board)
+    }
+
+    fn remove_member(
+        &self,
+        board: &BoardId,
+        name: &Principal,
+        now_ms: i64,
+    ) -> impl Future<Output = Result<(), StoreError>> + Send {
+        self.inner.remove_member(board, name, now_ms)
+    }
+
+    fn list_local_authors(
+        &self,
+        board: &BoardId,
+    ) -> impl Future<Output = Result<Vec<Principal>, StoreError>> + Send {
+        self.inner.list_local_authors(board)
+    }
+
+    fn adopt_local_authors(
+        &self,
+        board: &BoardId,
+        adoptions: &[Adoption],
+        now_ms: i64,
+    ) -> impl Future<Output = Result<u64, StoreError>> + Send {
+        self.inner.adopt_local_authors(board, adoptions, now_ms)
+    }
+
+    fn create_credential(
+        &self,
+        credential: NewCredential,
+        now_ms: i64,
+    ) -> impl Future<Output = Result<(), StoreError>> + Send {
+        self.inner.create_credential(credential, now_ms)
+    }
+
+    fn find_credential(
+        &self,
+        id: &TokenId,
+    ) -> impl Future<Output = Result<Option<Credential>, StoreError>> + Send {
+        self.inner.find_credential(id)
+    }
+
+    fn touch_credential(
+        &self,
+        id: &TokenId,
+        now_ms: i64,
+    ) -> impl Future<Output = Result<(), StoreError>> + Send {
+        self.inner.touch_credential(id, now_ms)
+    }
+
+    fn list_credentials(
+        &self,
+        board: &BoardId,
+    ) -> impl Future<Output = Result<Vec<Credential>, StoreError>> + Send {
+        self.inner.list_credentials(board)
+    }
+
+    fn revoke_credential(
+        &self,
+        id: &TokenId,
+        now_ms: i64,
+    ) -> impl Future<Output = Result<(), StoreError>> + Send {
+        self.inner.revoke_credential(id, now_ms)
+    }
+
+    fn revoke_board_credentials(
+        &self,
+        board: &BoardId,
+        keep_admins: bool,
+        now_ms: i64,
+    ) -> impl Future<Output = Result<u64, StoreError>> + Send {
+        self.inner
+            .revoke_board_credentials(board, keep_admins, now_ms)
+    }
+
+    fn create_invite(
+        &self,
+        invite: NewInvite,
+        now_ms: i64,
+    ) -> impl Future<Output = Result<(), StoreError>> + Send {
+        self.inner.create_invite(invite, now_ms)
+    }
+
+    fn consume_invite(
+        &self,
+        id: &TokenId,
+        secret_hash: &[u8; 32],
+        name: &Principal,
+        now_ms: i64,
+    ) -> impl Future<Output = Result<Consumed, StoreError>> + Send {
+        self.inner.consume_invite(id, secret_hash, name, now_ms)
+    }
+
+    fn log_security(
+        &self,
+        event: SecurityEvent,
+    ) -> impl Future<Output = Result<(), StoreError>> + Send {
+        self.inner.log_security(event)
+    }
+
+    fn security_log(
+        &self,
+        limit: u32,
+    ) -> impl Future<Output = Result<Vec<SecurityEvent>, StoreError>> + Send {
+        self.inner.security_log(limit)
+    }
+}
+
 /// A router over a board holding one `sales` post, whose first events scan races an `eng` post.
 async fn racing_app() -> Router {
     let message = |channel: &str, text: &str| {
@@ -793,7 +938,7 @@ async fn racing_app() -> Router {
         racer: Mutex::new(Some(message("eng", "signal"))),
     });
     let (_tx, rx) = watch::channel(false);
-    router(store, AllowAll, rx)
+    router(store, AllowAll, rx, ApiConfig::local())
 }
 
 #[tokio::test]

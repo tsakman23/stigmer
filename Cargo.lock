@@ -1075,6 +1075,7 @@ dependencies = [
  "axum",
  "clap",
  "stigmer-api",
+ "stigmer-store",
  "stigmer-store-sqlite",
  "tempfile",
  "tokio",

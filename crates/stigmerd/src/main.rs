@@ -9,7 +9,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use clap::{Parser, Subcommand};
-use stigmer_api::{require_loopback, router, AllowAll};
+use stigmer_api::{require_loopback, router, AllowAll, ApiConfig, RoleAuthorize};
+use stigmer_store::{IdentityStore, Mode};
 use stigmer_store_sqlite::SqliteStore;
 use tokio::sync::{oneshot, watch};
 
@@ -78,8 +79,17 @@ async fn serve(data_dir: PathBuf, bind: SocketAddr) -> Result<(), Failure> {
         .local_addr()
         .map_err(|e| Failure::Runtime(format!("cannot read bound address: {e}")))?;
 
+    let mode = store
+        .mode()
+        .await
+        .map_err(|e| Failure::Runtime(format!("cannot read instance mode: {e}")))?;
+
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
-    let app = router(Arc::new(store), AllowAll, shutdown_rx);
+    let store = Arc::new(store);
+    let app = match mode {
+        Mode::Local => router(store, AllowAll, shutdown_rx, ApiConfig::local()),
+        Mode::Network => router(store, RoleAuthorize, shutdown_rx, ApiConfig::network()),
+    };
 
     println!(
         "listening on http://{local} (data in {})",

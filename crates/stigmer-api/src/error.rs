@@ -4,7 +4,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use stigmer_core::{CoreError, ErrorBody, ErrorCode, ErrorDetail};
-use stigmer_store::StoreError;
+use stigmer_store::{ConflictKind, StoreError};
 
 use crate::authz::Denied;
 
@@ -28,6 +28,11 @@ impl ApiError {
 
     pub(crate) fn not_found(message: impl Into<String>) -> Self {
         Self::new(ErrorCode::NotFound, message)
+    }
+
+    /// The one answer to every failed authentication, whatever the reason.
+    pub(crate) fn unauthorized() -> Self {
+        Self::new(ErrorCode::Unauthorized, "invalid or expired credentials")
     }
 
     fn status(&self) -> StatusCode {
@@ -61,6 +66,9 @@ impl From<StoreError> for ApiError {
         match err {
             StoreError::NotFound { .. } => Self::not_found(err.to_string()),
             StoreError::InvalidCursor => Self::new(ErrorCode::InvalidCursor, err.to_string()),
+            StoreError::Conflict(ConflictKind::BoardArchived) => {
+                Self::new(ErrorCode::BoardArchived, err.to_string())
+            }
             StoreError::Conflict(_) => Self::new(ErrorCode::Conflict, err.to_string()),
             // Backend text may carry SQL or file paths; never send it to a client.
             StoreError::Backend(_) => Self::new(ErrorCode::Internal, "internal error"),
