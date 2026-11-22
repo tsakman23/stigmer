@@ -4,7 +4,7 @@
 
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use axum::body::{Bytes, HttpBody};
 use axum::extract::Request;
@@ -26,6 +26,31 @@ use crate::tls::HSTS;
 
 /// How long to back off after a failed accept (out of file descriptors, say) before trying again.
 const ACCEPT_BACKOFF: Duration = Duration::from_millis(50);
+/// At most one accept-failure warning per this period, however often accepts fail.
+const ACCEPT_WARN_EVERY: Duration = Duration::from_secs(10);
+
+/// Lets an event through at most once per period.
+struct Throttle {
+    every: Duration,
+    last: Option<Instant>,
+}
+
+impl Throttle {
+    fn new(every: Duration) -> Self {
+        Self { every, last: None }
+    }
+
+    /// True (and the period restarts) when nothing was let through in the last period.
+    fn allow(&mut self, now: Instant) -> bool {
+        let due = self
+            .last
+            .is_none_or(|last| now.saturating_duration_since(last) >= self.every);
+        if due {
+            self.last = Some(now);
+        }
+        due
+    }
+}
 
 /// How connections are accepted and limited.
 pub(crate) struct Listen {
@@ -74,14 +99,22 @@ pub(crate) async fn run(
     let slots = Arc::new(Semaphore::new(listen.max_connections));
     // Every connection task holds a sender; the channel closes once the last one ends.
     let (alive, mut all_closed) = mpsc::channel::<()>(1);
+    let mut accept_warning = Throttle::new(ACCEPT_WARN_EVERY);
     loop {
         let (stream, peer) = tokio::select! {
             _ = shutdown.wait_for(|stop| *stop) => break,
             accepted = listener.accept() => match accepted {
                 Ok(accepted) => accepted,
-                Err(_) => {
+                Err(err) => {
                     // Per-connection failures (a reset before accept) and resource exhaustion
-                    // alike: nothing to answer, so pause briefly and keep accepting.
+                    // (out of file descriptors) alike: nothing to answer, so say so now and
+                    // then, pause briefly and keep accepting.
+                    if accept_warning.allow(Instant::now()) {
+                        eprintln!(
+                            "stigmerd: warning: accepting a connection failed ({}); retrying",
+                            err.kind()
+                        );
+                    }
                     tokio::time::sleep(ACCEPT_BACKOFF).await;
                     continue;
                 }
@@ -208,6 +241,18 @@ async fn drive<I, S>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn throttle_allows_one_warning_per_period() {
+        let start = Instant::now();
+        let mut throttle = Throttle::new(Duration::from_secs(10));
+        assert!(throttle.allow(start));
+        assert!(!throttle.allow(start));
+        assert!(!throttle.allow(start + Duration::from_millis(9_999)));
+        assert!(throttle.allow(start + Duration::from_secs(10)));
+        assert!(!throttle.allow(start + Duration::from_secs(15)));
+        assert!(throttle.allow(start + Duration::from_secs(21)));
+    }
     use axum::body::Body;
     use axum::http::StatusCode;
     use stigmer_api::{router, ApiConfig, RoleAuthorize};

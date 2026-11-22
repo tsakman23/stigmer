@@ -403,3 +403,24 @@ fn peer_address_is_always_set_in_network_mode() {
     assert!(log.stdout.contains("source=127.0.0.1"), "{}", log.stdout);
     assert!(!log.stdout.contains("source=unknown"), "{}", log.stdout);
 }
+
+#[test]
+fn hidden_timeout_flags_reject_out_of_range_values() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let data = dir.path().join("data");
+    for (flag, value) in [
+        ("--header-read-timeout-ms", "0"),
+        ("--header-read-timeout-ms", "60001"),
+        ("--tls-reload-interval-ms", "0"),
+        ("--tls-reload-interval-ms", "3600001"),
+    ] {
+        let out = run_bounded(&["serve", "--bind", "127.0.0.1:0", flag, value], &data);
+        assert_eq!(out.code, Some(2), "{flag} {value}: {}", out.stderr);
+        assert!(out.stderr.contains(value), "{flag} {value}: {}", out.stderr);
+        assert!(out.stdout.is_empty());
+        assert!(
+            !data.exists(),
+            "a refused start must not create the data dir"
+        );
+    }
+}

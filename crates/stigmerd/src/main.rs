@@ -55,7 +55,7 @@ struct ServeArgs {
     #[arg(long, default_value_t = 1024, value_parser = clap::value_parser!(u32).range(1..))]
     max_connections: u32,
     /// How long a client may take to send its request headers, in ms (for tests).
-    #[arg(long, default_value_t = 10_000, hide = true, value_parser = clap::value_parser!(u64).range(1..))]
+    #[arg(long, default_value_t = 10_000, hide = true, value_parser = clap::value_parser!(u64).range(1..=60_000))]
     header_read_timeout_ms: u64,
     /// Serve TLS 1.3 with this PEM certificate chain (requires --tls-key).
     #[arg(long, value_name = "PEM", requires = "tls_key")]
@@ -74,7 +74,7 @@ struct ServeArgs {
     #[arg(long = "allowed-host", value_name = "NAME")]
     allowed_hosts: Vec<String>,
     /// How often the TLS files are checked for changes, in ms (for tests).
-    #[arg(long, default_value_t = 5_000, hide = true, value_parser = clap::value_parser!(u64).range(1..))]
+    #[arg(long, default_value_t = 5_000, hide = true, value_parser = clap::value_parser!(u64).range(1..=3_600_000))]
     tls_reload_interval_ms: u64,
 }
 
