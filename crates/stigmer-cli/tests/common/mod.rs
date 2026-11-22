@@ -324,6 +324,8 @@ pub struct Stigmerd {
     pub addr: String,
     /// `http://addr` or `https://addr`.
     pub url: String,
+    /// Everything every `serve` run of this server printed, restarts included.
+    pub stdout: Collected,
     pub stderr: Collected,
     dir: tempfile::TempDir,
     extra: Vec<String>,
@@ -370,6 +372,7 @@ impl Stigmerd {
             guard: None,
             addr: String::new(),
             url: String::new(),
+            stdout: Collected::default(),
             stderr: Collected::default(),
             dir,
             extra,
@@ -383,15 +386,30 @@ impl Stigmerd {
         server
     }
 
+    /// The data directory `serve` and `admin` use.
+    pub fn data_path(&self) -> PathBuf {
+        Self::data_dir(self.dir.path())
+    }
+
+    /// Runs `stigmerd admin <args> --data-dir <data dir>` to completion; the server must be
+    /// stopped first.
+    pub fn admin(&self, args: &[&str]) -> Run {
+        let mut cmd = Command::new(bin("stigmerd"));
+        cmd.arg("admin")
+            .args(args)
+            .arg("--data-dir")
+            .arg(self.data_path())
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        finish(Guard::spawn(&mut cmd), RUN_TIMEOUT)
+    }
+
     /// Runs `stigmerd admin enable-auth` and keeps the secrets it prints once.
-    fn enable_auth(&mut self) {
-        let out = Command::new(bin("stigmerd"))
-            .args(["admin", "enable-auth", "--data-dir"])
-            .arg(Self::data_dir(self.dir.path()))
-            .output()
-            .expect("run stigmerd admin enable-auth");
-        let stdout = String::from_utf8_lossy(&out.stdout);
-        assert!(out.status.success(), "enable-auth failed: {stdout}");
+    pub fn enable_auth(&mut self) {
+        let out = self.admin(&["enable-auth"]);
+        let stdout = out.stdout;
+        assert_eq!(out.code, 0, "enable-auth failed: {stdout} {}", out.stderr);
         let value = |prefix: &str| {
             stdout
                 .lines()
@@ -414,22 +432,26 @@ impl Stigmerd {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         let mut guard = Guard::spawn(&mut cmd);
-        let stdout = guard.0.stdout.take().expect("piped stdout");
+        // Earlier runs' output stays; this run's first line starts here.
+        let seen = self.stdout.text().len();
+        self.stdout
+            .drain(guard.0.stdout.take().expect("piped stdout"));
         self.stderr
             .drain(guard.0.stderr.take().expect("piped stderr"));
         self.guard = Some(guard);
-        let (tx, rx) = mpsc::channel();
-        std::thread::spawn(move || {
-            let mut line = String::new();
-            let _ = BufReader::new(stdout).read_line(&mut line);
-            let _ = tx.send(line);
-        });
-        let line = rx.recv_timeout(STARTUP_TIMEOUT).unwrap_or_else(|_| {
-            panic!(
+        let deadline = Instant::now() + STARTUP_TIMEOUT;
+        let line = loop {
+            let text = self.stdout.text();
+            if let Some((line, _)) = text[seen..].split_once('\n') {
+                break line.to_owned();
+            }
+            assert!(
+                Instant::now() < deadline,
                 "no listening line within {STARTUP_TIMEOUT:?}; stderr: {}",
                 self.stderr.text()
-            )
-        });
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        };
         let (scheme, rest) = line
             .strip_prefix("listening on http://")
             .map(|rest| ("http", rest))
@@ -448,8 +470,18 @@ impl Stigmerd {
 
     /// Kills the server and starts it again on the same address and data directory.
     pub fn restart_after(&mut self, down_for: Duration) {
-        drop(self.guard.take());
+        self.stop();
         std::thread::sleep(down_for);
+        self.start_again();
+    }
+
+    /// Kills the server; its data directory stays.
+    pub fn stop(&mut self) {
+        drop(self.guard.take());
+    }
+
+    /// Serves the data directory again on the same address, in whatever mode it is now.
+    pub fn start_again(&mut self) {
         let addr = self.addr.clone();
         self.serve(&addr);
     }

@@ -1190,6 +1190,7 @@ dependencies = [
  "serde_json",
  "stigmer-api",
  "stigmer-core",
+ "stigmer-store",
  "stigmer-store-sqlite",
  "tempfile",
  "tokio",
