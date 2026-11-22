@@ -597,6 +597,48 @@ fn trusted_proxy_covering_every_address_warns_once_and_still_starts() {
 }
 
 #[test]
+fn trusted_proxies_are_exempt_from_the_per_source_cap() {
+    use std::io::{Read, Write};
+    let dir = tempfile::tempdir().expect("tempdir");
+    let server = start_with(
+        &dir.path().join("data"),
+        &[
+            "--trusted-proxy",
+            "127.0.0.1",
+            "--max-connections-per-source",
+            "1",
+        ],
+    );
+    // Two answered keep-alive connections from the proxy both stay open and served.
+    let mut held = Vec::new();
+    for i in 0..2 {
+        let mut stream = std::net::TcpStream::connect(&server.addr).expect("connect");
+        stream
+            .write_all(format!("GET /healthz HTTP/1.1\r\nHost: {}\r\n\r\n", server.addr).as_bytes())
+            .expect("write");
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .expect("timeout");
+        let mut buf = [0u8; 1024];
+        let n = stream.read(&mut buf).unwrap_or(0);
+        assert!(
+            String::from_utf8_lossy(&buf[..n]).starts_with("HTTP/1.1 200"),
+            "proxy connection {i} was refused"
+        );
+        held.push(stream);
+    }
+    // Both are still open: a second request on each is answered.
+    for stream in &mut held {
+        stream
+            .write_all(format!("GET /healthz HTTP/1.1\r\nHost: {}\r\n\r\n", server.addr).as_bytes())
+            .expect("write again");
+        let mut buf = [0u8; 1024];
+        let n = stream.read(&mut buf).expect("read again");
+        assert!(String::from_utf8_lossy(&buf[..n]).starts_with("HTTP/1.1 200"));
+    }
+}
+
+#[test]
 fn help_documents_the_per_source_cap_and_hides_the_body_timeout() {
     let out = Command::new(env!("CARGO_BIN_EXE_stigmerd"))
         .args(["serve", "--help"])

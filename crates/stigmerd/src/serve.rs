@@ -67,6 +67,9 @@ pub(crate) struct Listen {
     pub(crate) tls: Option<TlsAcceptor>,
     /// When not empty, connections from peers outside these ranges are dropped unread.
     pub(crate) plain_from: Vec<IpNet>,
+    /// Peers in these ranges (the trusted proxies) take no per-source slot: every client behind a
+    /// proxy arrives from its address. Only `max_connections` bounds them.
+    pub(crate) per_source_exempt: Vec<IpNet>,
 }
 
 /// What every connection task shares.
@@ -131,9 +134,14 @@ pub(crate) async fn run(
         }
         // Over either cap: close at once, before reading a byte. The source's slot is taken
         // first, so a source at its cap never holds one of the shared slots.
-        let Some(source_permit) = SourceSlots::try_acquire(&per_source, peer.ip()) else {
-            drop(stream);
-            continue;
+        let source_permit = if admits_exempt(&listen.per_source_exempt, peer.ip()) {
+            None
+        } else {
+            let Some(permit) = SourceSlots::try_acquire(&per_source, peer.ip()) else {
+                drop(stream);
+                continue;
+            };
+            Some(permit)
         };
         let Ok(permit) = Arc::clone(&slots).try_acquire_owned() else {
             drop(stream);
@@ -215,6 +223,11 @@ impl Drop for SourcePermit {
     }
 }
 
+/// True when one of `ranges` holds `peer` (an empty list exempts no one).
+fn admits_exempt(ranges: &[IpNet], peer: IpAddr) -> bool {
+    ranges.iter().any(|range| range.contains(peer))
+}
+
 /// True when `ranges` is empty (no restriction) or one of them holds `peer`.
 fn admits(ranges: &[IpNet], peer: IpAddr) -> bool {
     ranges.is_empty() || ranges.iter().any(|range| range.contains(peer))
@@ -227,7 +240,7 @@ async fn connection(
     peer: SocketAddr,
     shared: Arc<Shared>,
     shutdown: watch::Receiver<bool>,
-    _permits: (OwnedSemaphorePermit, SourcePermit),
+    _permits: (OwnedSemaphorePermit, Option<SourcePermit>),
     _alive: mpsc::Sender<()>,
 ) {
     let Some(acceptor) = &shared.tls else {

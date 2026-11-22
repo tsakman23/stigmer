@@ -24,7 +24,9 @@ rate limiting needs the real peer address of every connection.
   connections (`--max-connections`, default 1024; the excess is dropped unanswered), caps them
   per source address too (`--max-connections-per-source`, default 64, 1 to 100000; IPv4 per
   address, IPv6 per /64 like the rate limiters; the excess is accepted and dropped at once, and a
-  slot is released when its connection task ends, however it ends), and bounds the header read
+  slot is released when its connection task ends, however it ends; peers in `--trusted-proxy`
+  ranges are exempt, as every proxied client arrives from the proxy's address, and only the
+  global cap bounds them), and bounds the header read
   and TLS handshake to 10 s. Every request body has an idle deadline of 10 s between frames,
   enforced by a router middleware while the body is read: a body that stalls longer (sent
   slowly, or announced and never sent) is answered 408 `request_timeout` and hyper closes the
@@ -49,8 +51,9 @@ rate limiting needs the real peer address of every connection.
 - `--trusted-proxy <cidr,...>` lists proxy ranges whose `X-Forwarded-For` is believed. Without
   TLS, plain HTTP is accepted only from those ranges; other peers are dropped before any HTTP is
   read. With TLS any peer may connect and the ranges only govern forwarding headers. A /0 range
-  (`0.0.0.0/0` or `::/0`) makes every peer a proxy, so anyone can forge `X-Forwarded-For`:
-  `stigmerd serve` prints one warning for it and still starts.
+  (`0.0.0.0/0` or `::/0`) makes every peer a proxy, so anyone can forge `X-Forwarded-For` and
+  no address has a per-source connection cap: `stigmerd serve` prints one warning for it and
+  still starts.
 - `X-Forwarded-For` decides the client address used for rate limiting and the security log,
   nothing else. From an untrusted peer it is ignored. From a trusted proxy the hops (all header
   lines, comma separated) are walked from the right, skipping hops that are trusted proxies too;
@@ -78,9 +81,9 @@ rate limiting needs the real peer address of every connection.
   is reloaded without a new warning.
 - Clients behind a proxy that is not declared share the proxy's address as their source, and so
   one failed-authentication budget ([0011](0011-authentication-policy-401-403-404.md)).
-- The per-source connection cap counts the peer address, so behind a reverse proxy every
-  proxied connection counts against the proxy: raise `--max-connections-per-source` to the
-  proxy's connection pool size.
+- The per-source connection cap counts the peer address. Proxies listed in `--trusted-proxy`
+  are exempt from it (only `--max-connections` bounds them), so a proxy's connection pool is not
+  cut at 64; a proxy that is not declared is capped like any other source.
 
 Amended 2026-11-22 (M1, Task 10): HTTP/2 compiled out; `PeerAddr`, accept-error, hidden-flag
 and `X-Forwarded-For` rules recorded.

@@ -55,8 +55,8 @@ struct ServeArgs {
     #[arg(long, default_value_t = 1024, value_parser = clap::value_parser!(u32).range(1..))]
     max_connections: u32,
     /// Most connections open at once from one address (IPv6 counted per /64); further
-    /// connections from it are closed without a response. Behind a proxy every connection
-    /// comes from the proxy's address.
+    /// connections from it are closed without a response. Addresses in --trusted-proxy are
+    /// exempt (only --max-connections bounds them).
     #[arg(long, default_value_t = 64, value_parser = clap::value_parser!(u32).range(1..=100_000))]
     max_connections_per_source: u32,
     /// How long a client may take to send its request headers, in ms (for tests).
@@ -141,7 +141,8 @@ async fn serve(args: ServeArgs) -> Result<(), Failure> {
     if trusted_proxies.iter().any(IpNet::covers_every_address) {
         eprintln!(
             "stigmerd: warning: trusted proxy range covers every address: \
-             X-Forwarded-For can be forged by anyone"
+             X-Forwarded-For can be forged by anyone, and no address has a per-source \
+             connection cap"
         );
     }
     let secured = tls_cert.is_some() || !trusted_proxies.is_empty();
@@ -207,6 +208,8 @@ async fn serve(args: ServeArgs) -> Result<(), Failure> {
         max_connections_per_source: usize::try_from(max_connections_per_source)
             .unwrap_or(usize::MAX),
         header_read_timeout: Duration::from_millis(header_read_timeout_ms),
+        // Every proxied client arrives from the proxy's address, TLS or not.
+        per_source_exempt: trusted_proxies.clone(),
         // With TLS any peer may connect; without it, only the proxies (when any are listed).
         plain_from: if tls.is_some() {
             Vec::new()
