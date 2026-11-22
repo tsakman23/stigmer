@@ -7,8 +7,8 @@ use std::path::Path;
 use std::process::{Command, Output};
 
 use stigmer_core::{
-    hash_secret, parse_secret, secrets_match, BoardId, MessageId, Principal, PrincipalKind, Role,
-    SecretKind,
+    generate_secret, hash_secret, parse_secret, secrets_match, BoardId, MessageId, Principal,
+    PrincipalKind, Role, SecretKind,
 };
 use stigmer_store::{CredentialScope, IdentityStore, Mode, SecurityEventKind, Store};
 use stigmer_store_sqlite::SqliteStore;
@@ -231,11 +231,12 @@ fn secrets_never_reach_stderr_or_the_security_log() {
     let replacement = admin(&data, &["new-instance-token"]);
     let replacement_token = labelled(&stdout(&replacement), "instance token: ").to_owned();
 
+    let secret_parts = [
+        secret_half(SecretKind::Token, &token),
+        secret_half(SecretKind::Invite, &invite),
+        secret_half(SecretKind::Token, &replacement_token),
+    ];
     let secrets = [token, invite, replacement_token];
-    let secret_parts: Vec<String> = secrets
-        .iter()
-        .map(|s| s.rsplit('_').next().expect("secret part").to_owned())
-        .collect();
     let log = with_store(&data, |store| async move {
         format!("{:?}", store.security_log(100).await.expect("log"))
     });
@@ -271,6 +272,34 @@ fn secrets_never_reach_stderr_or_the_security_log() {
         contains_bytes(&raw, &hash),
         "scan control: the hash of token {id} must be in the database bytes"
     );
+}
+
+/// The 43-character secret half of a printed token or invite. Splitting on `_` would be wrong:
+/// base64url secrets can contain `_`, which could leave a 1 or 2 character needle that matches
+/// database bytes by chance.
+fn secret_half(kind: SecretKind, full: &str) -> String {
+    let (_, secret) = parse_secret(kind, full).expect("a printed secret parses");
+    assert_eq!(secret.len(), 43, "secret half of the right length");
+    secret
+}
+
+#[test]
+fn secret_half_keeps_underscores_in_the_secret() {
+    for kind in [SecretKind::Token, SecretKind::Invite] {
+        let generated = (0..1_000)
+            .map(|_| generate_secret(kind).expect("secret"))
+            .find(|s| {
+                s.full
+                    .rsplit_once('_')
+                    .is_some_and(|(_, tail)| tail.len() < 43)
+            })
+            .expect("a secret containing '_' within 1000 tries");
+        let secret = secret_half(kind, &generated.full);
+        assert_eq!(secret.len(), 43);
+        assert!(secret.contains('_'), "{kind:?}");
+        assert!(generated.full.ends_with(&format!("_{secret}")));
+        assert_eq!(hash_secret(&secret), generated.hash);
+    }
 }
 
 fn contains_bytes(haystack: &[u8], needle: &[u8]) -> bool {
