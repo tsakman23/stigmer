@@ -6,9 +6,9 @@ use std::time::Duration;
 
 use thiserror::Error;
 
-use stigmer_core::{BoardId, ChannelPath, Cursor, Event, MessageId, NewMessage};
+use stigmer_core::{BoardId, ChannelPath, Cursor, Event, MessageId, NewMessage, Principal};
 
-pub use stigmer_core::{EventFilter, Message, Page, Posted, Thread, ThreadSummary};
+pub use stigmer_core::{BoardInfo, EventFilter, Message, Page, Posted, Thread, ThreadSummary};
 
 /// The kind of thing a lookup did not find.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -84,9 +84,36 @@ pub struct ChainReport {
 ///
 /// Not object-safe on purpose: callers are generic over `S: Store`.
 pub trait Store: Send + Sync + 'static {
+    /// Creates an empty board, stamped with the store's clock (the same clock `post` uses).
+    /// An id that already exists, archived or not, is `Conflict(ConflictKind::BoardExists)`.
+    fn create_board(
+        &self,
+        id: &BoardId,
+        created_by: Option<&Principal>,
+    ) -> impl Future<Output = Result<BoardInfo, StoreError>> + Send;
+
+    /// The board `id`, archived or not. An unknown board is `NotFound` with `Entity::Board`.
+    fn get_board(&self, id: &BoardId)
+        -> impl Future<Output = Result<BoardInfo, StoreError>> + Send;
+
+    /// Every board, archived ones included, oldest first (ties by id).
+    fn list_boards(&self) -> impl Future<Output = Result<Vec<BoardInfo>, StoreError>> + Send;
+
+    /// Archives the board: from then on `post` refuses it with
+    /// `Conflict(ConflictKind::BoardArchived)`, while reads, `events_after`, `head`,
+    /// `wait_past` and `verify_chain` keep working. Archiving an archived board changes nothing
+    /// and returns it as it is, first archive time kept. An unknown board is `NotFound` with
+    /// `Entity::Board`.
+    fn archive_board(
+        &self,
+        id: &BoardId,
+    ) -> impl Future<Output = Result<BoardInfo, StoreError>> + Send;
+
     /// Stores a new thread or a reply and appends its event to the board's chain, atomically.
     ///
-    /// Errors: an unknown board is `NotFound` with `Entity::Board`. A reply whose target thread
+    /// Errors: an unknown board is `NotFound` with `Entity::Board`. An archived board is
+    /// `Conflict(ConflictKind::BoardArchived)`, checked before anything else (an idempotent
+    /// retry included), so a refused post consumes no sequence number. A reply whose target thread
     /// does not exist on the board, or is a reply rather than a thread root, is `NotFound` with
     /// `Entity::Thread`. An idempotency key the same author already used on this board with a
     /// different request (other text, labels or target) is
@@ -230,6 +257,10 @@ mod tests {
     #[allow(dead_code)]
     fn store_futures_are_send<S: Store>(store: &S, msg: NewMessage, board: &BoardId) {
         fn assert_send<T: Send>(_: T) {}
+        assert_send(store.create_board(board, None));
+        assert_send(store.get_board(board));
+        assert_send(store.list_boards());
+        assert_send(store.archive_board(board));
         assert_send(store.post(msg));
         assert_send(store.verify_chain(board));
         let (prefix, thread) = (

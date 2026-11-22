@@ -7,7 +7,7 @@ use rusqlite::{Connection, TransactionBehavior};
 use stigmer_core::{BoardId, GENESIS_HASH};
 use stigmer_store::StoreError;
 
-use crate::backend;
+use crate::{backend, now_ms};
 
 /// Ordered migration scripts, each applied in its own transaction.
 pub(crate) const MIGRATIONS: &[&str] = &[
@@ -57,6 +57,11 @@ pub(crate) const MIGRATIONS: &[&str] = &[
     // call 8: M1 maps local principals to real principals with an explicit migration command.
     // Kept out of the wire format and the core types.
     "ALTER TABLE messages ADD COLUMN author_kind TEXT NOT NULL DEFAULT 'local';",
+    // 5: board lifecycle. Boards that predate it (only `main`) keep created_at_ms 0 and no
+    // creator; a board made from now on is stamped when it is created.
+    "ALTER TABLE boards ADD COLUMN created_at_ms INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE boards ADD COLUMN created_by TEXT;
+    ALTER TABLE boards ADD COLUMN archived_at_ms INTEGER;",
 ];
 
 /// Brings the database up to the latest schema and makes sure board `main` exists.
@@ -86,8 +91,9 @@ pub(crate) fn migrate(conn: &mut Connection) -> Result<(), StoreError> {
         tx.commit().map_err(backend)?;
     }
     conn.execute(
-        "INSERT OR IGNORE INTO boards (id, head_seq, head_hash) VALUES (?1, 0, ?2)",
-        (BoardId::main().as_str(), GENESIS_HASH),
+        "INSERT OR IGNORE INTO boards (id, head_seq, head_hash, created_at_ms)
+         VALUES (?1, 0, ?2, ?3)",
+        (BoardId::main().as_str(), GENESIS_HASH, now_ms()?),
     )
     .map_err(backend)?;
     Ok(())
@@ -209,6 +215,33 @@ mod tests {
         let report = store.verify_chain(&BoardId::main()).await.unwrap();
         assert!(report.valid);
         assert_eq!(report.checked, 2);
+    }
+
+    #[tokio::test]
+    async fn v4_database_upgrades_to_v5_and_keeps_main_as_it_was() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("board.db");
+        write_old_database(&path, 4);
+
+        let store = SqliteStore::open(&path).await.unwrap();
+
+        let conn = Connection::open(&path).unwrap();
+        let version: i64 = conn
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, MIGRATIONS.len() as i64);
+        let main = store.get_board(&BoardId::main()).await.unwrap();
+        assert_eq!(main.created_at_ms, 0, "a board older than migration 5");
+        assert_eq!(main.created_by, None);
+        assert_eq!(main.archived_at_ms, None);
+        assert_eq!(store.list_boards().await.unwrap(), vec![main]);
+
+        let other = BoardId::new("other").unwrap();
+        let created = store.create_board(&other, None).await.unwrap();
+        assert!(created.created_at_ms > 0);
+        let report = store.verify_chain(&BoardId::main()).await.unwrap();
+        assert!(report.valid);
+        assert_eq!(report.checked, 1);
     }
 
     #[tokio::test]

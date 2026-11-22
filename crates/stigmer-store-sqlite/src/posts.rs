@@ -1,7 +1,5 @@
 //! The append path: posting messages and checking the board's hash chain.
 
-use std::time::{SystemTime, UNIX_EPOCH};
-
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior};
 use stigmer_core::{
     event_hash, BoardId, ChannelPath, Cursor, Event, EventKind, Label, Message, MessageId,
@@ -9,7 +7,8 @@ use stigmer_core::{
 };
 use stigmer_store::{ChainReport, ConflictKind, Entity, Posted, StoreError};
 
-use crate::{backend, not_found};
+use crate::boards::writable_head;
+use crate::{backend, not_found, now_ms};
 
 /// `messages.author_kind` of every M0 post: the author is a self-declared local name
 /// (docs/design.md section 12, call 8).
@@ -26,14 +25,15 @@ pub(crate) fn post(conn: &mut Connection, msg: NewMessage) -> Result<Posted, Sto
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(backend)?;
 
+    // First, so an archived board refuses even a retry and no sequence number is read.
+    let (head_seq, head_hash) = writable_head(&tx, &msg.board)?;
+
     if let Some(key) = &msg.idempotency_key {
         if let Some(original) = find_keyed(&tx, &msg.board, &msg.author, key)? {
             return replay(&tx, original, &msg);
         }
     }
 
-    let (head_seq, head_hash) =
-        board_head(&tx, &msg.board)?.ok_or_else(|| not_found(Entity::Board, &msg.board))?;
     let (kind, channel, thread_id) = match msg.target {
         Target::NewThread { channel } => (EventKind::ThreadCreated, channel, id.clone()),
         Target::Reply { thread } => {
@@ -352,12 +352,4 @@ fn thread_root_channel(
     channel
         .map(|raw| ChannelPath::new(&raw).map_err(backend))
         .transpose()
-}
-
-/// Wall-clock time in milliseconds since the Unix epoch.
-fn now_ms() -> Result<i64, StoreError> {
-    let since_epoch = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(backend)?;
-    i64::try_from(since_epoch.as_millis()).map_err(backend)
 }

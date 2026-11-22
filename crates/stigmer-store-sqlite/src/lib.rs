@@ -2,6 +2,7 @@
 //!
 //! One connection behind a mutex; every database call runs on tokio's blocking pool.
 
+mod boards;
 mod events;
 mod notify;
 mod posts;
@@ -12,12 +13,13 @@ use std::fmt::Display;
 use std::future::Future;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use rusqlite::Connection;
-use stigmer_core::{BoardId, ChannelPath, Cursor, Event, MessageId, NewMessage};
+use stigmer_core::{BoardId, ChannelPath, Cursor, Event, MessageId, NewMessage, Principal};
 use stigmer_store::{
-    ChainReport, Entity, EventFilter, Page, Posted, Store, StoreError, Thread, ThreadSummary,
+    BoardInfo, ChainReport, Entity, EventFilter, Page, Posted, Store, StoreError, Thread,
+    ThreadSummary,
 };
 
 /// A `Store` backed by one SQLite database.
@@ -94,6 +96,35 @@ impl SqliteStore {
 }
 
 impl Store for SqliteStore {
+    fn create_board(
+        &self,
+        id: &BoardId,
+        created_by: Option<&Principal>,
+    ) -> impl Future<Output = Result<BoardInfo, StoreError>> + Send {
+        let (id, created_by) = (id.clone(), created_by.cloned());
+        self.run(move |conn| boards::create(conn, &id, created_by.as_ref()))
+    }
+
+    fn get_board(
+        &self,
+        id: &BoardId,
+    ) -> impl Future<Output = Result<BoardInfo, StoreError>> + Send {
+        let id = id.clone();
+        self.run(move |conn| boards::get(conn, &id))
+    }
+
+    fn list_boards(&self) -> impl Future<Output = Result<Vec<BoardInfo>, StoreError>> + Send {
+        self.run(boards::list)
+    }
+
+    fn archive_board(
+        &self,
+        id: &BoardId,
+    ) -> impl Future<Output = Result<BoardInfo, StoreError>> + Send {
+        let id = id.clone();
+        self.run(move |conn| boards::archive(conn, &id))
+    }
+
     fn post(&self, msg: NewMessage) -> impl Future<Output = Result<Posted, StoreError>> + Send {
         let notifier = Arc::clone(&self.notifier);
         self.run(move |conn| {
@@ -204,6 +235,14 @@ pub(crate) fn not_found(entity: Entity, id: impl Display) -> StoreError {
     }
 }
 
+/// Wall-clock time in milliseconds since the Unix epoch: the one clock for post and board times.
+pub(crate) fn now_ms() -> Result<i64, StoreError> {
+    let since_epoch = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(backend)?;
+    i64::try_from(since_epoch.as_millis()).map_err(backend)
+}
+
 /// Wraps a database or runtime failure as a backend error.
 pub(crate) fn backend(err: impl Display) -> StoreError {
     StoreError::Backend(err.to_string())
@@ -237,6 +276,12 @@ mod tests {
         assert_eq!(board_head(&store), (0, GENESIS_HASH.to_owned()));
         let foreign_keys: i64 = query(&store, "PRAGMA foreign_keys");
         assert_eq!(foreign_keys, 1);
+        let main = store.get_board(&BoardId::main()).await.unwrap();
+        assert!(
+            main.created_at_ms > 0,
+            "main is stamped when the store opens"
+        );
+        assert_eq!(main.created_by, None);
     }
 
     #[tokio::test]

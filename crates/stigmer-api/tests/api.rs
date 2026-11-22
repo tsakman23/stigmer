@@ -13,8 +13,8 @@ use serde_json::{json, Value};
 use stigmer_api::require_loopback;
 use stigmer_api::{router, Action, AllowAll, Authorize, Denied};
 use stigmer_core::{
-    BoardId, ChannelPath, Cursor, Event, EventFilter, MessageId, NewMessage, Page, Posted,
-    Principal, Target, Thread, ThreadSummary,
+    BoardId, BoardInfo, ChannelPath, Cursor, Event, EventFilter, MessageId, NewMessage, Page,
+    Posted, Principal, Target, Thread, ThreadSummary,
 };
 use stigmer_store::{ChainReport, Store, StoreError};
 use stigmer_store_sqlite::SqliteStore;
@@ -682,6 +682,32 @@ struct RacingStore {
 }
 
 impl Store for RacingStore {
+    fn create_board(
+        &self,
+        id: &BoardId,
+        created_by: Option<&Principal>,
+    ) -> impl Future<Output = Result<BoardInfo, StoreError>> + Send {
+        self.inner.create_board(id, created_by)
+    }
+
+    fn get_board(
+        &self,
+        id: &BoardId,
+    ) -> impl Future<Output = Result<BoardInfo, StoreError>> + Send {
+        self.inner.get_board(id)
+    }
+
+    fn list_boards(&self) -> impl Future<Output = Result<Vec<BoardInfo>, StoreError>> + Send {
+        self.inner.list_boards()
+    }
+
+    fn archive_board(
+        &self,
+        id: &BoardId,
+    ) -> impl Future<Output = Result<BoardInfo, StoreError>> + Send {
+        self.inner.archive_board(id)
+    }
+
     fn post(&self, msg: NewMessage) -> impl Future<Output = Result<Posted, StoreError>> + Send {
         self.inner.post(msg)
     }

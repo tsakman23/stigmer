@@ -40,6 +40,11 @@ pub(crate) fn ok_from<T, E: Display>(
 }
 
 #[track_caller]
+pub(crate) fn board(raw: &str) -> BoardId {
+    ok(BoardId::new(raw), format_args!("test board {raw:?}"))
+}
+
+#[track_caller]
 pub(crate) fn channel(raw: &str) -> ChannelPath {
     ok(ChannelPath::new(raw), format_args!("test channel {raw:?}"))
 }
@@ -92,6 +97,44 @@ pub(crate) fn new_thread(channel_path: &str, author: &str, text: &str) -> NewMes
 pub(crate) fn reply(thread: &MessageId, author: &str, text: &str) -> NewMessage {
     message(
         BoardId::main(),
+        Target::Reply {
+            thread: thread.clone(),
+        },
+        author,
+        text,
+        vec![],
+    )
+}
+
+/// A new thread on `board`.
+#[track_caller]
+pub(crate) fn new_thread_on(
+    board: &BoardId,
+    channel_path: &str,
+    author: &str,
+    text: &str,
+) -> NewMessage {
+    message(
+        board.clone(),
+        Target::NewThread {
+            channel: channel(channel_path),
+        },
+        author,
+        text,
+        vec![],
+    )
+}
+
+/// A reply on `board`.
+#[track_caller]
+pub(crate) fn reply_on(
+    board: &BoardId,
+    thread: &MessageId,
+    author: &str,
+    text: &str,
+) -> NewMessage {
+    message(
+        board.clone(),
         Target::Reply {
             thread: thread.clone(),
         },
