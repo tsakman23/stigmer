@@ -1,11 +1,12 @@
-//! TLS: the certificate pair from PEM files, served through a resolver whose pair can be swapped
-//! without touching established connections.
+//! TLS: the certificate pair from PEM files, served through a resolver whose pair is swapped
+//! when the files change, without touching established connections.
 //!
 //! Only TLS 1.3 is offered, with no client certificates. Error messages name files, never their
 //! contents.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, PoisonError, RwLock};
+use std::time::{Duration, SystemTime};
 
 use rustls::crypto::CryptoProvider;
 use rustls::pki_types::pem::PemObject;
@@ -13,6 +14,7 @@ use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use rustls::server::{ClientHello, ResolvesServerCert};
 use rustls::sign::CertifiedKey;
 use rustls::ServerConfig;
+use tokio::time::MissedTickBehavior;
 
 /// The `Strict-Transport-Security` value sent on every TLS response.
 pub(crate) const HSTS: &str = "max-age=31536000";
@@ -100,6 +102,54 @@ impl CurrentPair {
     fn get(&self) -> Arc<CertifiedKey> {
         // A panic while holding the lock cannot leave a half-written Arc behind.
         Arc::clone(&self.0.read().unwrap_or_else(PoisonError::into_inner))
+    }
+
+    fn replace(&self, pair: CertifiedKey) {
+        *self.0.write().unwrap_or_else(PoisonError::into_inner) = Arc::new(pair);
+    }
+}
+
+/// The modification times of both files; `None` for a file that cannot be read.
+type Stamps = (Option<SystemTime>, Option<SystemTime>);
+
+fn stamps(files: &PairFiles) -> Stamps {
+    let modified = |path: &Path| std::fs::metadata(path).and_then(|m| m.modified()).ok();
+    (modified(&files.cert), modified(&files.key))
+}
+
+/// Checks both files every `every` and, once either has changed since the served pair was
+/// loaded, loads both and swaps the pair in only if it parses and the key matches the
+/// certificate. A bad candidate (a parse error, or a new certificate whose key has not been
+/// written yet) keeps the current pair, is warned about once and is tried again on every tick
+/// until it loads or the files change again. Runs until the process exits.
+pub(crate) async fn reload_on_change(
+    files: PairFiles,
+    provider: Arc<CryptoProvider>,
+    current: Arc<CurrentPair>,
+    every: Duration,
+) {
+    let mut loaded = stamps(&files);
+    let mut warned: Option<Stamps> = None;
+    let mut ticks = tokio::time::interval(every);
+    ticks.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    loop {
+        ticks.tick().await;
+        let now = stamps(&files);
+        if now == loaded {
+            continue;
+        }
+        match load_pair(&files, &provider) {
+            Ok(pair) => {
+                current.replace(pair);
+                loaded = now;
+                warned = None;
+            }
+            Err(why) if warned != Some(now) => {
+                eprintln!("stigmerd: warning: keeping the current TLS certificate: {why}");
+                warned = Some(now);
+            }
+            Err(_) => {}
+        }
     }
 }
 

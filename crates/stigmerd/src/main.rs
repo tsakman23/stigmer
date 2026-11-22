@@ -59,9 +59,13 @@ struct ServeArgs {
     /// Serve TLS 1.3 with this PEM certificate chain (requires --tls-key).
     #[arg(long, value_name = "PEM", requires = "tls_key")]
     tls_cert: Option<PathBuf>,
-    /// The PEM private key (PKCS#8, RSA or SEC1) of --tls-cert.
+    /// The PEM private key (PKCS#8, RSA or SEC1) of --tls-cert. Both files are reloaded when
+    /// either changes.
     #[arg(long, value_name = "PEM", requires = "tls_cert")]
     tls_key: Option<PathBuf>,
+    /// How often the TLS files are checked for changes, in ms (for tests).
+    #[arg(long, default_value_t = 5_000, hide = true, value_parser = clap::value_parser!(u64).range(1..))]
+    tls_reload_interval_ms: u64,
 }
 
 /// Milliseconds since the Unix epoch; the only place this binary reads the clock.
@@ -107,6 +111,7 @@ async fn serve(args: ServeArgs) -> Result<(), Failure> {
         header_read_timeout_ms,
         tls_cert,
         tls_key,
+        tls_reload_interval_ms,
     } = args;
     let signals = Signals::install()
         .map_err(|e| Failure::Runtime(format!("cannot register signal handlers: {e}")))?;
@@ -121,7 +126,10 @@ async fn serve(args: ServeArgs) -> Result<(), Failure> {
         _ => None,
     };
     // A bad pair is refused before the data dir is touched.
-    let tls = tls_files.as_ref().map(start_tls).transpose()?;
+    let reload_every = Duration::from_millis(tls_reload_interval_ms);
+    let tls = tls_files
+        .map(|files| start_tls(files, reload_every))
+        .transpose()?;
     let data = DataDir::open(&data_dir)?;
     let db_path = data.db_path();
     let store = SqliteStore::open(&db_path).await.map_err(|e| {
@@ -181,13 +189,21 @@ async fn serve(args: ServeArgs) -> Result<(), Failure> {
     Ok(())
 }
 
-/// Loads the certificate pair and builds the TLS acceptor that serves it.
-fn start_tls(files: &tls::PairFiles) -> Result<TlsAcceptor, Failure> {
+/// Loads the certificate pair, builds the TLS acceptor that serves it and starts reloading it
+/// when the files change.
+fn start_tls(files: tls::PairFiles, reload_every: Duration) -> Result<TlsAcceptor, Failure> {
     let provider = tls::provider();
-    let pair = tls::load_pair(files, &provider).map_err(Failure::Runtime)?;
+    let pair = tls::load_pair(&files, &provider).map_err(Failure::Runtime)?;
     tls::warn_if_key_exposed(&files.key);
     let current = Arc::new(tls::CurrentPair::new(pair));
-    let config = tls::server_config(provider, current).map_err(Failure::Runtime)?;
+    let config = tls::server_config(Arc::clone(&provider), Arc::clone(&current))
+        .map_err(Failure::Runtime)?;
+    tokio::spawn(tls::reload_on_change(
+        files,
+        provider,
+        current,
+        reload_every,
+    ));
     Ok(TlsAcceptor::from(config))
 }
 

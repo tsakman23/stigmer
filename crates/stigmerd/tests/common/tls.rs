@@ -165,6 +165,16 @@ pub fn get(path: &str, extra: &[(&str, &str)]) -> Vec<u8> {
     req.into_bytes()
 }
 
+/// A `Connection: close` request with a body.
+pub fn request(method: &str, path: &str, extra: &[(&str, &str)], body: &str) -> Vec<u8> {
+    let mut req = format!("{method} {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n");
+    for (k, v) in extra {
+        req.push_str(&format!("{k}: {v}\r\n"));
+    }
+    req.push_str(&format!("Content-Length: {}\r\n\r\n{body}", body.len()));
+    req.into_bytes()
+}
+
 /// `https_raw` with TLS 1.3 that must succeed.
 pub fn https_get(addr: &str, ca: &TestCa, path: &str, extra: &[(&str, &str)]) -> TlsReply {
     https_raw(addr, ca.client(&TLS13), &get(path, extra)).expect("tls exchange")
