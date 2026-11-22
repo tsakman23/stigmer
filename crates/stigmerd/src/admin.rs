@@ -24,6 +24,7 @@ const DAY_MS: i64 = 86_400_000;
 const INSTANCE_ADMIN: &str = "instance-admin";
 const INSTANCE_TOKEN_DAYS: u32 = 90;
 const MAIN_INVITE_HOURS: i64 = 24;
+const MEMBER_TOKEN_DAYS: u32 = 90;
 
 #[derive(Args)]
 pub struct DataDirArg {
@@ -48,6 +49,25 @@ pub enum AdminCommand {
         #[arg(
             long,
             default_value_t = INSTANCE_TOKEN_DAYS,
+            value_parser = clap::value_parser!(u32).range(1..=365)
+        )]
+        expires_days: u32,
+        #[command(flatten)]
+        dir: DataDirArg,
+    },
+    /// Issue a token for an existing member of a board (an adopted author, or a lost token) and
+    /// print it once.
+    IssueMemberToken {
+        /// The board the member belongs to.
+        #[arg(long, value_name = "NAME")]
+        board: String,
+        /// The member's name on that board.
+        #[arg(long, value_name = "NAME")]
+        member: String,
+        /// Days until the token expires.
+        #[arg(
+            long,
+            default_value_t = MEMBER_TOKEN_DAYS,
             value_parser = clap::value_parser!(u32).range(1..=365)
         )]
         expires_days: u32,
@@ -83,6 +103,7 @@ pub async fn run(command: AdminCommand) -> Result<(), Failure> {
     let dir = match &command {
         AdminCommand::EnableAuth { dir, .. }
         | AdminCommand::NewInstanceToken { dir, .. }
+        | AdminCommand::IssueMemberToken { dir, .. }
         | AdminCommand::MapLocalPrincipals { dir, .. }
         | AdminCommand::SecurityLog { dir, .. } => &dir.data_dir,
     };
@@ -109,6 +130,19 @@ pub async fn run(command: AdminCommand) -> Result<(), Failure> {
             write_once(
                 &mut std::io::stdout().lock(),
                 &format!("instance token: {token}\n"),
+            )
+        }
+        AdminCommand::IssueMemberToken {
+            board,
+            member,
+            expires_days,
+            ..
+        } => {
+            require_network(&store).await?;
+            let token = issue_member_token(&store, now, &board, &member, expires_days).await?;
+            write_once(
+                &mut std::io::stdout().lock(),
+                &format!("member token: {token}\n"),
             )
         }
         AdminCommand::MapLocalPrincipals {
@@ -295,6 +329,55 @@ async fn store_main_admin_invite<S: IdentityStore>(
         .await
         .map_err(|e| store_failure("cannot store the main admin invite", &e))?;
     Ok(secret)
+}
+
+/// Stores a board credential for the existing member `raw_member` of `raw_board` and returns
+/// the token, which is never stored or logged (only its hash and id are).
+async fn issue_member_token<S: IdentityStore>(
+    store: &S,
+    now: i64,
+    raw_board: &str,
+    raw_member: &str,
+    days: u32,
+) -> Result<String, Failure> {
+    let not_a_member =
+        || Failure::Config(format!("{raw_member} is not a member of board {raw_board}"));
+    let board = BoardId::new(raw_board).map_err(|_| not_a_member())?;
+    let name = Principal::new(raw_member)
+        .map_err(|e| Failure::Config(format!("--member {raw_member:?}: {e}")))?;
+    let member = match store.get_member(&board, &name).await {
+        Ok(Some(member)) => member,
+        Ok(None) | Err(StoreError::NotFound { .. }) => return Err(not_a_member()),
+        Err(e) => return Err(store_failure("cannot read the member", &e)),
+    };
+    let secret = new_secret(SecretKind::Token)?;
+    store
+        .create_credential(
+            NewCredential {
+                id: secret.id.clone(),
+                secret_hash: secret.hash,
+                scope: CredentialScope::Board(board.clone()),
+                principal: member.name.clone(),
+                expires_at_ms: now + i64::from(days) * DAY_MS,
+            },
+            now,
+        )
+        .await
+        .map_err(|e| match e {
+            StoreError::Conflict(ConflictKind::BoardArchived) => {
+                Failure::Runtime(format!("board {board} is archived and takes no new tokens"))
+            }
+            e => store_failure("cannot store the member token", &e),
+        })?;
+    log(
+        store,
+        now,
+        SecurityEventKind::MemberTokenIssued,
+        Some(board),
+        &format!("credential {} for member {}", secret.id, member.name),
+    )
+    .await?;
+    Ok(secret.full)
 }
 
 /// Plans, and with `apply` performs, the adoption of board main's local authors.

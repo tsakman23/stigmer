@@ -163,10 +163,12 @@ pub enum SecurityEventKind {
     ModeEnabled,
     /// An instance-admin credential was issued from the command line.
     InstanceTokenIssued,
+    /// A board credential for an existing member was issued from the command line.
+    MemberTokenIssued,
 }
 
 impl SecurityEventKind {
-    const ALL: [SecurityEventKind; 10] = [
+    const ALL: [SecurityEventKind; 11] = [
         SecurityEventKind::Join,
         SecurityEventKind::TokenRevoked,
         SecurityEventKind::MemberRemoved,
@@ -177,6 +179,7 @@ impl SecurityEventKind {
         SecurityEventKind::RateLimited,
         SecurityEventKind::ModeEnabled,
         SecurityEventKind::InstanceTokenIssued,
+        SecurityEventKind::MemberTokenIssued,
     ];
 
     /// The stored name, in snake case.
@@ -192,6 +195,7 @@ impl SecurityEventKind {
             SecurityEventKind::RateLimited => "rate_limited",
             SecurityEventKind::ModeEnabled => "mode_enabled",
             SecurityEventKind::InstanceTokenIssued => "instance_token_issued",
+            SecurityEventKind::MemberTokenIssued => "member_token_issued",
         }
     }
 
@@ -401,6 +405,7 @@ mod tests {
                 SecurityEventKind::InstanceTokenIssued,
                 "instance_token_issued",
             ),
+            (SecurityEventKind::MemberTokenIssued, "member_token_issued"),
         ];
         for (kind, name) in kinds {
             assert_eq!(kind.as_str(), name);

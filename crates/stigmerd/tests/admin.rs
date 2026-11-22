@@ -356,6 +356,220 @@ fn new_instance_token_rejects_out_of_range_expiry() {
     }
 }
 
+// ---- issue-member-token ----
+
+/// A network-mode data dir whose board `main` has member `alice`, plus board `ops` with member
+/// `bob`, archived when `archive_ops`.
+fn network_with_members(data: &Path, archive_ops: bool) {
+    let out = admin(data, &["enable-auth", "--no-main-invite"]);
+    assert_eq!(out.status.code(), Some(0), "stderr: {}", stderr(&out));
+    with_store(data, |store| async move {
+        let ops = BoardId::new("ops").expect("board");
+        store.create_board(&ops, None).await.expect("create ops");
+        for (board, name) in [(BoardId::main(), "alice"), (ops.clone(), "bob")] {
+            store
+                .add_member(
+                    &board,
+                    &Principal::new(name).expect("name"),
+                    PrincipalKind::Agent,
+                    Role::Member,
+                    now_ms(),
+                )
+                .await
+                .expect("add member");
+        }
+        if archive_ops {
+            store.archive_board(&ops).await.expect("archive ops");
+        }
+    });
+}
+
+fn issue(data: &Path, extra: &[&str]) -> Output {
+    let mut args = vec!["issue-member-token"];
+    args.extend_from_slice(extra);
+    admin(data, &args)
+}
+
+#[test]
+fn issue_member_token_prints_once_and_the_token_authenticates() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let data = dir.path().join("data");
+    network_with_members(&data, false);
+    let out = issue(&data, &["--board", "main", "--member", "alice"]);
+    assert_eq!(out.status.code(), Some(0), "stderr: {}", stderr(&out));
+    let text = stdout(&out);
+    assert_eq!(text.lines().count(), 1, "stdout: {text:?}");
+    let token = labelled(&text, "member token: ").to_owned();
+    assert!(token.starts_with("stg1_"), "{text:?}");
+    assert!(
+        stderr(&out).contains("shown once"),
+        "stderr: {}",
+        stderr(&out)
+    );
+    assert!(!stderr(&out).contains(&token));
+
+    let (id, secret) = parse_secret(SecretKind::Token, &token).expect("token shape");
+    let before = now_ms();
+    let log_secret = secret.clone();
+    with_store(&data, |store| async move {
+        let cred = store
+            .find_credential(&id)
+            .await
+            .expect("find")
+            .expect("stored");
+        assert_eq!(cred.scope, CredentialScope::Board(BoardId::main()));
+        assert_eq!(cred.principal.as_str(), "alice");
+        assert!(secrets_match(&log_secret, &cred.secret_hash));
+        let ttl = cred.expires_at_ms - before;
+        assert!((89 * DAY_MS..=91 * DAY_MS).contains(&ttl), "ttl {ttl}");
+        let log = store.security_log(10).await.expect("log");
+        assert_eq!(log[0].kind, SecurityEventKind::MemberTokenIssued);
+        assert_eq!(log[0].board, Some(BoardId::main()));
+        assert!(log[0].detail.contains(id.as_str()), "{:?}", log[0]);
+        assert!(log[0].detail.contains("alice"), "{:?}", log[0]);
+        assert!(!log[0].detail.contains(log_secret.as_str()));
+    });
+
+    let server = common::start(&data);
+    let bearer = format!("Bearer {token}");
+    let (status, body) = common::http(
+        &server.addr,
+        "GET",
+        "/v1/whoami",
+        &[("Authorization", &bearer)],
+        "",
+    );
+    assert_eq!(status, 200, "body: {body}");
+    assert!(body.contains("\"principal\":\"alice\""), "body: {body}");
+    assert!(body.contains("\"board\":\"main\""), "body: {body}");
+}
+
+#[test]
+fn issue_member_token_unknown_member_is_exit_2() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let data = dir.path().join("data");
+    network_with_members(&data, false);
+    for (board, member) in [("main", "zed"), ("main", "bob"), ("nowhere", "alice")] {
+        let out = issue(&data, &["--board", board, "--member", member]);
+        assert_eq!(
+            out.status.code(),
+            Some(2),
+            "{board}/{member}: {}",
+            stderr(&out)
+        );
+        assert!(stderr(&out).contains(member), "stderr: {}", stderr(&out));
+        assert!(out.stdout.is_empty());
+    }
+}
+
+#[test]
+fn issue_member_token_requires_network_mode() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let data = data_dir_ready(&dir.path().join("data"));
+    let out = issue(&data, &["--board", "main", "--member", "alice"]);
+    assert_eq!(out.status.code(), Some(1), "stderr: {}", stderr(&out));
+    assert!(
+        stderr(&out).contains("requires network mode"),
+        "{}",
+        stderr(&out)
+    );
+    assert!(out.stdout.is_empty());
+}
+
+#[test]
+fn issue_member_token_refuses_archived_board() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let data = dir.path().join("data");
+    network_with_members(&data, true);
+    let out = issue(&data, &["--board", "ops", "--member", "bob"]);
+    assert_eq!(out.status.code(), Some(1), "stderr: {}", stderr(&out));
+    assert!(
+        stderr(&out).contains("archived"),
+        "stderr: {}",
+        stderr(&out)
+    );
+    assert!(out.stdout.is_empty());
+    with_store(&data, |store| async move {
+        let ops = BoardId::new("ops").expect("board");
+        assert_eq!(store.list_credentials(&ops).await.map(|c| c.len()), Ok(0));
+    });
+}
+
+#[test]
+fn issue_member_token_expiry_bounds() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let data = dir.path().join("data");
+    network_with_members(&data, false);
+    for days in ["0", "366"] {
+        let out = issue(
+            &data,
+            &[
+                "--board",
+                "main",
+                "--member",
+                "alice",
+                "--expires-days",
+                days,
+            ],
+        );
+        assert_eq!(out.status.code(), Some(2), "days {days}");
+        assert!(out.stdout.is_empty());
+    }
+    let out = issue(
+        &data,
+        &[
+            "--board",
+            "main",
+            "--member",
+            "alice",
+            "--expires-days",
+            "365",
+        ],
+    );
+    assert_eq!(out.status.code(), Some(0), "stderr: {}", stderr(&out));
+    let token = labelled(&stdout(&out), "member token: ").to_owned();
+    let (id, _) = parse_secret(SecretKind::Token, &token).expect("token shape");
+    let before = now_ms();
+    with_store(&data, |store| async move {
+        let cred = store
+            .find_credential(&id)
+            .await
+            .expect("find")
+            .expect("stored");
+        let ttl = cred.expires_at_ms - before;
+        assert!((364 * DAY_MS..=366 * DAY_MS).contains(&ttl), "ttl {ttl}");
+    });
+}
+
+#[test]
+fn issue_member_token_secret_not_in_stderr_or_db_plaintext() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let data = dir.path().join("data");
+    network_with_members(&data, false);
+    let out = issue(&data, &["--board", "main", "--member", "alice"]);
+    assert_eq!(out.status.code(), Some(0), "stderr: {}", stderr(&out));
+    let token = labelled(&stdout(&out), "member token: ").to_owned();
+    let secret = secret_half(SecretKind::Token, &token);
+    assert!(!stderr(&out).contains(&secret));
+    let log = with_store(&data, |store| async move {
+        format!("{:?}", store.security_log(100).await.expect("log"))
+    });
+    assert!(!log.contains(&secret), "security log leaks the secret");
+    let mut raw = std::fs::read(data.join("stigmer.db")).expect("read db");
+    if let Ok(wal) = std::fs::read(data.join("stigmer.db-wal")) {
+        raw.extend(wal);
+    }
+    assert!(
+        !contains_bytes(&raw, secret.as_bytes()),
+        "plaintext secret stored"
+    );
+    assert!(!contains_bytes(&raw, token.as_bytes()), "full token stored");
+    assert!(
+        contains_bytes(&raw, &hash_secret(&secret)),
+        "scan control: the hash is stored"
+    );
+}
+
 // ---- security-log ----
 
 #[test]
