@@ -127,6 +127,9 @@ pub(crate) fn revoke_board(
     u64::try_from(changed).map_err(backend)
 }
 
+/// What an unknown invite id is compared against: no stored invite has this hash's secret.
+const UNKNOWN_INVITE_HASH: [u8; 32] = [0; 32];
+
 /// An invite row as stored, before validation.
 struct StoredInvite {
     secret_hash: Vec<u8>,
@@ -198,6 +201,10 @@ pub(crate) fn consume_invite(
         .map_err(backend)?;
     let refused = || not_found(Entity::Invite, id);
     let Some(stored) = stored else {
+        // Do the same hash work as for a wrong secret, so the time an unknown id takes does not
+        // tell a caller which invite ids exist. `black_box` keeps the comparison from being
+        // optimised away.
+        std::hint::black_box(hashes_match(&UNKNOWN_INVITE_HASH, secret_hash));
         return Err(refused());
     };
     let matches = hashes_match(&to_hash(stored.secret_hash)?, secret_hash);

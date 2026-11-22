@@ -3,7 +3,8 @@
 use rusqlite::Connection;
 use stigmer_core::{generate_secret, BoardId, PrincipalKind, Role, SecretKind};
 use stigmer_store::{
-    CredentialScope, IdentityStore, NewCredential, NewInvite, SecurityEvent, SecurityEventKind,
+    CredentialScope, Entity, IdentityStore, NewCredential, NewInvite, SecurityEvent,
+    SecurityEventKind, StoreError,
 };
 use stigmer_store_sqlite::SqliteStore;
 
@@ -116,4 +117,46 @@ async fn secret_hashes_not_stored_in_plain_text() {
             assert!(!cell.contains(&hex(&secret.hash)), "a hash in security_log");
         }
     }
+}
+
+#[tokio::test]
+async fn unknown_invite_id_is_refused_exactly_like_a_wrong_secret() {
+    let store = SqliteStore::open_memory().await.unwrap();
+    let invite = generate_secret(SecretKind::Invite).unwrap();
+    store
+        .create_invite(
+            NewInvite {
+                id: invite.id.clone(),
+                secret_hash: invite.hash,
+                board: BoardId::main(),
+                role: Role::Member,
+                kind: PrincipalKind::Agent,
+                created_by: stigmer_core::Principal::new("root").unwrap(),
+                expires_at_ms: NOW + 1,
+            },
+            NOW,
+        )
+        .await
+        .unwrap();
+    let unknown = generate_secret(SecretKind::Invite).unwrap();
+    let dave = stigmer_core::Principal::new("dave").unwrap();
+    let refused = |id: &stigmer_core::TokenId| StoreError::NotFound {
+        entity: Entity::Invite,
+        id: id.to_string(),
+    };
+
+    // An unknown id, including with the all-zero hash the store compares unknown ids against.
+    for hash in [unknown.hash, [0u8; 32], invite.hash] {
+        let result = store.consume_invite(&unknown.id, &hash, &dave, NOW).await;
+        assert_eq!(result, Err(refused(&unknown.id)));
+    }
+    let wrong = store
+        .consume_invite(&invite.id, &unknown.hash, &dave, NOW)
+        .await;
+    assert_eq!(wrong, Err(refused(&invite.id)));
+    assert!(store
+        .list_members(&BoardId::main())
+        .await
+        .unwrap()
+        .is_empty());
 }
