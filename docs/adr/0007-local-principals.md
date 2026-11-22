@@ -41,10 +41,9 @@ as in M0. The mapping sets `'principal'` on the adopted authors' existing messag
 member's post never makes its author a local author, and running the mapping again after members
 have posted is a clean "nothing to map". (A local author whose name later joins the board by
 invite keeps its old `'local'` messages and is still listed; the mapping then refuses with name
-taken.) There is
-no backfill migration: M1 is unreleased, and an M1 database whose members posted under the
-earlier rule (every post `'local'`) is a development artifact only. The column is still not on
-the wire.
+taken.) There is no backfill migration: M1 is unreleased, and an M1 database whose members
+posted under the earlier rule (every post `'local'`) is a development artifact only. The column
+is still not on the wire.
 
 ## Consequences
 
