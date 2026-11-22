@@ -6,8 +6,10 @@ use std::future::Future;
 use std::path::Path;
 use std::process::{Command, Output};
 
-use stigmer_core::{parse_secret, secrets_match, SecretKind};
-use stigmer_store::{CredentialScope, IdentityStore, Mode, SecurityEventKind};
+use stigmer_core::{
+    parse_secret, secrets_match, BoardId, MessageId, Principal, PrincipalKind, Role, SecretKind,
+};
+use stigmer_store::{CredentialScope, IdentityStore, Mode, SecurityEventKind, Store};
 use stigmer_store_sqlite::SqliteStore;
 
 const DAY_MS: i64 = 86_400_000;
@@ -202,5 +204,333 @@ fn new_instance_token_rejects_out_of_range_expiry() {
     for days in ["0", "366"] {
         let out = admin(&data, &["new-instance-token", "--expires-days", days]);
         assert_eq!(out.status.code(), Some(2), "days {days}");
+    }
+}
+
+// ---- security-log ----
+
+#[test]
+fn security_log_prints_newest_first() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let data = dir.path().join("data");
+    assert_eq!(admin(&data, &["enable-auth"]).status.code(), Some(0));
+    assert_eq!(admin(&data, &["new-instance-token"]).status.code(), Some(0));
+
+    let out = admin(&data, &["security-log"]);
+    assert_eq!(out.status.code(), Some(0), "stderr: {}", stderr(&out));
+    let text = stdout(&out);
+    let kinds: Vec<&str> = text
+        .lines()
+        .map(|l| l.split('\t').nth(1).expect("kind column"))
+        .collect();
+    assert_eq!(
+        kinds,
+        [
+            "instance_token_issued",
+            "invite_created",
+            "instance_token_issued",
+            "mode_enabled"
+        ],
+        "stdout: {text}"
+    );
+    // time, kind, board, principal, detail
+    let invite_line = text.lines().nth(1).expect("invite line");
+    let cols: Vec<&str> = invite_line.split('\t').collect();
+    assert_eq!(cols.len(), 5, "{invite_line}");
+    assert_eq!((cols[2], cols[3]), ("main", "instance-admin"));
+    assert!(
+        cols[0].ends_with('Z') && cols[0].starts_with("20"),
+        "time {}",
+        cols[0]
+    );
+
+    let limited = admin(&data, &["security-log", "--limit", "2"]);
+    assert_eq!(stdout(&limited).lines().count(), 2);
+}
+
+#[test]
+fn security_log_lists_mode_enabled_event() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let data = dir.path().join("data");
+    assert_eq!(
+        admin(&data, &["enable-auth", "--no-main-invite"])
+            .status
+            .code(),
+        Some(0)
+    );
+    let text = stdout(&admin(&data, &["security-log"]));
+    assert_eq!(text.lines().count(), 2, "{text}");
+    assert!(text.lines().last().expect("line").contains("mode_enabled"));
+}
+
+#[test]
+fn security_log_rejects_out_of_range_limit() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let data = dir.path().join("data");
+    for limit in ["0", "1001"] {
+        let out = admin(&data, &["security-log", "--limit", limit]);
+        assert_eq!(out.status.code(), Some(2), "limit {limit}");
+    }
+}
+
+// ---- map-local-principals ----
+
+/// Runs an M0 (local mode) server, posts one thread per (author, text) and stops it.
+/// Returns the thread ids in post order.
+#[cfg(unix)]
+fn seed_local_board(data: &Path, posts: &[(&str, &str)]) -> Vec<String> {
+    let mut server = common::start(data);
+    let ids = posts
+        .iter()
+        .map(|(author, text)| {
+            let (status, body) = common::http(
+                &server.addr,
+                "POST",
+                "/v1/boards/main/messages",
+                &[
+                    ("X-Stigmer-As", author),
+                    ("Content-Type", "application/json"),
+                ],
+                &format!(r#"{{"channel":"eng","text":"{text}"}}"#),
+            );
+            assert_eq!(status, 201, "body: {body}");
+            body.split("\"id\":\"")
+                .nth(1)
+                .and_then(|s| s.split('"').next())
+                .expect("message id")
+                .to_owned()
+        })
+        .collect();
+    common::sigterm(&server);
+    assert_eq!(
+        common::wait_for_exit(&mut server, std::time::Duration::from_secs(5)),
+        Some(0)
+    );
+    ids
+}
+
+const POSTS: [(&str, &str); 4] = [
+    ("alice", "one"),
+    ("alice", "two"),
+    ("bob", "three"),
+    ("carol", "four"),
+];
+
+#[cfg(unix)]
+#[test]
+fn map_local_principals_refused_in_local_mode() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let data = dir.path().join("data");
+    seed_local_board(&data, &POSTS);
+    let out = admin(&data, &["map-local-principals", "--admin", "alice"]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(stderr(&out).contains("requires network mode; run stigmerd admin enable-auth first"));
+    assert!(out.stdout.is_empty());
+}
+
+#[cfg(unix)]
+#[test]
+fn map_local_principals_dry_run_changes_nothing() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let data = dir.path().join("data");
+    seed_local_board(&data, &POSTS);
+    assert_eq!(
+        admin(&data, &["enable-auth", "--no-main-invite"])
+            .status
+            .code(),
+        Some(0)
+    );
+
+    let out = admin(
+        &data,
+        &[
+            "map-local-principals",
+            "--human",
+            "alice",
+            "--admin",
+            "alice",
+        ],
+    );
+    assert_eq!(out.status.code(), Some(0), "stderr: {}", stderr(&out));
+    let rows: Vec<Vec<String>> = stdout(&out)
+        .lines()
+        .map(|l| l.split_whitespace().map(str::to_owned).collect())
+        .collect();
+    assert_eq!(rows[0], ["NAME", "KIND", "ROLE"]);
+    assert_eq!(rows[1], ["alice", "human", "admin"]);
+    assert_eq!(rows[2], ["bob", "agent", "member"]);
+    assert_eq!(rows[3], ["carol", "agent", "member"]);
+    assert!(
+        stdout(&out).contains("--apply"),
+        "dry run must say how to apply"
+    );
+
+    with_store(&data, |store| async move {
+        let main = BoardId::main();
+        assert_eq!(store.list_members(&main).await.expect("members"), []);
+        assert_eq!(
+            store
+                .list_local_authors(&main)
+                .await
+                .expect("authors")
+                .len(),
+            3
+        );
+    });
+}
+
+#[cfg(unix)]
+#[test]
+fn map_local_principals_requires_an_admin() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let data = dir.path().join("data");
+    seed_local_board(&data, &POSTS);
+    assert_eq!(
+        admin(&data, &["enable-auth", "--no-main-invite"])
+            .status
+            .code(),
+        Some(0)
+    );
+    let out = admin(&data, &["map-local-principals", "--human", "bob"]);
+    assert_eq!(out.status.code(), Some(2));
+    assert!(stderr(&out).contains("--admin"), "stderr: {}", stderr(&out));
+}
+
+#[cfg(unix)]
+#[test]
+fn map_local_principals_unknown_name_is_exit_2() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let data = dir.path().join("data");
+    seed_local_board(&data, &POSTS);
+    assert_eq!(
+        admin(&data, &["enable-auth", "--no-main-invite"])
+            .status
+            .code(),
+        Some(0)
+    );
+    for args in [
+        ["map-local-principals", "--admin", "zed"],
+        ["map-local-principals", "--human", "zed"],
+    ] {
+        let out = admin(&data, &args);
+        assert_eq!(out.status.code(), Some(2), "{args:?}");
+        assert!(stderr(&out).contains("zed"), "stderr: {}", stderr(&out));
+    }
+}
+
+#[test]
+fn map_local_principals_nothing_to_map_exits_0() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let data = dir.path().join("data");
+    assert_eq!(
+        admin(&data, &["enable-auth", "--no-main-invite"])
+            .status
+            .code(),
+        Some(0)
+    );
+    let out = admin(&data, &["map-local-principals"]);
+    assert_eq!(out.status.code(), Some(0), "stderr: {}", stderr(&out));
+    assert_eq!(stdout(&out).trim(), "nothing to map");
+}
+
+#[cfg(unix)]
+#[test]
+fn map_local_principals_apply_keeps_verify_chain_valid_and_content_readable() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let data = dir.path().join("data");
+    let ids = seed_local_board(&data, &POSTS);
+    assert_eq!(
+        admin(&data, &["enable-auth", "--no-main-invite"])
+            .status
+            .code(),
+        Some(0)
+    );
+
+    let out = admin(
+        &data,
+        &[
+            "map-local-principals",
+            "--human",
+            "alice",
+            "--admin",
+            "alice",
+            "--admin",
+            "carol",
+            "--apply",
+        ],
+    );
+    assert_eq!(out.status.code(), Some(0), "stderr: {}", stderr(&out));
+    assert!(
+        stdout(&out).contains("adopted 3 authors and 4 messages"),
+        "stdout: {}",
+        stdout(&out)
+    );
+
+    with_store(&data, |store| async move {
+        let main = BoardId::main();
+        let member = |name: &str| {
+            let name = Principal::new(name).expect("name");
+            let store = &store;
+            let main = main.clone();
+            async move {
+                store
+                    .get_member(&main, &name)
+                    .await
+                    .expect("get")
+                    .expect("member")
+            }
+        };
+        let (alice, bob, carol) = (
+            member("alice").await,
+            member("bob").await,
+            member("carol").await,
+        );
+        assert_eq!(
+            (alice.kind, alice.role),
+            (PrincipalKind::Human, Role::Admin)
+        );
+        assert_eq!((bob.kind, bob.role), (PrincipalKind::Agent, Role::Member));
+        assert_eq!(
+            (carol.kind, carol.role),
+            (PrincipalKind::Agent, Role::Admin)
+        );
+        assert_eq!(store.list_local_authors(&main).await, Ok(vec![]));
+
+        let report = store.verify_chain(&main).await.expect("verify");
+        assert!(report.valid && report.checked == 4, "{report:?}");
+        let thread = store
+            .read_thread(&main, &MessageId::new(&ids[2]).expect("id"))
+            .await
+            .expect("thread");
+        assert_eq!(
+            (thread.root.author.as_str(), thread.root.text.as_str()),
+            ("bob", "three")
+        );
+    });
+}
+
+// ---- lock ----
+
+#[cfg(unix)]
+#[test]
+fn admin_commands_fail_while_serve_holds_the_lock() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let data = dir.path().join("data");
+    let _server = common::start(&data);
+    for args in [
+        &["enable-auth"][..],
+        &["new-instance-token"],
+        &["map-local-principals", "--admin", "alice"],
+        &["security-log"],
+    ] {
+        let out = admin(&data, args);
+        assert_eq!(out.status.code(), Some(1), "{args:?}");
+        assert!(
+            stderr(&out)
+                .contains("data directory is in use by another stigmerd process; stop it first"),
+            "{args:?}: {}",
+            stderr(&out)
+        );
+        assert!(out.stdout.is_empty());
     }
 }
