@@ -138,18 +138,20 @@ pub enum SecurityEventKind {
     MemberRemoved,
     BoardCreated,
     BoardArchived,
+    InviteCreated,
     AuthFailed,
     RateLimited,
     ModeEnabled,
 }
 
 impl SecurityEventKind {
-    const ALL: [SecurityEventKind; 8] = [
+    const ALL: [SecurityEventKind; 9] = [
         SecurityEventKind::Join,
         SecurityEventKind::TokenRevoked,
         SecurityEventKind::MemberRemoved,
         SecurityEventKind::BoardCreated,
         SecurityEventKind::BoardArchived,
+        SecurityEventKind::InviteCreated,
         SecurityEventKind::AuthFailed,
         SecurityEventKind::RateLimited,
         SecurityEventKind::ModeEnabled,
@@ -163,6 +165,7 @@ impl SecurityEventKind {
             SecurityEventKind::MemberRemoved => "member_removed",
             SecurityEventKind::BoardCreated => "board_created",
             SecurityEventKind::BoardArchived => "board_archived",
+            SecurityEventKind::InviteCreated => "invite_created",
             SecurityEventKind::AuthFailed => "auth_failed",
             SecurityEventKind::RateLimited => "rate_limited",
             SecurityEventKind::ModeEnabled => "mode_enabled",
@@ -363,6 +366,7 @@ mod tests {
             (SecurityEventKind::MemberRemoved, "member_removed"),
             (SecurityEventKind::BoardCreated, "board_created"),
             (SecurityEventKind::BoardArchived, "board_archived"),
+            (SecurityEventKind::InviteCreated, "invite_created"),
             (SecurityEventKind::AuthFailed, "auth_failed"),
             (SecurityEventKind::RateLimited, "rate_limited"),
             (SecurityEventKind::ModeEnabled, "mode_enabled"),

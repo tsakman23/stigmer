@@ -221,6 +221,12 @@ async fn security_log_newest_first_and_limited<S: IdentityStore>(store: S) {
             Some(BoardId::main()),
             Some("alice"),
         ),
+        event(
+            NOW + 3,
+            SecurityEventKind::InviteCreated,
+            Some(BoardId::main()),
+            Some("root"),
+        ),
         event(NOW + 3, SecurityEventKind::AuthFailed, None, None),
         // Logged later but stamped earlier: the log keeps insertion order.
         event(
