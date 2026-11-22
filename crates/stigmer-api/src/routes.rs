@@ -20,13 +20,14 @@ use stigmer_core::{
     MAX_WAIT_SECS,
 };
 use stigmer_store::{CredentialScope, IdentityStore, Mode, Store, StoreError};
-use tokio::sync::watch;
+use tokio::sync::{watch, Semaphore};
 
 use crate::auth::authenticate;
 use crate::authz::{Action, Authenticated, Authorize, Scope};
 use crate::config::ApiConfig;
 use crate::error::ApiError;
-use crate::host_guard::require_loopback_host;
+use crate::host_guard::{require_allowed_host, AllowedHosts};
+use crate::ratelimit::FailureLimiter;
 use crate::wait::read_events;
 
 /// Largest accepted request body.
@@ -40,6 +41,8 @@ pub(crate) struct AppState<S, A> {
     pub(crate) authz: A,
     pub(crate) shutdown: watch::Receiver<bool>,
     pub(crate) config: Arc<ApiConfig>,
+    pub(crate) auth_failures: Arc<FailureLimiter>,
+    pub(crate) waits: Arc<Semaphore>,
 }
 
 // Manual impl: deriving would demand `S: Clone`, and the store sits behind an `Arc`.
@@ -50,6 +53,8 @@ impl<S, A: Clone> Clone for AppState<S, A> {
             authz: self.authz.clone(),
             shutdown: self.shutdown.clone(),
             config: Arc::clone(&self.config),
+            auth_failures: Arc::clone(&self.auth_failures),
+            waits: Arc::clone(&self.waits),
         }
     }
 }
@@ -64,10 +69,13 @@ pub fn router<S: Store + IdentityStore, A: Authorize>(
     shutdown: watch::Receiver<bool>,
     config: ApiConfig,
 ) -> Router {
+    let allowed_hosts = AllowedHosts::new(&config.allowed_hosts);
     let state = AppState {
         store,
         authz,
         shutdown,
+        auth_failures: Arc::new(FailureLimiter::new(config.limits.auth_failures_per_minute)),
+        waits: Arc::new(Semaphore::new(config.limits.max_waits)),
         config: Arc::new(config),
     };
     let board_routes = Router::new()
@@ -86,7 +94,10 @@ pub fn router<S: Store + IdentityStore, A: Authorize>(
         .fallback(unknown_route)
         .method_not_allowed_fallback(wrong_method)
         .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
-        .layer(axum::middleware::from_fn(require_loopback_host))
+        .layer(axum::middleware::from_fn_with_state(
+            allowed_hosts,
+            require_allowed_host,
+        ))
         .with_state(state)
 }
 
@@ -351,6 +362,18 @@ async fn read_events_route<S: Store, A: Authorize>(
         })?,
     };
     let timeout = Duration::from_secs(timeout_s.min(MAX_WAIT_SECS));
+    // Only a request that may wait holds a slot; it goes back when the response is sent or the
+    // request is dropped.
+    let _slot = if timeout.is_zero() {
+        None
+    } else {
+        Some(
+            state
+                .waits
+                .try_acquire()
+                .map_err(|_| ApiError::rate_limited(1))?,
+        )
+    };
     // `from_now` is `after=<head>`, with the head read once here; on an empty board it is no
     // cursor at all, since nothing existed to skip.
     let after = if from_now {

@@ -1,10 +1,13 @@
-//! Rejects requests whose Host or Origin names anything but this machine.
+//! Rejects requests whose Host or Origin names anything but this machine or an allowed host.
 //!
 //! Binding to loopback is not enough on its own: a web page on another site can
 //! point its own domain at 127.0.0.1 (DNS rebinding) and talk to the board from
-//! the browser. Such requests carry the foreign name in Host or Origin.
+//! the browser. Such requests carry the foreign name in Host or Origin. A board served under a
+//! real name adds that name to the allow-list; every other name stays refused.
 
-use axum::extract::Request;
+use std::sync::Arc;
+
+use axum::extract::{Request, State};
 use axum::http::header::{HOST, ORIGIN};
 use axum::http::HeaderMap;
 use axum::middleware::Next;
@@ -13,43 +16,70 @@ use stigmer_core::ErrorCode;
 
 use crate::error::ApiError;
 
-/// Middleware: 403 unless Host (when present) and Origin (when present) name loopback.
-pub(crate) async fn require_loopback_host(request: Request, next: Next) -> Response {
-    if headers_name_loopback(request.headers()) {
-        next.run(request).await
-    } else {
-        ApiError::new(ErrorCode::Forbidden, "host or origin is not loopback").into_response()
+/// Host names accepted besides loopback, as configured.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct AllowedHosts(Arc<[String]>);
+
+impl AllowedHosts {
+    pub(crate) fn new(names: &[String]) -> Self {
+        Self(names.iter().cloned().collect())
+    }
+
+    /// Loopback, or exactly one of the allowed names in any case.
+    fn admits(&self, host: &str) -> bool {
+        host == "127.0.0.1"
+            || host == "[::1]"
+            || host.eq_ignore_ascii_case("localhost")
+            || self.0.iter().any(|name| host.eq_ignore_ascii_case(name))
+    }
+
+    /// True when `authority` is an admitted host, optionally followed by `:port`. Anything
+    /// else, including userinfo, paths or longer names, is refused.
+    fn admits_authority(&self, authority: &str) -> bool {
+        split_authority(authority).is_some_and(|host| self.admits(host))
+    }
+
+    /// An Origin is `scheme://authority` with nothing after the authority.
+    fn admits_origin(&self, origin: &str) -> bool {
+        match origin.split_once("://") {
+            Some((_scheme, authority)) => self.admits_authority(authority),
+            None => false,
+        }
     }
 }
 
-fn headers_name_loopback(headers: &HeaderMap) -> bool {
+/// Middleware: 403 unless Host (when present) and Origin (when present) name loopback or an
+/// allowed host.
+pub(crate) async fn require_allowed_host(
+    State(allowed): State<AllowedHosts>,
+    request: Request,
+    next: Next,
+) -> Response {
+    if headers_name_allowed_hosts(&allowed, request.headers()) {
+        next.run(request).await
+    } else {
+        ApiError::new(ErrorCode::Forbidden, "host or origin is not allowed").into_response()
+    }
+}
+
+fn headers_name_allowed_hosts(allowed: &AllowedHosts, headers: &HeaderMap) -> bool {
     let host_ok = match headers.get(HOST) {
         None => true,
-        Some(value) => value.to_str().is_ok_and(is_loopback_authority),
+        Some(value) => value.to_str().is_ok_and(|v| allowed.admits_authority(v)),
     };
     let origin_ok = match headers.get(ORIGIN) {
         None => true,
-        Some(value) => value.to_str().is_ok_and(is_loopback_origin),
+        Some(value) => value.to_str().is_ok_and(|v| allowed.admits_origin(v)),
     };
     host_ok && origin_ok
 }
 
-/// An Origin is `scheme://authority` with nothing after the authority.
-fn is_loopback_origin(origin: &str) -> bool {
-    match origin.split_once("://") {
-        Some((_scheme, authority)) => is_loopback_authority(authority),
-        None => false,
-    }
-}
-
-/// True when `authority` is exactly `127.0.0.1`, `[::1]` or `localhost`
-/// (any case), optionally followed by `:port`. Anything else, including
-/// userinfo, paths or longer names, is refused.
-fn is_loopback_authority(authority: &str) -> bool {
+/// The host of `host[:port]` or `[v6][:port]`, or `None` when the port is malformed.
+fn split_authority(authority: &str) -> Option<&str> {
     let (host, port) = if authority.starts_with('[') {
         match authority.split_once(']') {
             Some((host, rest)) => (&authority[..=host.len()], rest),
-            None => return false,
+            None => return None,
         }
     } else {
         match authority.find(':') {
@@ -61,13 +91,45 @@ fn is_loopback_authority(authority: &str) -> bool {
         Some(digits) => !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()),
         None => port.is_empty(),
     };
-    let host_ok = host == "127.0.0.1" || host == "[::1]" || host.eq_ignore_ascii_case("localhost");
-    port_ok && host_ok
+    port_ok.then_some(host)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn is_loopback_authority(authority: &str) -> bool {
+        AllowedHosts::default().admits_authority(authority)
+    }
+
+    fn is_loopback_origin(origin: &str) -> bool {
+        AllowedHosts::default().admits_origin(origin)
+    }
+
+    #[test]
+    fn allowed_names_match_exactly_in_any_case_with_any_port() {
+        let allowed = AllowedHosts::new(&["board.example.com".to_owned()]);
+        for ok in [
+            "board.example.com",
+            "Board.Example.Com:443",
+            "localhost:7878",
+            "[::1]",
+        ] {
+            assert!(allowed.admits_authority(ok), "{ok}");
+        }
+        for bad in [
+            "example.com",
+            "board.example.com.evil.example",
+            "x.board.example.com",
+            "board.example.com:",
+            "user@board.example.com",
+            "board.example.com/x",
+        ] {
+            assert!(!allowed.admits_authority(bad), "{bad}");
+        }
+        assert!(allowed.admits_origin("https://board.example.com"));
+        assert!(!allowed.admits_origin("https://board.example.com.evil.example"));
+    }
 
     #[test]
     fn loopback_authorities_are_accepted() {

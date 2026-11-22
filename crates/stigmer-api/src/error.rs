@@ -1,6 +1,7 @@
 //! The error type every handler returns, rendered as the shared `ErrorBody` JSON.
 
-use axum::http::StatusCode;
+use axum::http::header::{RETRY_AFTER, WWW_AUTHENTICATE};
+use axum::http::{HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use stigmer_core::{CoreError, ErrorBody, ErrorCode, ErrorDetail};
@@ -12,6 +13,8 @@ use crate::authz::Denied;
 pub(crate) struct ApiError {
     code: ErrorCode,
     message: String,
+    /// Seconds for the `Retry-After` header of a 429.
+    retry_after: Option<u64>,
 }
 
 impl ApiError {
@@ -19,6 +22,7 @@ impl ApiError {
         Self {
             code,
             message: message.into(),
+            retry_after: None,
         }
     }
 
@@ -33,6 +37,14 @@ impl ApiError {
     /// The one answer to every failed authentication, whatever the reason.
     pub(crate) fn unauthorized() -> Self {
         Self::new(ErrorCode::Unauthorized, "invalid or expired credentials")
+    }
+
+    /// Too many requests from this client; it may retry after `retry_after` seconds.
+    pub(crate) fn rate_limited(retry_after: u64) -> Self {
+        Self {
+            retry_after: Some(retry_after),
+            ..Self::new(ErrorCode::RateLimited, "too many requests; retry later")
+        }
     }
 
     fn status(&self) -> StatusCode {
@@ -92,6 +104,14 @@ impl IntoResponse for ApiError {
                 message: self.message,
             },
         };
-        (status, Json(body)).into_response()
+        let mut response = (status, Json(body)).into_response();
+        let headers = response.headers_mut();
+        if let Some(secs) = self.retry_after {
+            headers.insert(RETRY_AFTER, HeaderValue::from(secs));
+        }
+        if status == StatusCode::UNAUTHORIZED {
+            headers.insert(WWW_AUTHENTICATE, HeaderValue::from_static("Bearer"));
+        }
+        response
     }
 }
