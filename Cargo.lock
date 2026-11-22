@@ -1231,6 +1231,7 @@ dependencies = [
  "stigmer-api",
  "stigmer-core",
  "stigmer-store-sqlite",
+ "tempfile",
  "tokio",
  "ureq",
 ]

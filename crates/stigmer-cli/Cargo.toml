@@ -23,4 +23,5 @@ ureq = { version = "3.5.2", default-features = false, features = ["rustls", "jso
 axum = "0.8.9"
 stigmer-api = { path = "../stigmer-api", version = "0.0.0" }
 stigmer-store-sqlite = { path = "../stigmer-store-sqlite", version = "0.0.0" }
+tempfile = "3.27.0"
 tokio = { version = "1.54.1", features = ["rt-multi-thread", "net"] }

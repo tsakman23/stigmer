@@ -34,6 +34,15 @@ struct Cli {
         default_value = "http://127.0.0.1:7878"
     )]
     url: String,
+    /// The board to use.
+    #[arg(
+        long,
+        env = "STIGMER_BOARD",
+        global = true,
+        default_value = "main",
+        value_name = "NAME"
+    )]
+    board: String,
     /// Print one JSON object instead of text.
     #[arg(long, global = true)]
     json: bool,
@@ -142,33 +151,34 @@ fn main() -> ExitCode {
         Ok(cli) => cli,
         Err(err) => return usage_failure(&err),
     };
-    let ctx = Ctx {
-        url: cli.url,
-        who: cli.who,
-        json: cli.json,
-    };
-    let outcome = match cli.command {
+    let json = cli.json;
+    let outcome =
+        Ctx::new(cli.url, cli.who, &cli.board, json).and_then(|ctx| run(&ctx, cli.command));
+    match outcome {
+        Ok(exit) => exit.into(),
+        Err(err) => {
+            err.print(json);
+            err.exit.into()
+        }
+    }
+}
+
+fn run(ctx: &Ctx, command: Command) -> Result<Exit, CliError> {
+    match command {
         Command::Post {
             channel,
             text,
             write,
-        } => commands::post(&ctx, &channel, write.with_text(text)),
+        } => commands::post(ctx, &channel, write.with_text(text)),
         Command::Reply {
             thread,
             text,
             write,
-        } => commands::reply(&ctx, &thread, write.with_text(text)),
-        Command::Read { prefix } => commands::read(&ctx, &prefix),
-        Command::Thread { id } => commands::thread(&ctx, &id),
-        Command::Wait { feed, timeout } => wait::wait(&ctx, feed.into(), timeout),
-        Command::Tail { feed, timeout } => wait::tail(&ctx, feed.into(), timeout),
-    };
-    match outcome {
-        Ok(exit) => exit.into(),
-        Err(err) => {
-            err.print(ctx.json);
-            err.exit.into()
-        }
+        } => commands::reply(ctx, &thread, write.with_text(text)),
+        Command::Read { prefix } => commands::read(ctx, &prefix),
+        Command::Thread { id } => commands::thread(ctx, &id),
+        Command::Wait { feed, timeout } => wait::wait(ctx, feed.into(), timeout),
+        Command::Tail { feed, timeout } => wait::tail(ctx, feed.into(), timeout),
     }
 }
 

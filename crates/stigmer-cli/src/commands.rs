@@ -22,9 +22,25 @@ pub(crate) struct Ctx {
     pub(crate) url: String,
     pub(crate) who: Option<String>,
     pub(crate) json: bool,
+    pub(crate) board: BoardId,
 }
 
 impl Ctx {
+    /// Validates the global options before any request.
+    pub(crate) fn new(
+        url: String,
+        who: Option<String>,
+        board: &str,
+        json: bool,
+    ) -> Result<Self, CliError> {
+        Ok(Self {
+            url,
+            who,
+            json,
+            board: board_id(board)?,
+        })
+    }
+
     /// The identity a write needs: required, and validated before any request.
     fn author(&self, verb: &str) -> Result<Principal, CliError> {
         let raw = self
@@ -40,7 +56,7 @@ impl Ctx {
             Some(who) => Some(who),
             None => self.who.as_deref().map(principal).transpose()?,
         };
-        Ok(Client::new(&self.url, who))
+        Ok(Client::new(&self.url, self.board.clone(), who))
     }
 
     /// Prints `value` as one JSON object with every message marked untrusted, or
@@ -121,6 +137,15 @@ pub(crate) fn parse_arg<T>(
     parse(raw).map_err(|e| CliError::invalid(&e, hint))
 }
 
+/// Parses a board name.
+pub(crate) fn board_id(raw: &str) -> Result<BoardId, CliError> {
+    parse_arg(
+        raw,
+        BoardId::new,
+        "board names are 1 to 64 characters of [a-z0-9._-]",
+    )
+}
+
 fn principal(raw: &str) -> Result<Principal, CliError> {
     parse_arg(
         raw,
@@ -163,10 +188,15 @@ pub(crate) struct WriteArgs {
     pub(crate) key: Option<String>,
 }
 
-fn validate(target: Target, author: Principal, args: WriteArgs) -> Result<NewMessage, CliError> {
+fn validate(
+    board: BoardId,
+    target: Target,
+    author: Principal,
+    args: WriteArgs,
+) -> Result<NewMessage, CliError> {
     let labels = stigmer_core::parse_labels(&args.labels)
         .map_err(|e| CliError::invalid(&e, core_hint(&e)))?;
-    NewMessage::new(BoardId::main(), target, author, args.text, labels, args.key)
+    NewMessage::new(board, target, author, args.text, labels, args.key)
         .map_err(|e| CliError::invalid(&e, core_hint(&e)))
 }
 
@@ -200,7 +230,7 @@ pub(crate) fn post(ctx: &Ctx, channel_arg: &str, args: WriteArgs) -> Result<Exit
     let target = Target::NewThread {
         channel: channel(channel_arg)?,
     };
-    let posted = send(ctx, validate(target, author, args)?)?;
+    let posted = send(ctx, validate(ctx.board.clone(), target, author, args)?)?;
     let m = &posted.message;
     let first = format!("posted {} in {} as {}", m.id, m.channel, m.author);
     report_posted(ctx, &posted, first)
@@ -220,7 +250,7 @@ pub(crate) fn reply(ctx: &Ctx, thread_arg: &str, args: WriteArgs) -> Result<Exit
     let target = Target::Reply {
         thread: message_id(thread_arg)?,
     };
-    let posted = send(ctx, validate(target, author, args)?)?;
+    let posted = send(ctx, validate(ctx.board.clone(), target, author, args)?)?;
     let m = &posted.message;
     let first = format!(
         "replied {} in thread {} ({}) as {}",

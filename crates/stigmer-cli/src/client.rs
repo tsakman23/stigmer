@@ -5,8 +5,8 @@ use std::time::Duration;
 
 use serde::de::DeserializeOwned;
 use stigmer_core::{
-    ChannelPath, ChannelsResponse, ErrorBody, EventFilter, EventsResponse, MessageId, PostRequest,
-    Posted, Principal, Thread,
+    BoardId, ChannelPath, ChannelsResponse, ErrorBody, EventFilter, EventsResponse, MessageId,
+    PostRequest, Posted, Principal, Thread,
 };
 use ureq::http::Response;
 use ureq::{Agent, Body, RequestBuilder};
@@ -18,18 +18,16 @@ use crate::wait::Start;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 /// How much longer than its server-side wait an events request may take.
 const WAIT_GRACE: Duration = Duration::from_secs(10);
-/// The only board in M0.
-const BOARD: &str = "main";
-
 pub(crate) struct Client {
     agent: Agent,
     base: String,
+    board: BoardId,
     who: Option<Principal>,
 }
 
 impl Client {
     /// A client for the server at `base_url`, acting as `who` when given.
-    pub(crate) fn new(base_url: &str, who: Option<Principal>) -> Self {
+    pub(crate) fn new(base_url: &str, board: BoardId, who: Option<Principal>) -> Self {
         let agent: Agent = Agent::config_builder()
             .http_status_as_error(false)
             .timeout_global(Some(REQUEST_TIMEOUT))
@@ -38,12 +36,13 @@ impl Client {
         Self {
             agent,
             base: base_url.trim_end_matches('/').to_owned(),
+            board,
             who,
         }
     }
 
     fn url(&self, path: &str) -> String {
-        format!("{}/v1/boards/{BOARD}/{path}", self.base)
+        format!("{}/v1/boards/{}/{path}", self.base, self.board)
     }
 
     fn identify<B>(&self, request: RequestBuilder<B>) -> RequestBuilder<B> {
@@ -172,7 +171,7 @@ mod tests {
 
     #[test]
     fn json_request_timeout_code_differs_from_wait_timeout() {
-        let client = Client::new("http://127.0.0.1:7878", None);
+        let client = Client::new("http://127.0.0.1:7878", BoardId::main(), None);
         let request = client.network_error(ureq::Error::Timeout(ureq::Timeout::Global));
         assert_eq!(
             (request.exit, request.code),
