@@ -72,7 +72,7 @@ fn local_caller(headers: &HeaderMap) -> Result<Authenticated, ApiError> {
 }
 
 /// Network mode: 429 when the source or the token id has no failures left, else the verified
-/// caller, else 401 (and one failure taken from each).
+/// caller (its reserved failure refunded), else 401 (the failure kept).
 async fn network_caller<S: IdentityStore, A: Authorize>(
     state: &AppState<S, A>,
     source: Source,
@@ -83,7 +83,7 @@ async fn network_caller<S: IdentityStore, A: Authorize>(
     let token = parsed.as_ref().map(|(id, _)| id.clone());
     let mut keys = vec![Key::Source(source)];
     keys.extend(token.clone().map(Key::Token));
-    if let Err(retry_after) = state.auth_failures.check(&keys, now) {
+    if let Err(retry_after) = state.auth_failures.reserve(&keys, now) {
         if state
             .auth_failures
             .should_log(source, Logged::RateLimited, now)
@@ -95,10 +95,11 @@ async fn network_caller<S: IdentityStore, A: Authorize>(
         }
         return Err(ApiError::rate_limited(retry_after));
     }
+    // The reservation is kept by a failure (and by a storage error, conservatively).
     if let Some(who) = verify(&*state.store, parsed, now).await? {
+        state.auth_failures.refund(&keys, now);
         return Ok(who);
     }
-    state.auth_failures.record_failure(&keys, now);
     if state
         .auth_failures
         .should_log(source, Logged::AuthFailed, now)

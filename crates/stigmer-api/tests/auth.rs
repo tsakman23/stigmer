@@ -856,3 +856,52 @@ async fn allowed_host_extends_the_host_guard_and_rebinding_still_blocked() {
         assert_eq!(reply.json()["error"]["code"], "forbidden");
     }
 }
+
+/// A well-formed token whose id is unknown: verification has to ask the store.
+fn unknown_token(i: usize) -> String {
+    format!("stg1_{i:016x}_{}", "A".repeat(43))
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_bad_requests_beyond_the_limit_get_429() {
+    let net = network_with(RoleAuthorize, |c| c.limits.auth_failures_per_minute = 2).await;
+    let mut tasks = Vec::new();
+    for i in 0..20 {
+        let app = net.app.clone();
+        tasks.push(tokio::spawn(async move {
+            send(
+                &app,
+                from_peer(events_with(&unknown_token(i)), "203.0.113.5"),
+            )
+            .await
+            .status
+        }));
+    }
+    let mut unauthorized = 0;
+    for task in tasks {
+        match task.await.unwrap() {
+            StatusCode::UNAUTHORIZED => unauthorized += 1,
+            StatusCode::TOO_MANY_REQUESTS => {}
+            other => panic!("unexpected {other}"),
+        }
+    }
+    assert!(
+        unauthorized <= 2,
+        "{unauthorized} requests reached verification"
+    );
+}
+
+#[tokio::test]
+async fn successful_requests_do_not_consume_the_failure_budget() {
+    let net = network_with(RoleAuthorize, |c| c.limits.auth_failures_per_minute = 2).await;
+    let good = member_token(&net.store, &BoardId::main(), "alice", Role::Member).await;
+    for i in 0..100 {
+        let reply = send(&net.app, from_peer(events_with(&good), "203.0.113.6")).await;
+        assert_eq!(reply.status, StatusCode::OK, "request {i}");
+    }
+    // The whole budget is still there for failures.
+    for _ in 0..2 {
+        let reply = send(&net.app, from_peer(events_with("garbage"), "203.0.113.6")).await;
+        assert_eq!(reply.status, StatusCode::UNAUTHORIZED);
+    }
+}
