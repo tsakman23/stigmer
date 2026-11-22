@@ -391,3 +391,45 @@ async fn invalid_join_body_never_echoes_the_submitted_invite() {
     let joined = join_as(&net.app, &invite, "bot").await;
     assert_eq!(joined.status, StatusCode::CREATED, "{}", joined.body);
 }
+
+fn raw_join(body: Vec<u8>) -> Request<Body> {
+    Request::builder()
+        .method(Method::POST)
+        .uri("/v1/join")
+        .header("content-type", "application/json")
+        .extension(stigmer_api::PeerAddr(DEFAULT_PEER.parse().unwrap()))
+        .body(Body::from(body))
+        .unwrap()
+}
+
+#[tokio::test]
+async fn join_body_that_is_not_utf8_is_the_generic_400() {
+    let net = network().await;
+    let mut body = br#"{"invite": "stgi1_"#.to_vec();
+    body.extend_from_slice(&[0xff, 0xfe, 0x80]);
+    body.extend_from_slice(br#"", "name": "bot"}"#);
+    let reply = send(&net.app, raw_join(body)).await;
+    assert_eq!(reply.status, StatusCode::BAD_REQUEST, "{}", reply.body);
+    assert_eq!(
+        reply.json(),
+        json!({"error": {"code": "invalid_input", "message": "invalid join request"}})
+    );
+}
+
+#[tokio::test]
+async fn join_body_over_256_kib_is_413_and_echoes_nothing() {
+    let net = network().await;
+    let marker = "stgi1_0123456789abcdef_";
+    let filler = "x".repeat(256 * 1024);
+    let body = format!(r#"{{"invite": "{marker}{filler}", "name": "bot"}}"#).into_bytes();
+    let reply = send(&net.app, raw_join(body)).await;
+    assert_eq!(
+        reply.status,
+        StatusCode::PAYLOAD_TOO_LARGE,
+        "{}",
+        reply.body
+    );
+    assert_eq!(reply.json()["error"]["code"], "too_large");
+    assert!(!reply.body.contains(marker), "{}", reply.body);
+    assert!(reply.body.len() < 200, "{}", reply.body);
+}

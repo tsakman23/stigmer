@@ -366,7 +366,7 @@ fn token_id_of(token: &str) -> String {
     id.as_str().to_owned()
 }
 
-fn whoami_status(server: &common::Server, token: &str) -> u16 {
+fn whoami(server: &common::Server, token: &str) -> (u16, String) {
     let bearer = format!("Bearer {token}");
     common::http(
         &server.addr,
@@ -375,7 +375,10 @@ fn whoami_status(server: &common::Server, token: &str) -> u16 {
         &[("Authorization", &bearer)],
         "",
     )
-    .0
+}
+
+fn whoami_status(server: &common::Server, token: &str) -> u16 {
+    whoami(server, token).0
 }
 
 #[test]
@@ -399,7 +402,13 @@ fn revoke_token_revokes_an_instance_token_and_the_next_request_is_401() {
     });
 
     let server = common::start(&data);
-    assert_eq!(whoami_status(&server, &old), 401);
+    let (status, revoked_body) = whoami(&server, &old);
+    assert_eq!(status, 401);
+    let (_, garbage_body) = whoami(&server, "garbage");
+    assert_eq!(
+        revoked_body, garbage_body,
+        "a revoked token gets the same 401 body as any other failure"
+    );
     assert_eq!(whoami_status(&server, &kept), 200);
 }
 
@@ -410,8 +419,15 @@ fn revoke_token_revokes_a_board_token_too() {
     network_with_members(&data, false);
     let issued = stdout(&issue(&data, &["--board", "main", "--member", "alice"]));
     let token = labelled(&issued, "member token: ").to_owned();
-    let out = admin(&data, &["revoke-token", &token_id_of(&token)]);
+    let id = token_id_of(&token);
+    let out = admin(&data, &["revoke-token", &id]);
     assert_eq!(out.status.code(), Some(0), "stderr: {}", stderr(&out));
+    with_store(&data, |store| async move {
+        let log = store.security_log(1).await.expect("log");
+        assert_eq!(log[0].kind, SecurityEventKind::TokenRevoked);
+        assert_eq!(log[0].board, Some(BoardId::main()), "{:?}", log[0]);
+        assert_eq!(log[0].detail, format!("credential {id}"));
+    });
     let server = common::start(&data);
     assert_eq!(whoami_status(&server, &token), 401);
 }
