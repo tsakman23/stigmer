@@ -199,6 +199,12 @@ const REDACTED: &str = "<redacted>";
 /// Implemented by the same backend as `Store`; verified by `run_identity_all` in
 /// `stigmer-store-conformance`. Every method that takes a board reports an unknown board as
 /// `NotFound` with `Entity::Board`.
+///
+/// An archived board takes no new identities: `add_member`, `create_invite` and
+/// `adopt_local_authors` refuse it with `Conflict(ConflictKind::BoardArchived)`, and
+/// `consume_invite` refuses an invite into it like any other unusable invite. Reads,
+/// `remove_member`, credential creation and revocation keep working on archived boards, as the
+/// archive flow needs them.
 pub trait IdentityStore: Send + Sync + 'static {
     /// The instance mode. A fresh store is `Mode::Local`.
     fn mode(&self) -> impl Future<Output = Result<Mode, StoreError>> + Send;
@@ -208,7 +214,8 @@ pub trait IdentityStore: Send + Sync + 'static {
     fn enable_network_mode(&self) -> impl Future<Output = Result<(), StoreError>> + Send;
 
     /// Adds `name` to `board` at `now_ms`. A name already on the board is
-    /// `Conflict(ConflictKind::NameTaken)`; the same name may exist on other boards.
+    /// `Conflict(ConflictKind::NameTaken)`; the same name may exist on other boards. An archived
+    /// board is `Conflict(ConflictKind::BoardArchived)`.
     fn add_member(
         &self,
         board: &BoardId,
@@ -250,8 +257,8 @@ pub trait IdentityStore: Send + Sync + 'static {
     /// In one transaction: makes each adoption a member of `board` at `now_ms` and marks that
     /// author's messages on the board as written by a real principal. Returns the number of
     /// messages marked. Authors not adopted stay local. The event log and its hashes are not
-    /// touched. A name already on the board is `Conflict(ConflictKind::NameTaken)` and changes
-    /// nothing.
+    /// touched. A name already on the board is `Conflict(ConflictKind::NameTaken)` and an
+    /// archived board is `Conflict(ConflictKind::BoardArchived)`; either changes nothing.
     fn adopt_local_authors(
         &self,
         board: &BoardId,
@@ -304,7 +311,8 @@ pub trait IdentityStore: Send + Sync + 'static {
         now_ms: i64,
     ) -> impl Future<Output = Result<u64, StoreError>> + Send;
 
-    /// Stores an invite created at `now_ms`.
+    /// Stores an invite created at `now_ms`. An archived board is
+    /// `Conflict(ConflictKind::BoardArchived)`.
     fn create_invite(
         &self,
         invite: NewInvite,
@@ -312,10 +320,11 @@ pub trait IdentityStore: Send + Sync + 'static {
     ) -> impl Future<Output = Result<(), StoreError>> + Send;
 
     /// In one transaction: checks the invite (its hash compared in constant time, valid while
-    /// `now_ms < expires_at_ms`, unused), adds `name` as a member with the invite's role and
-    /// kind, and marks the invite used. An unknown id, a wrong hash, an expired invite and a used
-    /// one are all the same `NotFound` with `Entity::Invite`. A name already on the board is
-    /// `Conflict(ConflictKind::NameTaken)` and leaves the invite unused.
+    /// `now_ms < expires_at_ms`, unused, board not archived), adds `name` as a member with the
+    /// invite's role and kind, and marks the invite used. An unknown id, a wrong hash, an expired
+    /// invite, a used one and one into an archived board are all the same `NotFound` with
+    /// `Entity::Invite`. A name already on the board is `Conflict(ConflictKind::NameTaken)` and
+    /// leaves the invite unused.
     fn consume_invite(
         &self,
         id: &TokenId,

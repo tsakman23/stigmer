@@ -13,7 +13,9 @@ use stigmer_store::{
 };
 
 use crate::support::{board, ok, principal};
-use crate::{identity_adoption, identity_credentials, identity_invites, identity_members};
+use crate::{
+    identity_adoption, identity_archive, identity_credentials, identity_invites, identity_members,
+};
 
 /// The scenarios' fixed "now", in milliseconds since the Unix epoch.
 pub(crate) const NOW: i64 = 1_700_000_000_000;
@@ -48,6 +50,13 @@ where
     )
     .await;
     identity_adoption::adopt_local_authors_leaves_the_hash_chain_valid(factory().await).await;
+    identity_archive::add_member_on_archived_board_is_board_archived(factory().await).await;
+    identity_archive::create_invite_on_archived_board_is_board_archived(factory().await).await;
+    identity_archive::adopt_local_authors_on_archived_board_is_board_archived(factory().await)
+        .await;
+    identity_archive::consume_invite_for_archived_board_is_the_generic_not_found(factory().await)
+        .await;
+    identity_archive::remove_member_and_revoke_still_work_on_archived_board(factory().await).await;
     security_log_newest_first_and_limited(factory().await).await;
     no_secret_material_in_security_log_rows(factory().await).await;
 }

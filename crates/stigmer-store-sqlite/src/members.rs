@@ -4,7 +4,7 @@ use rusqlite::{Connection, Row, Transaction, TransactionBehavior};
 use stigmer_core::{BoardId, Principal, PrincipalKind, Role};
 use stigmer_store::{Adoption, ConflictKind, Entity, Member, Mode, StoreError};
 
-use crate::boards::require;
+use crate::boards::{require, require_writable};
 use crate::posts::LOCAL_AUTHOR_KIND;
 use crate::{backend, not_found};
 
@@ -50,7 +50,7 @@ pub(crate) fn add(
     now_ms: i64,
 ) -> Result<Member, StoreError> {
     let tx = immediate(conn)?;
-    require(&tx, board)?;
+    require_writable(&tx, board)?;
     let member = insert(&tx, board, name, kind, role, now_ms)?;
     tx.commit().map_err(backend)?;
     Ok(member)
@@ -177,7 +177,7 @@ pub(crate) fn adopt(
     now_ms: i64,
 ) -> Result<u64, StoreError> {
     let tx = immediate(conn)?;
-    require(&tx, board)?;
+    require_writable(&tx, board)?;
     let mut marked = 0u64;
     for adoption in adoptions {
         insert(

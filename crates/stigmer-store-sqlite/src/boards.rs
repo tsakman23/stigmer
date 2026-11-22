@@ -100,6 +100,12 @@ pub(crate) fn writable_head(
     }
 }
 
+/// Checks that board `id` accepts writes: `NotFound` for an unknown board,
+/// `Conflict(BoardArchived)` for an archived one.
+pub(crate) fn require_writable(tx: &Transaction<'_>, id: &BoardId) -> Result<(), StoreError> {
+    writable_head(tx, id).map(drop)
+}
+
 /// The board `id`, or `NotFound` with `Entity::Board`.
 pub(crate) fn require(tx: &Transaction<'_>, id: &BoardId) -> Result<BoardInfo, StoreError> {
     find(tx, id)?.ok_or_else(|| not_found(Entity::Board, id))

@@ -7,7 +7,7 @@ use stigmer_store::{
     SecurityEventKind, StoreError,
 };
 
-use crate::boards::require;
+use crate::boards::{require, require_writable};
 use crate::members::{immediate, insert, parse_kind, parse_role};
 use crate::{backend, not_found};
 
@@ -135,16 +135,17 @@ struct StoredInvite {
     kind: String,
     expires_at_ms: i64,
     used_at_ms: Option<i64>,
+    board_archived: bool,
 }
 
-/// Stores an invite into an existing board.
+/// Stores an invite into an existing, unarchived board.
 pub(crate) fn create_invite(
     conn: &mut Connection,
     invite: NewInvite,
     now_ms: i64,
 ) -> Result<(), StoreError> {
     let tx = immediate(conn)?;
-    require(&tx, &invite.board)?;
+    require_writable(&tx, &invite.board)?;
     tx.execute(
         "INSERT INTO invites
              (id, secret_hash, board_id, role, kind, created_by, created_at_ms, expires_at_ms)
@@ -165,8 +166,8 @@ pub(crate) fn create_invite(
 }
 
 /// Checks and uses an invite in one `BEGIN IMMEDIATE` transaction: lookup, constant-time hash
-/// comparison, expiry and use checks, member insert and the used mark. Every refusal of the
-/// invite itself is the same `NotFound`, so callers cannot tell why it failed.
+/// comparison, expiry, use and archived-board checks, member insert and the used mark. Every
+/// refusal of the invite itself is the same `NotFound`, so callers cannot tell why it failed.
 pub(crate) fn consume_invite(
     conn: &mut Connection,
     id: &TokenId,
@@ -177,8 +178,9 @@ pub(crate) fn consume_invite(
     let tx = immediate(conn)?;
     let stored = tx
         .query_row(
-            "SELECT secret_hash, board_id, role, kind, expires_at_ms, used_at_ms
-             FROM invites WHERE id = ?1",
+            "SELECT i.secret_hash, i.board_id, i.role, i.kind, i.expires_at_ms, i.used_at_ms,
+                    b.archived_at_ms
+             FROM invites i JOIN boards b ON b.id = i.board_id WHERE i.id = ?1",
             [id.as_str()],
             |row| {
                 Ok(StoredInvite {
@@ -188,6 +190,7 @@ pub(crate) fn consume_invite(
                     kind: row.get(3)?,
                     expires_at_ms: row.get(4)?,
                     used_at_ms: row.get(5)?,
+                    board_archived: row.get::<_, Option<i64>>(6)?.is_some(),
                 })
             },
         )
@@ -198,7 +201,9 @@ pub(crate) fn consume_invite(
         return Err(refused());
     };
     let matches = hashes_match(&to_hash(stored.secret_hash)?, secret_hash);
-    if !matches || now_ms >= stored.expires_at_ms || stored.used_at_ms.is_some() {
+    let usable =
+        now_ms < stored.expires_at_ms && stored.used_at_ms.is_none() && !stored.board_archived;
+    if !matches || !usable {
         return Err(refused());
     }
     let board = BoardId::new(&stored.board).map_err(backend)?;
