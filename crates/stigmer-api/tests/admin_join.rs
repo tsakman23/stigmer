@@ -2,9 +2,14 @@
 
 mod common;
 
+use std::convert::Infallible;
+use std::pin::Pin;
 use std::sync::atomic::Ordering;
+use std::task::{Context, Poll};
+use std::time::Duration;
 
-use axum::http::{Method, StatusCode};
+use axum::body::{Body, Bytes};
+use axum::http::{Method, Request, StatusCode};
 use common::*;
 use serde_json::json;
 use stigmer_api::{ApiConfig, RoleAuthorize};
@@ -314,4 +319,75 @@ async fn join_budget_is_separate_from_the_auth_failure_budget() {
         whoami("junk".into(), "192.0.2.2").await,
         StatusCode::UNAUTHORIZED
     );
+}
+
+/// A request body whose bytes never arrive.
+struct NeverSent;
+
+impl http_body::Body for NeverSent {
+    type Data = Bytes;
+    type Error = Infallible;
+
+    fn poll_frame(
+        self: Pin<&mut Self>,
+        _: &mut Context<'_>,
+    ) -> Poll<Option<Result<http_body::Frame<Bytes>, Infallible>>> {
+        Poll::Pending
+    }
+}
+
+#[tokio::test]
+async fn join_limit_answers_429_without_waiting_for_the_body() {
+    let net = network_with(RoleAuthorize, |c| c.limits.join_per_minute = 1).await;
+    let spent = join_as(&net.app, "stgi1_not-an-invite", "bot").await;
+    assert_eq!(spent.status, StatusCode::UNAUTHORIZED, "{}", spent.body);
+
+    let stalled = Request::builder()
+        .method(Method::POST)
+        .uri("/v1/join")
+        .header("content-type", "application/json")
+        .header("content-length", "64")
+        .extension(stigmer_api::PeerAddr(DEFAULT_PEER.parse().unwrap()))
+        .body(Body::new(NeverSent))
+        .unwrap();
+    let reply = tokio::time::timeout(Duration::from_secs(5), send(&net.app, stalled))
+        .await
+        .expect("the 429 must not wait for a body that never comes");
+    assert_eq!(
+        reply.status,
+        StatusCode::TOO_MANY_REQUESTS,
+        "{}",
+        reply.body
+    );
+    assert_eq!(reply.json()["error"]["code"], "rate_limited");
+}
+
+#[tokio::test]
+async fn invalid_join_body_never_echoes_the_submitted_invite() {
+    let net = network().await;
+    let admin = member_token(&net.store, &board("main"), "ann", Role::Admin).await;
+    let invite = mint_invite(&net.app, &admin, "main", "agent", "member").await;
+    let bodies = [
+        // Swapped fields: the invite lands where a name belongs.
+        json!({"invite": "bot", "name": invite}),
+        json!({"invite": invite, "name": "Not A Name"}),
+        json!({"invite": invite, "name": "bot", invite.clone(): 1}),
+        json!({"invite": invite}),
+    ];
+    for body in bodies {
+        let reply = send(
+            &net.app,
+            request(Method::POST, "/v1/join", None, Some(&body)),
+        )
+        .await;
+        assert_eq!(reply.status, StatusCode::BAD_REQUEST, "{}", reply.body);
+        assert_eq!(
+            reply.json(),
+            json!({"error": {"code": "invalid_input", "message": "invalid join request"}})
+        );
+        assert!(!reply.body.contains(&invite));
+    }
+    // The invite was never used.
+    let joined = join_as(&net.app, &invite, "bot").await;
+    assert_eq!(joined.status, StatusCode::CREATED, "{}", joined.body);
 }

@@ -1,8 +1,7 @@
 //! Join (an invite for a member and a token) and whoami.
 
 use axum::body::Bytes;
-use axum::extract::rejection::BytesRejection;
-use axum::extract::State;
+use axum::extract::{FromRequest, Request, State};
 use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::{Extension, Json, Router};
@@ -11,7 +10,7 @@ use stigmer_core::{
 };
 use stigmer_store::{CredentialScope, IdentityStore, Mode, NewJoinCredential, Store, StoreError};
 
-use crate::admin_routes::{json_body, now, require_network, ClientSource};
+use crate::admin_routes::{body_bytes, now, require_network, ClientSource};
 use crate::audit::join_rate_limited;
 use crate::authz::{Authenticated, Authorize};
 use crate::error::ApiError;
@@ -37,10 +36,15 @@ pub(crate) fn open<S: Store + IdentityStore, A: Authorize>() -> Router<AppState<
 /// invite is checked and used, the member and the token's credential are created and the `Join`
 /// log row is written), so a failure leaves nothing behind and the same invite can be tried
 /// again. No token is stored, logged or echoed except in the success response.
+///
+/// The attempt is counted against the source's join budget before the body is read, so a
+/// limited client is answered at once and cannot hold the request open by sending its body
+/// slowly. A body that does not parse gets one generic message that echoes nothing of it (a
+/// swapped field would otherwise put the invite into the error).
 async fn join<S: Store + IdentityStore, A: Authorize>(
     State(state): State<AppState<S, A>>,
     ClientSource(source): ClientSource,
-    body: Result<Bytes, BytesRejection>,
+    request: Request,
 ) -> Result<(StatusCode, Json<JoinResponse>), ApiError> {
     require_network(&state)?;
     let at_ms = now(&state);
@@ -53,7 +57,9 @@ async fn join<S: Store + IdentityStore, A: Authorize>(
         }
         return Err(ApiError::rate_limited(retry_after));
     }
-    let req: JoinRequest = json_body(body)?;
+    let bytes = body_bytes(Bytes::from_request(request, &state).await)?;
+    let req: JoinRequest = serde_json::from_slice(&bytes)
+        .map_err(|_| ApiError::invalid_input("invalid join request"))?;
     let (id, secret) =
         parse_secret(SecretKind::Invite, &req.invite).map_err(|_| ApiError::unauthorized())?;
     let token = generate_secret(SecretKind::Token).map_err(|_| ApiError::internal())?;

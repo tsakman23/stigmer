@@ -91,15 +91,20 @@ pub(crate) fn require_network<S, A>(state: &AppState<S, A>) -> Result<(), ApiErr
 pub(crate) fn json_body<T: DeserializeOwned>(
     body: Result<Bytes, BytesRejection>,
 ) -> Result<T, ApiError> {
-    let bytes = body.map_err(|e| {
+    let bytes = body_bytes(body)?;
+    serde_json::from_slice(&bytes)
+        .map_err(|e| ApiError::invalid_input(format!("invalid body: {e}")))
+}
+
+/// The request body, or the error for a body that could not be read (413 when too large).
+pub(crate) fn body_bytes(body: Result<Bytes, BytesRejection>) -> Result<Bytes, ApiError> {
+    body.map_err(|e| {
         if e.status() == StatusCode::PAYLOAD_TOO_LARGE {
             ApiError::new(ErrorCode::TooLarge, "request body too large")
         } else {
             ApiError::invalid_input(e.body_text())
         }
-    })?;
-    serde_json::from_slice(&bytes)
-        .map_err(|e| ApiError::invalid_input(format!("invalid body: {e}")))
+    })
 }
 
 fn summary(info: &BoardInfo) -> BoardSummary {

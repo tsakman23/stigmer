@@ -1167,6 +1167,7 @@ name = "stigmer-api"
 version = "0.0.0"
 dependencies = [
  "axum",
+ "http-body",
  "http-body-util",
  "serde",
  "serde_json",
