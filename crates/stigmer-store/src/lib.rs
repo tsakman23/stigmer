@@ -8,6 +8,13 @@ use thiserror::Error;
 
 use stigmer_core::{BoardId, ChannelPath, Cursor, Event, MessageId, NewMessage, Principal};
 
+mod identity;
+
+pub use identity::{
+    Adoption, Consumed, Credential, CredentialScope, IdentityStore, Member, Mode, NewCredential,
+    NewInvite, SecurityEvent, SecurityEventKind,
+};
+
 pub use stigmer_core::{BoardInfo, EventFilter, Message, Page, Posted, Thread, ThreadSummary};
 
 /// The kind of thing a lookup did not find.
@@ -16,6 +23,9 @@ pub enum Entity {
     Board,
     Thread,
     Message,
+    Member,
+    Credential,
+    Invite,
 }
 
 impl fmt::Display for Entity {
@@ -24,6 +34,9 @@ impl fmt::Display for Entity {
             Entity::Board => "board",
             Entity::Thread => "thread",
             Entity::Message => "message",
+            Entity::Member => "member",
+            Entity::Credential => "credential",
+            Entity::Invite => "invite",
         })
     }
 }
@@ -37,6 +50,10 @@ pub enum ConflictKind {
     BoardExists,
     /// The board is archived and accepts no more posts.
     BoardArchived,
+    /// The principal name is already a member of this board.
+    NameTaken,
+    /// The instance is already in network mode; the switch is one-way.
+    AlreadyNetwork,
 }
 
 impl fmt::Display for ConflictKind {
@@ -45,6 +62,8 @@ impl fmt::Display for ConflictKind {
             ConflictKind::IdempotencyKeyReused => "idempotency key reused with a different request",
             ConflictKind::BoardExists => "board already exists",
             ConflictKind::BoardArchived => "board is archived",
+            ConflictKind::NameTaken => "principal name already taken on this board",
+            ConflictKind::AlreadyNetwork => "already in network mode",
         })
     }
 }
@@ -199,6 +218,9 @@ mod tests {
         assert_eq!(Entity::Board.to_string(), "board");
         assert_eq!(Entity::Thread.to_string(), "thread");
         assert_eq!(Entity::Message.to_string(), "message");
+        assert_eq!(Entity::Member.to_string(), "member");
+        assert_eq!(Entity::Credential.to_string(), "credential");
+        assert_eq!(Entity::Invite.to_string(), "invite");
     }
 
     #[test]
@@ -212,6 +234,14 @@ mod tests {
             "board already exists"
         );
         assert_eq!(ConflictKind::BoardArchived.to_string(), "board is archived");
+        assert_eq!(
+            ConflictKind::NameTaken.to_string(),
+            "principal name already taken on this board"
+        );
+        assert_eq!(
+            ConflictKind::AlreadyNetwork.to_string(),
+            "already in network mode"
+        );
         assert_eq!(
             StoreError::Conflict(ConflictKind::BoardArchived).to_string(),
             "conflict: board is archived"
@@ -280,5 +310,38 @@ mod tests {
         assert_send(store.events_after(board, None, &filter, 1));
         assert_send(store.head(board));
         assert_send(store.wait_past(board, None, Duration::ZERO));
+    }
+
+    // Compile-time check, as above, for the identity store.
+    #[allow(dead_code)]
+    fn identity_futures_are_send<S: IdentityStore>(
+        store: &S,
+        board: &BoardId,
+        name: &Principal,
+        id: &stigmer_core::TokenId,
+        credential: NewCredential,
+        invite: NewInvite,
+        event: SecurityEvent,
+    ) {
+        use stigmer_core::{PrincipalKind, Role};
+        fn assert_send<T: Send>(_: T) {}
+        assert_send(store.mode());
+        assert_send(store.enable_network_mode());
+        assert_send(store.add_member(board, name, PrincipalKind::Human, Role::Admin, 0));
+        assert_send(store.get_member(board, name));
+        assert_send(store.list_members(board));
+        assert_send(store.remove_member(board, name, 0));
+        assert_send(store.list_local_authors(board));
+        assert_send(store.adopt_local_authors(board, &[], 0));
+        assert_send(store.create_credential(credential, 0));
+        assert_send(store.find_credential(id));
+        assert_send(store.touch_credential(id, 0));
+        assert_send(store.list_credentials(board));
+        assert_send(store.revoke_credential(id, 0));
+        assert_send(store.revoke_board_credentials(board, true, 0));
+        assert_send(store.create_invite(invite, 0));
+        assert_send(store.consume_invite(id, &[0; 32], name, 0));
+        assert_send(store.log_security(event));
+        assert_send(store.security_log(10));
     }
 }
