@@ -1,5 +1,7 @@
 //! stigmer-api: the HTTP surface of a board, plus the loopback bind guard.
 
+mod admin_routes;
+mod audit;
 mod auth;
 mod authz;
 mod config;

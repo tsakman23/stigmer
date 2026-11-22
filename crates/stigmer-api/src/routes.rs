@@ -22,6 +22,7 @@ use stigmer_core::{
 use stigmer_store::{CredentialScope, IdentityStore, Mode, Store, StoreError};
 use tokio::sync::{watch, Semaphore};
 
+use crate::admin_routes;
 use crate::auth::authenticate;
 use crate::authz::{Action, Authenticated, Authorize, Scope};
 use crate::config::ApiConfig;
@@ -42,6 +43,8 @@ pub(crate) struct AppState<S, A> {
     pub(crate) shutdown: watch::Receiver<bool>,
     pub(crate) config: Arc<ApiConfig>,
     pub(crate) auth_failures: Arc<FailureLimiter>,
+    /// Join attempts per source: its own budget, separate from failed authentications.
+    pub(crate) joins: Arc<FailureLimiter>,
     pub(crate) waits: Arc<Semaphore>,
 }
 
@@ -54,6 +57,7 @@ impl<S, A: Clone> Clone for AppState<S, A> {
             shutdown: self.shutdown.clone(),
             config: Arc::clone(&self.config),
             auth_failures: Arc::clone(&self.auth_failures),
+            joins: Arc::clone(&self.joins),
             waits: Arc::clone(&self.waits),
         }
     }
@@ -78,10 +82,15 @@ pub fn router<S: Store + IdentityStore, A: Authorize>(
             config.limits.auth_failures_per_minute,
             config.limits.max_tracked_sources,
         )),
+        joins: Arc::new(FailureLimiter::new(
+            config.limits.join_per_minute,
+            config.limits.max_tracked_sources,
+        )),
         waits: Arc::new(Semaphore::new(config.limits.max_waits)),
         config: Arc::new(config),
     };
     let board_routes = Router::new()
+        .merge(admin_routes::authenticated::<S, A>())
         .route("/v1/boards/{board}/messages", post(post_message::<S, A>))
         .route("/v1/boards/{board}/channels", get(read_channels::<S, A>))
         .route("/v1/boards/{board}/events", get(read_events_route::<S, A>))
@@ -90,6 +99,9 @@ pub fn router<S: Store + IdentityStore, A: Authorize>(
             state.clone(),
             authenticate::<S, A>,
         ));
+    // The admin routes (boards, members, invites, tokens, whoami) join the authenticated group;
+    // `POST /v1/join` is the one open route besides health, behind the host guard and its own
+    // rate limit.
     // Request order: the host guard (outermost) refuses foreign Host/Origin first; then, on board
     // routes only, the authentication layer answers 429 -> 401; then each handler answers 404
     // (board not visible) -> 403 (authorizer) -> the request's own errors. Health checks are
@@ -99,6 +111,7 @@ pub fn router<S: Store + IdentityStore, A: Authorize>(
         .route("/healthz", get(healthz))
         .route("/readyz", get(readyz::<S, A>))
         .merge(board_routes)
+        .merge(admin_routes::open::<S, A>())
         .fallback(unknown_route)
         .method_not_allowed_fallback(wrong_method)
         .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
@@ -135,7 +148,7 @@ async fn readyz<S: Store, A: Authorize>(
 /// A board credential only ever sees its own board: any other name, existing or not, is the same
 /// 404 without the store being asked. The instance credential and local mode see every board
 /// the store has.
-async fn visible_board<S: Store>(
+pub(crate) async fn visible_board<S: Store>(
     store: &S,
     who: &Authenticated,
     raw: &str,
@@ -154,7 +167,7 @@ async fn visible_board<S: Store>(
 }
 
 /// The board as an authorization scope. M1 never narrows a check to a channel.
-fn board_scope(board: &BoardId) -> Scope<'_> {
+pub(crate) fn board_scope(board: &BoardId) -> Scope<'_> {
     Scope::Board {
         board,
         channel: None,
@@ -162,7 +175,7 @@ fn board_scope(board: &BoardId) -> Scope<'_> {
 }
 
 /// Resolves the path's board for `who` and checks `action` on it: 404, then 403.
-async fn authorize_board<S: Store, A: Authorize>(
+pub(crate) async fn authorize_board<S: Store, A: Authorize>(
     state: &AppState<S, A>,
     who: &Authenticated,
     action: Action,

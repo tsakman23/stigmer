@@ -144,7 +144,11 @@ fn security_event(at_ms: i64, kind: SecurityEventKind, detail: String) -> Securi
 /// the right, skipping hops that are trusted proxies too, and the first other hop is the client.
 /// Hops to its left were written by the client and are never believed. A hop that is not an
 /// address ends the walk at the last trusted hop. No peer at all is the shared unknown source.
-fn client_source(peer: Option<IpAddr>, headers: &HeaderMap, trusted: &[IpNet]) -> Source {
+pub(crate) fn client_source(
+    peer: Option<IpAddr>,
+    headers: &HeaderMap,
+    trusted: &[IpNet],
+) -> Source {
     let Some(peer) = peer.map(|ip| ip.to_canonical()) else {
         return Source::Unknown;
     };

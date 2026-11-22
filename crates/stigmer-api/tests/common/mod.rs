@@ -53,7 +53,8 @@ pub async fn network_with<A: Authorize>(authz: A, adjust: impl FnOnce(&mut ApiCo
 /// Network mode with failed-auth limiting out of the way; the limit has its own tests.
 pub async fn network() -> Net {
     network_with(RoleAuthorize, |c| {
-        c.limits.auth_failures_per_minute = 10_000
+        c.limits.auth_failures_per_minute = 10_000;
+        c.limits.join_per_minute = 10_000;
     })
     .await
 }
@@ -190,6 +191,33 @@ pub fn board_routes(on: &str, thread: &str) -> Vec<(Method, String, Option<Value
             Some(json!({"thread": thread, "text": "reply"})),
         ),
     ]
+}
+
+/// A fresh instance-admin credential.
+pub async fn instance_token(store: &SqliteStore) -> String {
+    credential(store, CredentialScope::Instance, "root", NOW + DAY).await
+}
+
+/// Mints an invite with `token` and returns the invite string.
+pub async fn mint_invite(app: &Router, token: &str, on: &str, kind: &str, role: &str) -> String {
+    let body = json!({"kind": kind, "role": role});
+    let uri = format!("/v1/boards/{on}/invites");
+    let reply = send(app, request(Method::POST, &uri, Some(token), Some(&body))).await;
+    assert_eq!(reply.status, StatusCode::CREATED, "{}", reply.body);
+    reply.json()["invite"].as_str().unwrap().to_owned()
+}
+
+/// Redeems `invite` as `name`, with no token.
+pub async fn join_as(app: &Router, invite: &str, name: &str) -> Reply {
+    let body = json!({"invite": invite, "name": name});
+    send(app, request(Method::POST, "/v1/join", None, Some(&body))).await
+}
+
+/// `req`, as if it arrived from `peer`.
+pub fn from_peer(mut req: Request<Body>, peer: &str) -> Request<Body> {
+    req.extensions_mut()
+        .insert(stigmer_api::PeerAddr(peer.parse().unwrap()));
+    req
 }
 
 pub const UNAUTHORIZED_BODY: &str =

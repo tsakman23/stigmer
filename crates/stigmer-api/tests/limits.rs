@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use axum::body::Body;
 use axum::http::{Method, Request, StatusCode};
 use common::*;
-use stigmer_api::{router, AllowAll, ApiConfig, IpNet, Limits, PeerAddr, RoleAuthorize};
+use stigmer_api::{router, AllowAll, ApiConfig, IpNet, Limits, RoleAuthorize};
 use stigmer_core::{BoardId, Role};
 use stigmer_store::{IdentityStore, Mode, SecurityEventKind};
 use stigmer_store_sqlite::SqliteStore;
@@ -32,11 +32,6 @@ fn api_config_defaults() {
     );
     assert!(local.allowed_hosts.is_empty());
     assert!(local.trusted_proxies.is_empty());
-}
-
-fn from_peer(mut req: Request<Body>, peer: &str) -> Request<Body> {
-    req.extensions_mut().insert(PeerAddr(peer.parse().unwrap()));
-    req
 }
 
 fn forwarded(mut req: Request<Body>, xff: &str) -> Request<Body> {

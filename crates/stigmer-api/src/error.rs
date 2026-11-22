@@ -34,6 +34,11 @@ impl ApiError {
         Self::new(ErrorCode::NotFound, message)
     }
 
+    /// A failure of ours that the client cannot act on.
+    pub(crate) fn internal() -> Self {
+        Self::new(ErrorCode::Internal, "internal error")
+    }
+
     /// The one answer to every failed authentication, whatever the reason.
     pub(crate) fn unauthorized() -> Self {
         Self::new(ErrorCode::Unauthorized, "invalid or expired credentials")
