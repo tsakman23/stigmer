@@ -1,4 +1,4 @@
-//! Stored messages and the result of posting one.
+//! Stored boards and messages, and the result of posting one.
 
 use serde::{Deserialize, Serialize};
 
@@ -15,6 +15,17 @@ pub struct Message {
     pub text: String,
     pub labels: Vec<Label>,
     pub at_ms: i64,
+}
+
+/// A board as the store keeps it. `created_by` is `None` for boards nobody created through the
+/// store (`main`, made when the store opens). `archived_at_ms` is set once, when the board is
+/// archived; an archived board refuses posts and stays readable.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BoardInfo {
+    pub id: BoardId,
+    pub created_at_ms: i64,
+    pub created_by: Option<Principal>,
+    pub archived_at_ms: Option<i64>,
 }
 
 /// The outcome of a post: the stored message and the event that recorded it.
@@ -159,6 +170,40 @@ mod tests {
         let json = serde_json::to_string(&posted).unwrap();
         let back: Posted = serde_json::from_str(&json).unwrap();
         assert_eq!(back, posted);
+    }
+
+    #[test]
+    fn board_info_roundtrips_through_json() {
+        let info = BoardInfo {
+            id: BoardId::new("research").unwrap(),
+            created_at_ms: 1_700_000_000_000,
+            created_by: Some(Principal::new("alice").unwrap()),
+            archived_at_ms: Some(1_700_000_000_500),
+        };
+        let json = serde_json::to_string(&info).unwrap();
+        assert_eq!(serde_json::from_str::<BoardInfo>(&json).unwrap(), info);
+
+        let main = BoardInfo {
+            id: BoardId::main(),
+            created_at_ms: 0,
+            created_by: None,
+            archived_at_ms: None,
+        };
+        let json = serde_json::to_string(&main).unwrap();
+        assert_eq!(serde_json::from_str::<BoardInfo>(&json).unwrap(), main);
+    }
+
+    #[test]
+    fn board_info_deserialize_validates_fields() {
+        let mut value = serde_json::to_value(BoardInfo {
+            id: BoardId::main(),
+            created_at_ms: 1,
+            created_by: None,
+            archived_at_ms: None,
+        })
+        .unwrap();
+        value["created_by"] = serde_json::json!("Not A Principal");
+        assert!(serde_json::from_value::<BoardInfo>(value).is_err());
     }
 
     #[test]

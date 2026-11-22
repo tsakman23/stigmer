@@ -22,7 +22,7 @@ pub use ids::{
 };
 pub use labels::{parse_labels, Label, MAX_LABELS};
 pub use message::{NewMessage, Target, MAX_IDEMPOTENCY_KEY_CHARS, MAX_MESSAGE_CHARS};
-pub use model::{EventFilter, Message, Page, Posted, Thread, ThreadSummary};
+pub use model::{BoardInfo, EventFilter, Message, Page, Posted, Thread, ThreadSummary};
 pub use wire::{
     BoardSummary, BoardsResponse, ChannelsResponse, CreateBoardRequest, ErrorBody, ErrorCode,
     ErrorDetail, EventsResponse, InviteRequest, InviteResponse, JoinRequest, JoinResponse,
