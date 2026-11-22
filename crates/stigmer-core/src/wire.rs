@@ -61,6 +61,8 @@ pub enum ErrorCode {
     Unauthorized,
     RateLimited,
     BoardArchived,
+    /// The request body stalled: nothing arrived for longer than the server's body read timeout.
+    RequestTimeout,
     /// A code this version does not know. Only ever produced by deserializing a newer
     /// server's response; servers never send it.
     #[serde(other)]
@@ -296,6 +298,7 @@ mod tests {
             (ErrorCode::Unauthorized, "unauthorized"),
             (ErrorCode::RateLimited, "rate_limited"),
             (ErrorCode::BoardArchived, "board_archived"),
+            (ErrorCode::RequestTimeout, "request_timeout"),
         ] {
             assert_eq!(serde_json::to_string(&code).unwrap(), format!("\"{name}\""));
             assert_eq!(

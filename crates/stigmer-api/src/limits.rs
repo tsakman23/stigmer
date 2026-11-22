@@ -1,5 +1,7 @@
 //! Request limits.
 
+use std::time::Duration;
+
 /// How much a router lets clients do at once.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Limits {
@@ -12,6 +14,9 @@ pub struct Limits {
     /// Most sources a limiter tracks at once (IPv6 grouped by /64). When full, a source it is not
     /// tracking yet is refused (429) until idle entries are pruned.
     pub max_tracked_sources: usize,
+    /// Longest a request body may go without sending anything while it is read; a body that
+    /// stalls longer is cut off with 408 `request_timeout`.
+    pub body_read_timeout: Duration,
 }
 
 impl Default for Limits {
@@ -21,6 +26,7 @@ impl Default for Limits {
             auth_failures_per_minute: 10,
             join_per_minute: 10,
             max_tracked_sources: 10_000,
+            body_read_timeout: Duration::from_secs(10),
         }
     }
 }

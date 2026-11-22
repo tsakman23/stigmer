@@ -176,6 +176,11 @@ impl CliError {
                 "board_archived",
                 "the board is archived and read-only".into(),
             ),
+            ErrorCode::RequestTimeout => (
+                Exit::Failure,
+                "request_timeout",
+                "the request body arrived too slowly; check the network and retry".into(),
+            ),
             ErrorCode::Unknown => (
                 Exit::Failure,
                 "unknown",
@@ -242,6 +247,8 @@ mod tests {
         assert_eq!(api(ErrorCode::BoardArchived).exit.code(), 1);
         assert_eq!(api(ErrorCode::Internal).exit.code(), 1);
         assert_eq!(api(ErrorCode::MethodNotAllowed).exit.code(), 1);
+        assert_eq!(api(ErrorCode::RequestTimeout).exit.code(), 1);
+        assert_eq!(api(ErrorCode::RequestTimeout).code, "request_timeout");
         assert_eq!(api(ErrorCode::InvalidCursor).code, "invalid_cursor");
     }
 

@@ -44,6 +44,14 @@ impl ApiError {
         Self::new(ErrorCode::Unauthorized, "invalid or expired credentials")
     }
 
+    /// The request body stalled past the body read timeout.
+    pub(crate) fn request_timeout() -> Self {
+        Self::new(
+            ErrorCode::RequestTimeout,
+            "request body not received in time",
+        )
+    }
+
     /// Too many requests from this client; it may retry after `retry_after` seconds.
     pub(crate) fn rate_limited(retry_after: u64) -> Self {
         Self {
@@ -63,6 +71,7 @@ impl ApiError {
             ErrorCode::Unauthorized => StatusCode::UNAUTHORIZED,
             ErrorCode::RateLimited => StatusCode::TOO_MANY_REQUESTS,
             ErrorCode::BoardArchived => StatusCode::CONFLICT,
+            ErrorCode::RequestTimeout => StatusCode::REQUEST_TIMEOUT,
             // Servers never send Unknown; if one ever reaches here it is a bug.
             ErrorCode::Internal | ErrorCode::Unknown => StatusCode::INTERNAL_SERVER_ERROR,
         }

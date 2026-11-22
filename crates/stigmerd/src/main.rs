@@ -54,9 +54,17 @@ struct ServeArgs {
     /// Most connections open at once; further connections are closed without a response.
     #[arg(long, default_value_t = 1024, value_parser = clap::value_parser!(u32).range(1..))]
     max_connections: u32,
+    /// Most connections open at once from one address (IPv6 counted per /64); further
+    /// connections from it are closed without a response. Behind a proxy every connection
+    /// comes from the proxy's address.
+    #[arg(long, default_value_t = 64, value_parser = clap::value_parser!(u32).range(1..=100_000))]
+    max_connections_per_source: u32,
     /// How long a client may take to send its request headers, in ms (for tests).
     #[arg(long, default_value_t = 10_000, hide = true, value_parser = clap::value_parser!(u64).range(1..=60_000))]
     header_read_timeout_ms: u64,
+    /// How long a request body may go without sending anything, in ms (for tests).
+    #[arg(long, default_value_t = 10_000, hide = true, value_parser = clap::value_parser!(u64).range(1..=60_000))]
+    body_read_timeout_ms: u64,
     /// Serve TLS 1.3 with this PEM certificate chain (requires --tls-key).
     #[arg(long, value_name = "PEM", requires = "tls_key")]
     tls_cert: Option<PathBuf>,
@@ -118,7 +126,9 @@ async fn serve(args: ServeArgs) -> Result<(), Failure> {
         data_dir,
         bind,
         max_connections,
+        max_connections_per_source,
         header_read_timeout_ms,
+        body_read_timeout_ms,
         tls_cert,
         tls_key,
         tls_reload_interval_ms,
@@ -169,6 +179,7 @@ async fn serve(args: ServeArgs) -> Result<(), Failure> {
         Mode::Network => ApiConfig::network(),
     };
     config.allowed_hosts = allowed_hosts;
+    config.limits.body_read_timeout = Duration::from_millis(body_read_timeout_ms);
     config.trusted_proxies.clone_from(&trusted_proxies);
     let app = match mode {
         Mode::Local => router(store, AllowAll, shutdown_rx.clone(), config),
@@ -187,6 +198,8 @@ async fn serve(args: ServeArgs) -> Result<(), Failure> {
     let listen = serve::Listen {
         // u32 always fits a usize on the platforms Rust supports for this server.
         max_connections: usize::try_from(max_connections).unwrap_or(usize::MAX),
+        max_connections_per_source: usize::try_from(max_connections_per_source)
+            .unwrap_or(usize::MAX),
         header_read_timeout: Duration::from_millis(header_read_timeout_ms),
         // With TLS any peer may connect; without it, only the proxies (when any are listed).
         plain_from: if tls.is_some() {

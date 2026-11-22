@@ -25,6 +25,7 @@ use tokio::sync::{watch, Semaphore};
 use crate::admin_routes;
 use crate::auth::{authenticate, require_peer, PeerGuard};
 use crate::authz::{Action, Authenticated, Authorize, Scope};
+use crate::body_deadline::limit_body_idle;
 use crate::config::ApiConfig;
 use crate::error::ApiError;
 use crate::host_guard::{require_allowed_host, AllowedHosts};
@@ -75,6 +76,7 @@ pub fn router<S: Store + IdentityStore, A: Authorize>(
     config: ApiConfig,
 ) -> Router {
     let allowed_hosts = AllowedHosts::new(&config.allowed_hosts);
+    let body_read_timeout = config.limits.body_read_timeout;
     let peer_guard =
         (config.mode == Mode::Network).then(|| PeerGuard::new(Arc::clone(&config.warn)));
     let state = AppState {
@@ -120,6 +122,10 @@ pub fn router<S: Store + IdentityStore, A: Authorize>(
         .fallback(unknown_route)
         .method_not_allowed_fallback(wrong_method)
         .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
+        .layer(axum::middleware::from_fn_with_state(
+            body_read_timeout,
+            limit_body_idle,
+        ))
         .layer(axum::middleware::from_fn_with_state(
             allowed_hosts,
             require_allowed_host,

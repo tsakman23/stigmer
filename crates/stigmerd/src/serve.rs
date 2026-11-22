@@ -2,8 +2,9 @@
 //! client may take to send its request headers (and finish a TLS handshake), tag each request
 //! with the peer address, add HSTS on TLS and end connections gracefully at shutdown.
 
-use std::net::{IpAddr, SocketAddr};
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::net::{IpAddr, Ipv6Addr, SocketAddr};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use axum::body::{Bytes, HttpBody};
@@ -56,6 +57,9 @@ impl Throttle {
 pub(crate) struct Listen {
     /// Connections open at once; the excess is accepted and dropped without a response.
     pub(crate) max_connections: usize,
+    /// Connections open at once from one source (see `source_key`); the excess is accepted and
+    /// dropped without a response.
+    pub(crate) max_connections_per_source: usize,
     /// How long a client may take to send complete request headers, and to finish a TLS
     /// handshake.
     pub(crate) header_read_timeout: Duration,
@@ -97,6 +101,7 @@ pub(crate) async fn run(
         handshake_timeout: listen.header_read_timeout,
     });
     let slots = Arc::new(Semaphore::new(listen.max_connections));
+    let per_source = Arc::new(SourceSlots::new(listen.max_connections_per_source));
     // Every connection task holds a sender; the channel closes once the last one ends.
     let (alive, mut all_closed) = mpsc::channel::<()>(1);
     let mut accept_warning = Throttle::new(ACCEPT_WARN_EVERY);
@@ -124,8 +129,13 @@ pub(crate) async fn run(
             drop(stream);
             continue;
         }
+        // Over either cap: close at once, before reading a byte. The source's slot is taken
+        // first, so a source at its cap never holds one of the shared slots.
+        let Some(source_permit) = SourceSlots::try_acquire(&per_source, peer.ip()) else {
+            drop(stream);
+            continue;
+        };
         let Ok(permit) = Arc::clone(&slots).try_acquire_owned() else {
-            // Over the cap: close at once, before reading a byte.
             drop(stream);
             continue;
         };
@@ -134,7 +144,7 @@ pub(crate) async fn run(
             peer,
             Arc::clone(&shared),
             shutdown.clone(),
-            permit,
+            (permit, source_permit),
             alive.clone(),
         ));
     }
@@ -143,18 +153,81 @@ pub(crate) async fn run(
     let _ = all_closed.recv().await;
 }
 
+/// The source a connection counts against: an IPv4 address (IPv4-mapped IPv6 included) as
+/// itself, an IPv6 address as its /64, as the rate limiters group sources.
+fn source_key(peer: IpAddr) -> IpAddr {
+    match peer.to_canonical() {
+        IpAddr::V6(v6) => IpAddr::V6(Ipv6Addr::from(u128::from(v6) & !(u128::MAX >> 64))),
+        v4 => v4,
+    }
+}
+
+/// Open connections per source, each source capped at `max`.
+struct SourceSlots {
+    max: usize,
+    open: Mutex<HashMap<IpAddr, usize>>,
+}
+
+impl SourceSlots {
+    fn new(max: usize) -> Self {
+        Self {
+            max,
+            open: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// A slot for a connection from `peer`, or `None` when its source has `max` open.
+    fn try_acquire(slots: &Arc<Self>, peer: IpAddr) -> Option<SourcePermit> {
+        let key = source_key(peer);
+        let mut open = slots.lock();
+        let count = open.entry(key).or_insert(0);
+        if *count >= slots.max {
+            return None;
+        }
+        *count += 1;
+        Some(SourcePermit {
+            slots: Arc::clone(slots),
+            key,
+        })
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<IpAddr, usize>> {
+        // A count is changed in one step, so a panicking holder cannot leave one half-done.
+        self.open.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+/// One open connection's slot; dropping it, on any exit path, frees the slot.
+struct SourcePermit {
+    slots: Arc<SourceSlots>,
+    key: IpAddr,
+}
+
+impl Drop for SourcePermit {
+    fn drop(&mut self) {
+        let mut open = self.slots.lock();
+        if let Some(count) = open.get_mut(&self.key) {
+            *count = count.saturating_sub(1);
+            if *count == 0 {
+                open.remove(&self.key);
+            }
+        }
+    }
+}
+
 /// True when `ranges` is empty (no restriction) or one of them holds `peer`.
 fn admits(ranges: &[IpNet], peer: IpAddr) -> bool {
     ranges.is_empty() || ranges.iter().any(|range| range.contains(peer))
 }
 
-/// Serves one accepted connection; the permit and the alive sender are held until it ends.
+/// Serves one accepted connection; the permits and the alive sender are held until it ends,
+/// whichever way it ends.
 async fn connection(
     stream: TcpStream,
     peer: SocketAddr,
     shared: Arc<Shared>,
     shutdown: watch::Receiver<bool>,
-    _permit: OwnedSemaphorePermit,
+    _permits: (OwnedSemaphorePermit, SourcePermit),
     _alive: mpsc::Sender<()>,
 ) {
     let Some(acceptor) = &shared.tls else {
@@ -242,6 +315,45 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn ip(s: &str) -> IpAddr {
+        s.parse().unwrap()
+    }
+
+    fn tracked(slots: &Arc<SourceSlots>) -> usize {
+        slots.lock().len()
+    }
+
+    #[test]
+    fn per_source_slots_are_counted_per_source() {
+        let slots = Arc::new(SourceSlots::new(2));
+        let a1 = SourceSlots::try_acquire(&slots, ip("127.0.0.1"));
+        let a2 = SourceSlots::try_acquire(&slots, ip("::ffff:127.0.0.1"));
+        assert!(a1.is_some() && a2.is_some());
+        assert!(SourceSlots::try_acquire(&slots, ip("127.0.0.1")).is_none());
+        // Another source still connects.
+        let b = SourceSlots::try_acquire(&slots, ip("127.0.0.2"));
+        assert!(b.is_some());
+        // IPv6 counts per /64.
+        let c1 = SourceSlots::try_acquire(&slots, ip("2001:db8:1:2::1"));
+        let c2 = SourceSlots::try_acquire(&slots, ip("2001:db8:1:2:ffff::9"));
+        assert!(c1.is_some() && c2.is_some());
+        assert!(SourceSlots::try_acquire(&slots, ip("2001:db8:1:2::3")).is_none());
+        assert!(SourceSlots::try_acquire(&slots, ip("2001:db8:1:3::1")).is_some());
+    }
+
+    #[test]
+    fn per_source_slots_are_released_when_permits_drop() {
+        let slots = Arc::new(SourceSlots::new(1));
+        let held = SourceSlots::try_acquire(&slots, ip("192.0.2.1"));
+        assert!(held.is_some());
+        assert!(SourceSlots::try_acquire(&slots, ip("192.0.2.1")).is_none());
+        drop(held);
+        let again = SourceSlots::try_acquire(&slots, ip("192.0.2.1"));
+        assert!(again.is_some());
+        drop(again);
+        assert_eq!(tracked(&slots), 0, "an idle source costs nothing");
+    }
 
     #[test]
     fn throttle_allows_one_warning_per_period() {

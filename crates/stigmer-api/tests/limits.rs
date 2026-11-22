@@ -28,6 +28,7 @@ fn api_config_defaults() {
             auth_failures_per_minute: 10,
             join_per_minute: 10,
             max_tracked_sources: 10_000,
+            body_read_timeout: std::time::Duration::from_secs(10),
         }
     );
     assert!(local.allowed_hosts.is_empty());

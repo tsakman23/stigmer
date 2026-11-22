@@ -413,6 +413,10 @@ fn hidden_timeout_flags_reject_out_of_range_values() {
         ("--header-read-timeout-ms", "60001"),
         ("--tls-reload-interval-ms", "0"),
         ("--tls-reload-interval-ms", "3600001"),
+        ("--body-read-timeout-ms", "0"),
+        ("--body-read-timeout-ms", "60001"),
+        ("--max-connections-per-source", "0"),
+        ("--max-connections-per-source", "100001"),
     ] {
         let out = run_bounded(&["serve", "--bind", "127.0.0.1:0", flag, value], &data);
         assert_eq!(out.code, Some(2), "{flag} {value}: {}", out.stderr);
@@ -423,4 +427,156 @@ fn hidden_timeout_flags_reject_out_of_range_values() {
             "a refused start must not create the data dir"
         );
     }
+}
+
+/// A post whose body is announced but arrives in `pieces`, `gap` apart, on one connection;
+/// returns the whole response and how long it took.
+fn post_in_pieces(addr: &str, pieces: &[&str], gap: Duration) -> (String, Duration) {
+    use std::io::Write;
+    let started = std::time::Instant::now();
+    let body_len: usize = pieces.iter().map(|p| p.len()).sum();
+    let mut stream = std::net::TcpStream::connect(addr).expect("connect");
+    stream
+        .write_all(
+            format!(
+                "POST /v1/boards/main/messages HTTP/1.1\r\nHost: {addr}\r\n\
+                 X-Stigmer-As: alice\r\nContent-Type: application/json\r\n\
+                 Connection: close\r\nContent-Length: {body_len}\r\n\r\n"
+            )
+            .as_bytes(),
+        )
+        .expect("write head");
+    for piece in pieces {
+        std::thread::sleep(gap);
+        // The server may already have given up on a stalled body and closed the connection.
+        if stream.write_all(piece.as_bytes()).is_err() {
+            break;
+        }
+    }
+    let reply = read_to_close(&mut stream);
+    (reply, started.elapsed())
+}
+
+#[test]
+fn dripped_body_is_cut_after_the_body_read_timeout() {
+    use std::io::Write;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let server = start_with(&dir.path().join("data"), &["--body-read-timeout-ms", "300"]);
+    let started = std::time::Instant::now();
+    let mut stream = std::net::TcpStream::connect(&server.addr).expect("connect");
+    // Complete headers announcing 100 bytes, then a few bytes, then nothing.
+    stream
+        .write_all(
+            format!(
+                "POST /v1/boards/main/messages HTTP/1.1\r\nHost: {}\r\n\
+                 X-Stigmer-As: alice\r\nContent-Type: application/json\r\n\
+                 Content-Length: 100\r\n\r\n{{\"chan",
+                server.addr
+            )
+            .as_bytes(),
+        )
+        .expect("write");
+    let reply = read_to_close(&mut stream);
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed < Duration::from_secs(3),
+        "cut only after {elapsed:?}"
+    );
+    assert!(reply.starts_with("HTTP/1.1 408"), "reply: {reply:?}");
+    assert!(
+        reply.contains("\"code\":\"request_timeout\""),
+        "reply: {reply:?}"
+    );
+    // Nothing was posted.
+    let (_, body) = http(
+        &server.addr,
+        "GET",
+        "/v1/boards/main/channels?prefix=eng",
+        &[],
+        "",
+    );
+    assert_eq!(body, r#"{"threads":[]}"#);
+}
+
+#[test]
+fn slow_but_active_upload_under_the_body_read_timeout_succeeds() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let server = start_with(&dir.path().join("data"), &["--body-read-timeout-ms", "500"]);
+    let pieces = [
+        "{\"chan", "nel\":", "\"eng\",", "\"text", "\":\"sl", "ow up", "load\"", "}",
+    ];
+    let (reply, elapsed) = post_in_pieces(&server.addr, &pieces, Duration::from_millis(150));
+    assert!(
+        elapsed > Duration::from_millis(1000),
+        "the upload took {elapsed:?}, not longer than the deadline"
+    );
+    assert!(reply.starts_with("HTTP/1.1 201"), "reply: {reply:?}");
+    assert!(reply.contains("slow upload"), "reply: {reply:?}");
+}
+
+#[test]
+fn max_connections_per_source_closes_the_excess_and_frees_slots_on_close() {
+    use std::io::{Read, Write};
+    let dir = tempfile::tempdir().expect("tempdir");
+    let server = start_with(
+        &dir.path().join("data"),
+        &["--max-connections-per-source", "2"],
+    );
+    // Two answered keep-alive connections from 127.0.0.1 hold both of its slots.
+    let mut held = Vec::new();
+    for _ in 0..2 {
+        let mut stream = std::net::TcpStream::connect(&server.addr).expect("connect");
+        stream
+            .write_all(format!("GET /healthz HTTP/1.1\r\nHost: {}\r\n\r\n", server.addr).as_bytes())
+            .expect("write");
+        let mut buf = [0u8; 1024];
+        let n = stream.read(&mut buf).expect("read response");
+        assert!(String::from_utf8_lossy(&buf[..n]).starts_with("HTTP/1.1 200"));
+        held.push(stream);
+    }
+    let excess = raw(
+        &server.addr,
+        b"GET /healthz HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n",
+    );
+    assert!(excess.is_empty(), "the excess connection got: {excess:?}");
+
+    // Another source is not affected (where the OS has a second loopback address).
+    match connect_from("127.0.0.2:0", &server.addr) {
+        Some(mut other) => {
+            other
+                .write_all(b"GET /healthz HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n")
+                .expect("write");
+            let reply = read_to_close(&mut other);
+            assert!(reply.starts_with("HTTP/1.1 200"), "other source: {reply:?}");
+        }
+        // Covered instead by serve::tests::per_source_slots_are_counted_per_source.
+        None => eprintln!("127.0.0.2 is not available here; skipping the second source"),
+    }
+
+    // Closing one held connection frees its slot.
+    drop(held.pop());
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let reply = raw(
+            &server.addr,
+            b"GET /healthz HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+        );
+        if reply.starts_with("HTTP/1.1 200") {
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline, "slot never freed");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+#[test]
+fn help_documents_the_per_source_cap_and_hides_the_body_timeout() {
+    let out = Command::new(env!("CARGO_BIN_EXE_stigmerd"))
+        .args(["serve", "--help"])
+        .output()
+        .expect("run help");
+    let help = String::from_utf8_lossy(&out.stdout);
+    assert!(help.contains("--max-connections-per-source"), "{help}");
+    assert!(help.contains("[default: 64]"), "{help}");
+    assert!(!help.contains("--body-read-timeout-ms"), "{help}");
 }
