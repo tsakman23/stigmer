@@ -1,5 +1,6 @@
 //! stigmer-core: domain types and validation rules. No I/O, no async.
 
+mod credentials;
 mod error;
 mod event;
 mod identity;
@@ -9,6 +10,10 @@ mod message;
 mod model;
 mod wire;
 
+pub use credentials::{
+    generate_secret, hash_secret, hashes_match, parse_secret, secrets_match, NewSecret, SecretKind,
+    TokenId,
+};
 pub use error::CoreError;
 pub use event::{event_hash, Cursor, Event, EventKind, GENESIS_HASH, HASH_VERSION};
 pub use identity::{PrincipalKind, Role};

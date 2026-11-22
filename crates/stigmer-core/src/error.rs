@@ -23,6 +23,8 @@ pub enum CoreError {
     BadIdempotencyKey(String),
     #[error("invalid cursor: {0}")]
     BadCursor(String),
+    #[error("invalid credential")]
+    BadToken,
     #[error("could not gather randomness: {0}")]
     Entropy(String),
 }
