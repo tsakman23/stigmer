@@ -23,7 +23,10 @@ how it was built (`stigmer-api`: `routes.rs`, `auth.rs`, `ratelimit.rs`, `join_r
   whose holder is no longer a member, all get the same 401 body (`unauthorized`, "invalid or
   expired credentials"). So does an events wait whose credential was revoked, expired or lost
   its membership while it waited: it re-checks the credential at every wake and never returns
-  events to it. Likewise every unusable invite on `POST /v1/join` (unknown, wrong secret,
+  events to it. Each wake costs up to two store reads (`find_credential`, then `get_member`
+  for a board token), so the extra load is bounded by `max_waits` times the board's event rate;
+  if that ever matters, the re-check can be limited to wakes whose next read would return
+  events. Likewise every unusable invite on `POST /v1/join` (unknown, wrong secret,
   expired, used, archived board) is the same 401. See [0009](0009-token-and-invite-format.md) for
   the constant-time comparison and the dummy hash.
 - **Existence hiding.** A board credential gets the same 404 `no such board` for every other
