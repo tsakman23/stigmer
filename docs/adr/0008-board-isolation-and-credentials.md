@@ -32,7 +32,9 @@ per board plus a separate instance credential (design M1 section 5).
   token, but `RoleAuthorize` never lets it read or post content: content routes answer it 403.
   The principal name `instance-admin` is reserved: no member may take it (`add_member`,
   `adopt_local_authors` and `consume_invite` refuse it as `Conflict(NameTaken)`), so the
-  name in the security log always means the operator.
+  name in the security log always means the operator. `map-local-principals` refuses (exit 2)
+  to plan or apply an adoption of a local author with that name and points at `--skip <name>`,
+  which leaves an author and its messages local.
 - **Roles per board** ([0004](0004-authorization-seam.md)): `admin` reads, posts and manages
   members, invites and tokens of its board and may archive it; `member` and `bridge` read and
   post. An invite binds board, role and kind; the bridge role and the bridge kind go together.

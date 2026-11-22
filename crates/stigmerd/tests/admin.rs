@@ -942,6 +942,159 @@ fn map_local_principals_unknown_name_is_exit_2() {
     }
 }
 
+/// A network-mode data dir whose main has local posts by `posts`' authors.
+#[cfg(unix)]
+fn network_with_local_posts(data: &Path, posts: &[(&str, &str)]) {
+    seed_local_board(data, posts);
+    let out = admin(data, &["enable-auth", "--no-main-invite"]);
+    assert_eq!(out.status.code(), Some(0), "stderr: {}", stderr(&out));
+}
+
+const RESERVED_HINT: &str = "local author \"instance-admin\" uses a reserved name; \
+     rerun with --skip instance-admin (its messages stay local)";
+
+#[cfg(unix)]
+#[test]
+fn map_local_principals_reserved_author_is_exit_2_with_the_skip_hint() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let data = dir.path().join("data");
+    network_with_local_posts(&data, &[("alice", "one"), ("instance-admin", "two")]);
+    for extra in [&[][..], &["--apply"][..]] {
+        let mut args = vec!["map-local-principals", "--admin", "alice"];
+        args.extend_from_slice(extra);
+        let out = admin(&data, &args);
+        assert_eq!(out.status.code(), Some(2), "{args:?}: {}", stderr(&out));
+        assert!(stderr(&out).contains(RESERVED_HINT), "{}", stderr(&out));
+        assert!(
+            !stdout(&out).contains("instance-admin"),
+            "a reserved author is never listed as adoptable: {}",
+            stdout(&out)
+        );
+    }
+    with_store(&data, |store| async move {
+        assert_eq!(
+            store.list_members(&BoardId::main()).await.expect("members"),
+            []
+        );
+    });
+}
+
+#[cfg(unix)]
+#[test]
+fn map_local_principals_skip_leaves_the_author_local_and_adopts_the_rest() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let data = dir.path().join("data");
+    network_with_local_posts(
+        &data,
+        &[
+            ("alice", "one"),
+            ("instance-admin", "two"),
+            ("bob", "three"),
+        ],
+    );
+    let dry = admin(
+        &data,
+        &[
+            "map-local-principals",
+            "--admin",
+            "alice",
+            "--skip",
+            "instance-admin",
+        ],
+    );
+    assert_eq!(dry.status.code(), Some(0), "stderr: {}", stderr(&dry));
+    let names: Vec<String> = stdout(&dry)
+        .lines()
+        .skip(1)
+        .filter_map(|l| l.split_whitespace().next().map(str::to_owned))
+        .filter(|n| n != "dry")
+        .collect();
+    assert_eq!(names, ["alice", "bob"], "{}", stdout(&dry));
+
+    let out = admin(
+        &data,
+        &[
+            "map-local-principals",
+            "--admin",
+            "alice",
+            "--skip",
+            "instance-admin",
+            "--apply",
+        ],
+    );
+    assert_eq!(out.status.code(), Some(0), "stderr: {}", stderr(&out));
+    assert!(
+        stdout(&out).contains("adopted 2 authors and 2 messages"),
+        "{}",
+        stdout(&out)
+    );
+    with_store(&data, |store| async move {
+        let main = BoardId::main();
+        let members: Vec<String> = store
+            .list_members(&main)
+            .await
+            .expect("members")
+            .into_iter()
+            .map(|m| m.name.to_string())
+            .collect();
+        assert_eq!(members, ["alice", "bob"]);
+        assert_eq!(
+            store.list_local_authors(&main).await.expect("authors"),
+            [Principal::new("instance-admin").expect("name")],
+            "the skipped author stays local"
+        );
+    });
+}
+
+#[cfg(unix)]
+#[test]
+fn map_local_principals_skip_unknown_name_is_exit_2() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let data = dir.path().join("data");
+    network_with_local_posts(&data, &POSTS);
+    let out = admin(
+        &data,
+        &["map-local-principals", "--admin", "alice", "--skip", "zed"],
+    );
+    assert_eq!(out.status.code(), Some(2), "stderr: {}", stderr(&out));
+    assert!(stderr(&out).contains("--skip zed"), "{}", stderr(&out));
+    assert!(out.stdout.is_empty());
+}
+
+#[cfg(unix)]
+#[test]
+fn map_local_principals_name_taken_message_names_the_author() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let data = dir.path().join("data");
+    network_with_local_posts(&data, &POSTS);
+    // bob became a member some other way; his M0 posts are still local.
+    with_store(&data, |store| async move {
+        let bob = Principal::new("bob").expect("name");
+        store
+            .add_member(
+                &BoardId::main(),
+                &bob,
+                PrincipalKind::Agent,
+                Role::Member,
+                now_ms(),
+            )
+            .await
+            .expect("add bob");
+    });
+    let out = admin(
+        &data,
+        &["map-local-principals", "--admin", "alice", "--apply"],
+    );
+    assert_eq!(out.status.code(), Some(1), "stderr: {}", stderr(&out));
+    assert!(
+        stderr(&out).contains(
+            "local author \"bob\" is already a member of board main; rerun with --skip bob"
+        ),
+        "{}",
+        stderr(&out)
+    );
+}
+
 #[test]
 fn map_local_principals_nothing_to_map_exits_0() {
     let dir = tempfile::tempdir().expect("tempdir");

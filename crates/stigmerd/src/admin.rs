@@ -95,6 +95,9 @@ pub enum AdminCommand {
         /// A local author to make a board admin (others become members). Repeatable.
         #[arg(long = "admin", value_name = "NAME")]
         admins: Vec<String>,
+        /// A local author to leave out: not adopted, its messages stay local. Repeatable.
+        #[arg(long = "skip", value_name = "NAME")]
+        skips: Vec<String>,
         /// Write the mapping; without it the plan is only printed.
         #[arg(long)]
         apply: bool,
@@ -175,11 +178,17 @@ pub async fn run(command: AdminCommand) -> Result<(), Failure> {
         AdminCommand::MapLocalPrincipals {
             humans,
             admins,
+            skips,
             apply,
             ..
         } => {
             require_network(&store).await?;
-            let text = map_local_principals(&store, now, &humans, &admins, apply).await?;
+            let names = MappedNames {
+                humans: &humans,
+                admins: &admins,
+                skips: &skips,
+            };
+            let text = map_local_principals(&store, now, names, apply).await?;
             print_stdout(&text)
         }
         AdminCommand::SecurityLog { limit, .. } => {
@@ -491,12 +500,18 @@ async fn issue_member_token<S: IdentityStore>(
     Ok(secret.full)
 }
 
+/// The `map-local-principals` name flags, as given.
+struct MappedNames<'a> {
+    humans: &'a [String],
+    admins: &'a [String],
+    skips: &'a [String],
+}
+
 /// Plans, and with `apply` performs, the adoption of board main's local authors.
 async fn map_local_principals<S: IdentityStore>(
     store: &S,
     now: i64,
-    humans: &[String],
-    admins: &[String],
+    names: MappedNames<'_>,
     apply: bool,
 ) -> Result<String, Failure> {
     let main = BoardId::main();
@@ -507,15 +522,32 @@ async fn map_local_principals<S: IdentityStore>(
     if authors.is_empty() {
         return Ok("nothing to map\n".into());
     }
-    let humans = known_authors(humans, &authors, "--human")?;
-    let admins = known_authors(admins, &authors, "--admin")?;
+    let humans = known_authors(names.humans, &authors, "--human")?;
+    let admins = known_authors(names.admins, &authors, "--admin")?;
+    let skips = known_authors(names.skips, &authors, "--skip")?;
+    if let Some(both) = admins.iter().find(|name| skips.contains(name)) {
+        return Err(Failure::Config(format!(
+            "--admin {both} is also --skip; an admin must be adopted"
+        )));
+    }
     if admins.is_empty() {
         return Err(Failure::Config(
             "at least one --admin is required so the board keeps an administrator".into(),
         ));
     }
+    // A reserved name can never be a member: refuse before planning, so the plan never lists it.
+    if let Some(reserved) = authors
+        .iter()
+        .find(|name| name.as_str() == INSTANCE_ADMIN && !skips.contains(name))
+    {
+        return Err(Failure::Config(format!(
+            "local author \"{reserved}\" uses a reserved name; rerun with --skip {reserved} \
+             (its messages stay local)"
+        )));
+    }
     let adoptions: Vec<Adoption> = authors
         .iter()
+        .filter(|name| !skips.contains(name))
         .map(|name| Adoption {
             name: name.clone(),
             kind: if humans.contains(name) {
@@ -535,14 +567,39 @@ async fn map_local_principals<S: IdentityStore>(
         text.push_str("dry run: nothing changed; rerun with --apply to write this mapping\n");
         return Ok(text);
     }
-    let messages = store
-        .adopt_local_authors(&main, &adoptions, now)
-        .await
-        .map_err(|e| store_failure("cannot map local principals", &e))?;
+    let messages = match store.adopt_local_authors(&main, &adoptions, now).await {
+        Ok(messages) => messages,
+        Err(StoreError::Conflict(ConflictKind::NameTaken)) => {
+            return Err(name_taken(store, &main, &adoptions).await)
+        }
+        Err(e) => return Err(store_failure("cannot map local principals", &e)),
+    };
     Ok(format!(
         "adopted {} authors and {messages} messages into board main\n",
         adoptions.len()
     ))
+}
+
+/// The failure for an adoption refused as `NameTaken`, naming the first author that is already
+/// a member when one can be found.
+async fn name_taken<S: IdentityStore>(
+    store: &S,
+    board: &BoardId,
+    adoptions: &[Adoption],
+) -> Failure {
+    for adoption in adoptions {
+        if let Ok(Some(_)) = store.get_member(board, &adoption.name).await {
+            let name = &adoption.name;
+            return Failure::Runtime(format!(
+                "cannot map local principals: local author \"{name}\" is already a member of \
+                 board {board}; rerun with --skip {name}"
+            ));
+        }
+    }
+    store_failure(
+        "cannot map local principals",
+        &StoreError::Conflict(ConflictKind::NameTaken),
+    )
 }
 
 /// Parses `names` and checks each is one of the local `authors`.
