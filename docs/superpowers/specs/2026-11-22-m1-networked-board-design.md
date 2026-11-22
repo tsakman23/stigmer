@@ -102,3 +102,13 @@ Exact schema, token lengths within the stated shape, rustls crate wiring and the
 ## 10. Open items for the user
 - npm package name for the SDK (stigmer is free) and whether it stays unpublished until M3.
 - Release as v0.2.0 when M1 completes.
+
+## 11. Calls made after the builder check (mine; the user can overrule any)
+
+1. Archived boards. Archive revokes every member, agent and bridge token of the board but KEEPS board-admin tokens valid in a read-only state: admins can still read content, list members and tokens, and verify the chain; every post is refused with 409 (code `board_archived`). The instance admin still cannot read content. There is no unarchive in M1.
+2. Instance admin versus board routes. The instance-admin credential on a content route (channels, threads, events, posts) gets 403 `forbidden` (it is authenticated and boards are not secret from it). It may list members and tokens (metadata only) on any board, mint invites into any board, revoke any token and archive any board. A board admin calling an instance-only route (`POST /boards`) gets 403. `GET /boards` by a non-instance credential returns only that credential's own board. Archive is allowed to the instance admin or that board's admin.
+3. Bootstrap. A fresh network-mode data dir always creates `main`. `stigmerd admin enable-auth` creates the instance-admin credential AND mints one admin invite into `main` (single use, 24 hours, printed once; `--no-main-invite` skips it). `map-local-principals` requires at least one `--admin <name>` when it maps anyone, so `main` always has a board admin.
+4. Hash chain versus mapping. `author_kind` is a column on messages and is NOT an input to the event hash (the hash covers seq, kind, actor, message id, thread id, channel and time). Mapping local principals rewrites only `author_kind` (and creates principals and memberships); no event or hash is touched, and `verify_chain` must still pass afterwards (tested).
+5. Routes. The API is already `/v1/boards/{board}/...` with `main` enforced by `require_main_board`; M1 removes that restriction and adds routes. Existing routes, request and response shapes are unchanged, so v0.1.0 clients and the M0 e2e test keep working in local mode.
+6. Rate limits. A limited request gets 429 with new ErrorCode `rate_limited` and a `Retry-After` header. Limiting is checked before credential verification and keyed by source address (and token id once parsed), so the 401 body stays identical. An older client sees `Unknown` and the 429 status.
+7. Scope. In M1 every `check` passes the board only; the optional channel in `Scope` is reserved for M4 and is always None for M1 callers.
