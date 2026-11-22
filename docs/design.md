@@ -180,15 +180,25 @@ Exit tests (`crates/stigmer-cli/tests/e2e_m1.rs`): separate CLI processes with t
 - `read` frames each thread's preview as untrusted data, so its text output per thread is a summary line, then the framed preview (the first 80 characters of the root, so a root with line breaks gives more lines), instead of one line ([0006](adr/0006-untrusted-data-framing.md)).
 - `stigmerd admin issue-member-token`: mints a board token for an existing member, so adopted M0 authors (and members who lost a token) can log in ([0008](adr/0008-board-isolation-and-credentials.md)).
 - A post's `author_kind` is derived from membership in the post transaction (`principal` for a member of the board, `local` otherwise), so a second `map-local-principals` after members have posted is a clean no-op ([0007](adr/0007-local-principals.md)).
+- Final-review hardening ([0008](adr/0008-board-isolation-and-credentials.md), [0009](adr/0009-token-and-invite-format.md), [0010](adr/0010-tls-and-trusted-proxy.md), [0011](adr/0011-authentication-policy-401-403-404.md)):
+  - `stigmerd admin revoke-token <id>` revokes any credential, the instance token included, and `new-instance-token --revoke-others` replaces the instance token in one store transaction, so a failure leaves the old one valid.
+  - `main` cannot be archived (409 `conflict`, "the main board cannot be archived"); board names made only of dots are refused; the member name `instance-admin` is reserved.
+  - `map-local-principals --apply` writes a `principals_adopted` security log row in the adoption's transaction.
+  - Every request body has a 10 s idle deadline between frames; a stalled body is answered 408 with the new error code `request_timeout` (CLI exit 1). Open connections are capped per source address too (`--max-connections-per-source`, default 64; IPv6 per /64).
+  - `POST /v1/join` reserves its rate-limit slot before reading the body, and a join body that does not parse gets a generic "invalid join request" that echoes nothing back.
+  - An events wait re-checks its credential at every wake: a token revoked, expired or whose member was removed while it waited gets the usual 401, not the events.
+  - A /0 `--trusted-proxy` range prints a warning (anyone can then forge `X-Forwarded-For`).
+  - The SDK refuses to send a token over plain `http://` to a host that is not loopback (`insecure_transport`, unless `allowInsecure`) and never follows redirects.
 
 ### Known gaps carried into M2 and later
 
 - Authorization cost: every authenticated request reads the credential and the membership and writes the credential's last-seen time before the authorizer runs; there is no cache. M4 grants add their own lookups.
 - No HTTP/2, plain or over TLS, until there is an idle bound for it.
 - The TLS key's permissions are checked at startup only; a key file replaced with looser permissions is reloaded without a new warning.
-- Security log rows other than `Join` are written after the mutation, best effort, not in its transaction.
+- Security log rows other than `Join` and `principals_adopted` are written after the mutation, best effort, not in its transaction.
 - The rate limiters track at most 10,000 sources each; when full of busy sources, a new source is refused for about a minute (fail closed), which an attacker with many addresses can use to lock out new clients. Limiter state is per process.
 - The SDK has no framing helper (its example has a simplified one; [0006](adr/0006-untrusted-data-framing.md)) and no wrappers for boards, members, invites, tokens or join.
+- The per-source connection cap counts the peer address, so behind a reverse proxy it caps the proxy itself; raise `--max-connections-per-source` to the proxy's pool size.
 - The wire enums `ErrorCode` and `EventKind` have `Unknown` fallbacks, but the handling is minimal: the CLI exits 1 and prints the raw error code, prints an unknown event kind as `unknown`, and the SDK passes unknown codes through as strings.
 - The conformance suite has no scenario for concurrent `create_board` calls with the same name.
 - `stigmer login` reads the token from a terminal with echo on; pipe it in instead.

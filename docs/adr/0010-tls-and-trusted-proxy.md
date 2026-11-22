@@ -1,6 +1,6 @@
 # 0010. TLS and trusted proxies
 
-Status: Accepted; amended 2026-11-22 for M1 (HTTP/2 compiled out, PeerAddr, proxies)
+Status: Accepted; amended 2026-11-22 for M1 (HTTP/2 compiled out, PeerAddr, proxies, connection and body limits)
 Date: 2026-11-22
 
 ## Context
@@ -21,16 +21,22 @@ rate limiting needs the real peer address of every connection.
   `PeerAddr` into its requests. `PeerAddr` is mandatory in network mode: the outermost layer of
   the router answers 500 `internal` to a request without it, and warns once on stderr, rather
   than putting every client into one shared rate-limit bucket (fail closed). The loop caps open
-  connections (`--max-connections`, default 1024; the excess is dropped unanswered) and bounds
-  the header read and TLS handshake to 10 s. A failed `accept` (a reset, or running out of file
+  connections (`--max-connections`, default 1024; the excess is dropped unanswered), caps them
+  per source address too (`--max-connections-per-source`, default 64, 1 to 100000; IPv4 per
+  address, IPv6 per /64 like the rate limiters; the excess is accepted and dropped at once, and a
+  slot is released when its connection task ends, however it ends), and bounds the header read
+  and TLS handshake to 10 s. Every request body has an idle deadline of 10 s between frames,
+  enforced by a router middleware while the body is read: a body that stalls longer (sent
+  slowly, or announced and never sent) is answered 408 `request_timeout` and hyper closes the
+  connection, as the rest of the body was never read. A failed `accept` (a reset, or running out of file
   descriptors) is warned about on stderr by error kind only, at most once every 10 s; the loop
   pauses 50 ms and keeps accepting.
 - Every connection is served by hyper's HTTP/1 connection builder, plain or TLS. HTTP/2 is not
   compiled in at all: the `http2` features of hyper and hyper-util (and hyper-util's
   `server-auto`, which implies them) are off, so no HTTP/2 path exists to reach by accident.
-- Two serve flags exist for tests only and are hidden from `--help`:
-  `--header-read-timeout-ms` (default 10000, 1 to 60000) and `--tls-reload-interval-ms`
-  (default 5000, 1 to 3600000). They are not a supported interface.
+- Three serve flags exist for tests only and are hidden from `--help`:
+  `--header-read-timeout-ms` and `--body-read-timeout-ms` (default 10000, 1 to 60000) and
+  `--tls-reload-interval-ms` (default 5000, 1 to 3600000). They are not a supported interface.
 - TLS is rustls with the ring provider, TLS 1.3 only, no client certificates, ALPN `http/1.1`
   only, and `Strict-Transport-Security: max-age=31536000` on every response the router produces
   over TLS (its 404 and 405 fallbacks included); the 400 and 431 responses hyper writes itself for
@@ -42,7 +48,9 @@ rate limiting needs the real peer address of every connection.
   warned about at startup.
 - `--trusted-proxy <cidr,...>` lists proxy ranges whose `X-Forwarded-For` is believed. Without
   TLS, plain HTTP is accepted only from those ranges; other peers are dropped before any HTTP is
-  read. With TLS any peer may connect and the ranges only govern forwarding headers.
+  read. With TLS any peer may connect and the ranges only govern forwarding headers. A /0 range
+  (`0.0.0.0/0` or `::/0`) makes every peer a proxy, so anyone can forge `X-Forwarded-For`:
+  `stigmerd serve` prints one warning for it and still starts.
 - `X-Forwarded-For` decides the client address used for rate limiting and the security log,
   nothing else. From an untrusted peer it is ignored. From a trusted proxy the hops (all header
   lines, comma separated) are walked from the right, skipping hops that are trusted proxies too;
@@ -70,6 +78,12 @@ rate limiting needs the real peer address of every connection.
   is reloaded without a new warning.
 - Clients behind a proxy that is not declared share the proxy's address as their source, and so
   one failed-authentication budget ([0011](0011-authentication-policy-401-403-404.md)).
+- The per-source connection cap counts the peer address, so behind a reverse proxy every
+  proxied connection counts against the proxy: raise `--max-connections-per-source` to the
+  proxy's connection pool size.
 
 Amended 2026-11-22 (M1, Task 10): HTTP/2 compiled out; `PeerAddr`, accept-error, hidden-flag
 and `X-Forwarded-For` rules recorded.
+
+Amended 2026-11-22 (M1 final review): per-source connection cap, request body idle deadline
+(408 `request_timeout`), and the warning for a /0 trusted proxy range.

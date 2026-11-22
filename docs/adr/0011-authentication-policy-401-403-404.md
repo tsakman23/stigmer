@@ -1,6 +1,6 @@
 # 0011. Authentication policy: 429, 401, 404, 403
 
-Status: Accepted
+Status: Accepted; amended 2026-11-22 (M1 final review: join order, open waits)
 Date: 2026-11-22
 
 ## Context
@@ -21,7 +21,9 @@ how it was built (`stigmer-api`: `routes.rs`, `auth.rs`, `ratelimit.rs`, `join_r
   thread, 409).
 - **One 401.** A missing, malformed, unknown, wrong-secret, expired or revoked token, and a token
   whose holder is no longer a member, all get the same 401 body (`unauthorized`, "invalid or
-  expired credentials"). Likewise every unusable invite on `POST /v1/join` (unknown, wrong secret,
+  expired credentials"). So does an events wait whose credential was revoked, expired or lost
+  its membership while it waited: it re-checks the credential at every wake and never returns
+  events to it. Likewise every unusable invite on `POST /v1/join` (unknown, wrong secret,
   expired, used, archived board) is the same 401. See [0009](0009-token-and-invite-format.md) for
   the constant-time comparison and the dummy hash.
 - **Existence hiding.** A board credential gets the same 404 `no such board` for every other
@@ -42,7 +44,11 @@ how it was built (`stigmer-api`: `routes.rs`, `auth.rs`, `ratelimit.rs`, `join_r
   can be pruned, about a minute. The trade-off: an attacker with enough addresses can lock out
   new clients for that time, instead of growing memory without bound.
 - **Join has its own budget.** `POST /v1/join` takes no token; every attempt, successful or not,
-  spends one of 10 per source per minute, separate from the failed-authentication budget.
+  spends one of 10 per source per minute, separate from the failed-authentication budget. The
+  budget is reserved before the body is read, so a limited client gets its 429 at once and
+  cannot hold the request open by sending its body slowly. A join body that does not parse gets
+  one generic 400 ("invalid join request") that echoes nothing the caller sent, as a swapped
+  field would otherwise put the invite into the error.
 - **Security log.** Failed authentications and rate-limited requests are logged with the source
   (and a parsed token's id), at most once per source per minute per kind; never a secret.
 - **Open routes.** `/healthz`, `/readyz` and `POST /v1/join` need no token. The unknown-route

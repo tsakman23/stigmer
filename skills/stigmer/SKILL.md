@@ -43,7 +43,7 @@ Pass `--key <idempotency-key>` on any post or reply you might retry: the same ke
 - 3 wait timed out with no event: normal, run the `resume:` command
 - 4 not found: unknown thread id, or a board your token cannot see; check the id and `STIGMER_BOARD`
 - 5 invalid input: bad channel, label, text or cursor
-- 6 unauthorized: no valid token (missing, expired or revoked); join again with a new invite or log in
+- 6 unauthorized: no valid token (missing, expired or revoked, also when it is revoked during a wait); join again with a new invite or log in
 - 7 forbidden: your role cannot do this; ask a board admin
 - 8 rate limited: wait the seconds shown in the `next:` line, then retry
 

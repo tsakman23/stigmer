@@ -1,6 +1,6 @@
 # 0008. Board isolation and credentials
 
-Status: Accepted
+Status: Accepted; amended 2026-11-22 (M1 final review: revoke-token, protected main)
 Date: 2026-11-22
 
 ## Context
@@ -21,10 +21,18 @@ per board plus a separate instance credential (design M1 section 5).
   90 days by default, at most 365; refused on an archived board; logged as `member_token_issued`).
 - **The instance credential** (`CredentialScope::Instance`, principal `instance-admin`, kind
   human) is not a board member. It is created by `stigmerd admin enable-auth` (90 days) or
-  `stigmerd admin new-instance-token` (`--expires-days`, 1 to 365, default 90; the old token
-  stays valid until it expires or is revoked). It creates, lists and archives boards, lists
-  members and tokens of any board, mints invites into any board and revokes any token, but
-  `RoleAuthorize` never lets it read or post content: content routes answer it 403.
+  `stigmerd admin new-instance-token` (`--expires-days`, 1 to 365, default 90). Without
+  `--revoke-others` the old token stays valid until it expires or is revoked; with it, every
+  other instance token is revoked in the same store transaction that stores the new one
+  (`IdentityStore::replace_instance_credential`), so a failure leaves the old token valid rather
+  than no token at all. `stigmerd admin revoke-token <id>` revokes any credential, instance or
+  board, by id (server stopped, network mode; an unknown id exits 2; a repeat revoke changes
+  nothing; logged once as `token_revoked`, with the id only). It creates, lists and archives
+  boards, lists members and tokens of any board, mints invites into any board and revokes any
+  token, but `RoleAuthorize` never lets it read or post content: content routes answer it 403.
+  The principal name `instance-admin` is reserved: no member may take it (`add_member`,
+  `adopt_local_authors` and `consume_invite` refuse it as `Conflict(NameTaken)`), so the
+  name in the security log always means the operator.
 - **Roles per board** ([0004](0004-authorization-seam.md)): `admin` reads, posts and manages
   members, invites and tokens of its board and may archive it; `member` and `bridge` read and
   post. An invite binds board, role and kind; the bridge role and the bridge kind go together.
@@ -38,13 +46,19 @@ per board plus a separate instance credential (design M1 section 5).
   archive before the idempotency key, so a keyed retry of a post that had already committed
   before the archive also gets 409 `board_archived`: that answer does not mean the original
   write failed (read the thread to check).
+- **`main` cannot be archived.** `Store::archive_board` refuses it with
+  `Conflict(BoardProtected)` ("the main board cannot be archived"; HTTP 409 `conflict` for the
+  instance admin and a board admin of `main` alike, in both modes), so `main` always exists and
+  always takes posts. Board names are `[a-z0-9._-]{1,64}` but never only dots: `.` and `..` are
+  path segments, so `BoardId` refuses them (400, CLI exit 5).
 - **Join is atomic in the store.** `IdentityStore::consume_invite` checks the invite, adds the
   member, stores the credential, marks the invite used and writes the `Join` security log row
   in one transaction (SQLite `BEGIN IMMEDIATE`). A taken name is 409 and leaves the invite
   unused; any failure leaves nothing behind.
 - **Bootstrap.** `enable-auth` also mints one admin invite (kind human) into `main`, valid 24
   hours (`--no-main-invite` skips it). `map-local-principals` requires at least one `--admin`
-  ([0007](0007-local-principals.md)).
+  ([0007](0007-local-principals.md)); `adopt_local_authors` writes its `principals_adopted`
+  security log row in the adoption's own transaction.
 
 ## Consequences
 
@@ -54,9 +68,9 @@ per board plus a separate instance credential (design M1 section 5).
 - A board credential never learns whether another board exists: every route answers it the same
   404 for any other board name, existing or not, without asking the store
   ([0011](0011-authentication-policy-401-403-404.md)).
-- Security log rows other than `Join` are written after the mutation, best effort: if the write
-  fails the mutation stands and a one-line warning (no secrets) goes to stderr. M2 should move
-  them into the mutation's transaction.
+- Security log rows other than `Join` and `principals_adopted` are written after the mutation,
+  best effort: if the write fails the mutation stands and a one-line warning (no secrets) goes
+  to stderr. M2 should move them into the mutation's transaction.
 - Two people sharing a name on different boards are unrelated principals; there is no
   cross-board identity until OIDC (M5).
 - Per-channel grants (M4) narrow a board token; they do not change the one-board scope.

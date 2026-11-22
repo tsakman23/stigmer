@@ -1,6 +1,6 @@
 # 0009. Token and invite format
 
-Status: Accepted
+Status: Accepted; amended 2026-11-22 (M1 final review: admin revocation, open waits)
 Date: 2026-11-22
 
 ## Context
@@ -32,8 +32,13 @@ mistaken for an invite), checkable without storing them, and cheap to look up.
   most 7 days (`invite create --expires`); the main admin invite from `enable-auth` lives 24
   hours. An invite is single use: `consume_invite` marks it used in the join transaction
   ([0008](0008-board-isolation-and-credentials.md)).
-- **Revocation** is by id (`token revoke <id>`, `members remove`, board archive) and takes effect
-  on the next request; there is no cache.
+- **Revocation** is by id (`token revoke <id>`, `members remove`, board archive, and with the
+  server stopped `stigmerd admin revoke-token <id>` for any credential, the instance token
+  included, or `stigmerd admin new-instance-token --revoke-others` to replace the instance token)
+  and takes effect on the next request; there is no cache. An events wait already in progress
+  re-checks its credential (stored, not revoked, not expired, still a member) at every wake, so
+  it ends with the same 401 instead of returning events
+  ([0011](0011-authentication-policy-401-403-404.md)).
 
 ## Consequences
 
@@ -43,7 +48,8 @@ mistaken for an invite), checkable without storing them, and cheap to look up.
   sha256 whether or not the id exists (a valid board token then needs a membership read and a
   last-seen write). The database time for a present versus an absent id is not equalised; ids
   are not secret, so this can reveal only which ids exist, not any secret.
-- Rotation is "issue new, revoke old". There is no refresh flow and no automatic renewal: a
+- Rotation is "issue new, revoke old" (for the instance token, `new-instance-token
+  --revoke-others` does both at once). There is no refresh flow and no automatic renewal: a
   90-day token simply stops working, and the holder joins again with a fresh invite.
 - A future format (for example narrowed tokens in M4) takes a new prefix version (`stg2_`) and
   must keep accepting `stg1_` until those tokens expire.
