@@ -26,9 +26,9 @@ accepted without it.
 Failures are the typed `StoreError` (`NotFound`, `InvalidCursor`, `Conflict`, `Backend`).
 `NotFound` carries an `Entity` (`Board`, `Thread`, `Message`), and each trait method documents
 which entity it reports. For example, an unknown board is `Entity::Board` for `post`,
-`events_after`, `head`, `wait_past` and `verify_chain`; `read_thread` reports `Entity::Thread`
-for any id that is not a thread root on the board, including any id on an unknown board; and
-`read_channel` on an unknown board is an empty list, not an error.
+`read_channel`, `events_after`, `head`, `wait_past` and `verify_chain`; and `read_thread`
+reports `Entity::Thread` for any id that is not a thread root on the board, including any id on
+an unknown board.
 
 Postgres is planned for M2.
 

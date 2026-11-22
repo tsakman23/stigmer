@@ -4,6 +4,7 @@ use rusqlite::Connection;
 use stigmer_core::{BoardId, Cursor, Event, EventFilter};
 use stigmer_store::{Entity, StoreError};
 
+use crate::boards;
 use crate::posts::{board_head, event_from_row};
 use crate::reads::channel_matches;
 use crate::{backend, not_found};
@@ -23,6 +24,17 @@ pub(crate) fn head_seq(conn: &mut Connection, board: &BoardId) -> Result<u64, St
     let tx = conn.transaction().map_err(backend)?;
     let (seq, _hash) = board_head(&tx, board)?.ok_or_else(|| not_found(Entity::Board, board))?;
     Ok(seq)
+}
+
+/// The board's head sequence and whether the board is archived.
+pub(crate) fn head_state(
+    conn: &mut Connection,
+    board: &BoardId,
+) -> Result<(u64, bool), StoreError> {
+    let tx = conn.transaction().map_err(backend)?;
+    let archived = boards::require(&tx, board)?.archived_at_ms.is_some();
+    let (seq, _hash) = board_head(&tx, board)?.ok_or_else(|| not_found(Entity::Board, board))?;
+    Ok((seq, archived))
 }
 
 /// The cursor of the latest event, or `None` on an empty board.

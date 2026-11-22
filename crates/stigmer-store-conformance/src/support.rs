@@ -9,7 +9,7 @@ use std::future::Future;
 use std::panic::Location;
 use std::time::Duration;
 
-use stigmer_core::{BoardId, ChannelPath, Label, MessageId, NewMessage, Principal, Target};
+use stigmer_core::{BoardId, ChannelPath, Label, MessageId, NewMessage, Page, Principal, Target};
 use stigmer_store::{ChainReport, Posted, Store};
 
 /// Panics with `message`, reported at the caller's line.
@@ -104,6 +104,14 @@ pub(crate) fn reply(thread: &MessageId, author: &str, text: &str) -> NewMessage 
         text,
         vec![],
     )
+}
+
+/// A first page of up to 50 threads.
+pub(crate) fn all_channels() -> Page {
+    Page {
+        limit: 50,
+        before: None,
+    }
 }
 
 /// A new thread on `board`.

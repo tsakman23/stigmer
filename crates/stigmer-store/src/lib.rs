@@ -79,8 +79,9 @@ pub struct ChainReport {
 /// Guarantees every backend must meet: a gapless per-board event sequence starting at 1,
 /// read-your-writes, and visibility in commit order. Verified by `stigmer-store-conformance`.
 ///
-/// Every `NotFound` names the entity that is missing, as each method states below; an unknown
-/// board is `Entity::Board` except where a method says otherwise.
+/// Every `NotFound` names the entity that is missing, as each method states below. Every method
+/// that takes a board reports an unknown board as `NotFound` with `Entity::Board`, except
+/// `read_thread`, which reports the thread.
 ///
 /// Not object-safe on purpose: callers are generic over `S: Store`.
 pub trait Store: Send + Sync + 'static {
@@ -121,7 +122,7 @@ pub trait Store: Send + Sync + 'static {
     fn post(&self, msg: NewMessage) -> impl Future<Output = Result<Posted, StoreError>> + Send;
 
     /// Recomputes the board's hash chain from genesis and reports the first bad event.
-    /// An unknown board is `NotFound` with `Entity::Board`.
+    /// An unknown board is `NotFound` with `Entity::Board`. Works on archived boards.
     fn verify_chain(
         &self,
         board: &BoardId,
@@ -130,8 +131,8 @@ pub trait Store: Send + Sync + 'static {
     /// Lists the threads of every channel under `prefix` (whole path segments), newest activity
     /// first. `page.before` is the thread id of the last item of the previous page.
     ///
-    /// An unknown board is not an error: it has no threads, so the list is empty. A
-    /// `page.before` that is not a thread root on the board is `NotFound` with `Entity::Thread`.
+    /// An unknown board is `NotFound` with `Entity::Board`. A `page.before` that is not a thread
+    /// root on the board is `NotFound` with `Entity::Thread`. Works on archived boards.
     fn read_channel(
         &self,
         board: &BoardId,
@@ -141,7 +142,7 @@ pub trait Store: Send + Sync + 'static {
 
     /// Reads a thread root and its replies in event order. `NotFound` with `Entity::Thread`
     /// unless `thread` is a thread root on `board`: an id that does not exist, a reply's id, and
-    /// any id on an unknown board all report the thread, not the board.
+    /// any id on an unknown board all report the thread, not the board. Works on archived boards.
     fn read_thread(
         &self,
         board: &BoardId,
@@ -152,6 +153,7 @@ pub trait Store: Send + Sync + 'static {
     /// first, matching `filter`. `limit` is clamped to 1..=500. A cursor that does not decode or
     /// lies beyond the board head is `InvalidCursor`, never an empty success. An unknown board is
     /// `NotFound` with `Entity::Board` (a cursor that does not decode is `InvalidCursor` first).
+    /// Works on archived boards.
     fn events_after(
         &self,
         board: &BoardId,
@@ -161,7 +163,7 @@ pub trait Store: Send + Sync + 'static {
     ) -> impl Future<Output = Result<Vec<Event>, StoreError>> + Send;
 
     /// The cursor of the board's latest event, or `None` while it has no events. An unknown
-    /// board is `NotFound` with `Entity::Board`.
+    /// board is `NotFound` with `Entity::Board`. Works on archived boards.
     fn head(
         &self,
         board: &BoardId,
@@ -170,8 +172,9 @@ pub trait Store: Send + Sync + 'static {
     /// Waits up to `timeout` for the board head to move past `after` (`None` means before the
     /// first event). Returns `true` as soon as it has, `false` on timeout. A cursor beyond the
     /// head is `InvalidCursor` at once. An unknown board is `NotFound` with `Entity::Board` (a
-    /// cursor that does not decode is `InvalidCursor` first). Dropping the future cancels the
-    /// wait.
+    /// cursor that does not decode is `InvalidCursor` first), and waiting on it leaves nothing
+    /// behind. On an archived board the head can no longer move, so a wait at the head returns
+    /// `false` on timeout. Dropping the future cancels the wait.
     fn wait_past(
         &self,
         board: &BoardId,

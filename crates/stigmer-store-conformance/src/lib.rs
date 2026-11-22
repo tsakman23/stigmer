@@ -7,6 +7,7 @@
 //! This is test-support code: panics are its assertion mechanism, so it uses `panic!` and the
 //! `assert!` family where library code would return errors.
 
+mod archive;
 mod boards;
 mod events;
 mod idempotency;
@@ -59,8 +60,9 @@ where
     boards::create_duplicate_board_is_board_exists(factory().await).await;
     boards::main_exists_on_a_fresh_store(factory().await).await;
     boards::boards_are_isolated_sequences_start_at_1_per_board(factory().await).await;
-    boards::post_to_archived_board_is_board_archived_and_uses_no_sequence_number(factory().await)
+    boards::unknown_board_is_not_found_from_every_method(factory().await).await;
+    archive::post_to_archived_board_is_board_archived_and_uses_no_sequence_number(factory().await)
         .await;
-    boards::archived_board_is_still_readable(factory().await).await;
-    boards::archive_is_idempotent_and_keeps_first_timestamp(factory().await).await;
+    archive::archived_board_is_still_readable(factory().await).await;
+    archive::archive_is_idempotent_and_keeps_first_timestamp(factory().await).await;
 }

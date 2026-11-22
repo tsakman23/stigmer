@@ -122,7 +122,13 @@ impl Store for SqliteStore {
         id: &BoardId,
     ) -> impl Future<Output = Result<BoardInfo, StoreError>> + Send {
         let id = id.clone();
-        self.run(move |conn| boards::archive(conn, &id))
+        let notifier = Arc::clone(&self.notifier);
+        self.run(move |conn| {
+            let info = boards::archive(conn, &id)?;
+            // Under the connection lock, like the subscription in `wait_past`.
+            notifier.forget(&id);
+            Ok(info)
+        })
     }
 
     fn post(&self, msg: NewMessage) -> impl Future<Output = Result<Posted, StoreError>> + Send {
@@ -189,19 +195,20 @@ impl Store for SqliteStore {
         after: Option<&Cursor>,
         timeout: Duration,
     ) -> impl Future<Output = Result<bool, StoreError>> + Send {
-        let board = board.clone();
-        let after = after.cloned();
+        let (board, after) = (board.clone(), after.cloned());
         let notifier = Arc::clone(&self.notifier);
-        // Lazy: the database read starts only when polled, which is after `subscribe` below.
-        let read_head = {
-            let board = board.clone();
-            self.run(move |conn| events::head_seq(conn, &board))
-        };
+        // Lazy: the database read starts only when polled, after the cursor has been decoded.
+        let read_and_subscribe = self.run(move |conn| {
+            let (head, archived) = events::head_state(conn, &board)?;
+            // Still holding the connection: `post` commits and bumps under the same lock, so no
+            // commit can land between this read and the subscription. Only a live board gets an
+            // entry: an unknown board failed above, and an archived board's head cannot move.
+            let head_rx = (!archived).then(|| notifier.subscribe(&board));
+            Ok((head, head_rx))
+        });
         async move {
             let after_seq = events::cursor_seq(after.as_ref())?;
-            // Subscribe before reading the head so a post that lands in between is not missed.
-            let mut head_rx = notifier.subscribe(&board);
-            let head = read_head.await?;
+            let (head, head_rx) = read_and_subscribe.await?;
             if after_seq > head {
                 return Err(StoreError::InvalidCursor);
             }
@@ -209,20 +216,23 @@ impl Store for SqliteStore {
                 return Ok(true);
             }
             let moved_past = async {
+                let Some(mut head_rx) = head_rx else {
+                    return std::future::pending().await;
+                };
                 loop {
                     if *head_rx.borrow_and_update() > after_seq {
-                        return Ok(true);
+                        return true;
                     }
-                    head_rx
-                        .changed()
-                        .await
-                        .map_err(|_| StoreError::Backend("head notifier closed".into()))?;
+                    if head_rx.changed().await.is_err() {
+                        // The board was archived during the wait: its head can no longer move.
+                        return std::future::pending().await;
+                    }
                 }
             };
             // No spawned task: dropping this future drops the receiver and the timer with it.
-            tokio::time::timeout(timeout, moved_past)
+            Ok(tokio::time::timeout(timeout, moved_past)
                 .await
-                .unwrap_or(Ok(false))
+                .unwrap_or(false))
         }
     }
 }
@@ -282,6 +292,56 @@ mod tests {
             "main is stamped when the store opens"
         );
         assert_eq!(main.created_by, None);
+    }
+
+    #[tokio::test]
+    async fn wait_past_on_unknown_board_leaves_no_notifier_entry() {
+        let store = SqliteStore::open_memory().await.unwrap();
+        let nowhere = BoardId::new("nowhere").unwrap();
+        let result = store
+            .wait_past(&nowhere, None, Duration::from_secs(10))
+            .await;
+        assert!(matches!(
+            result,
+            Err(StoreError::NotFound {
+                entity: Entity::Board,
+                ..
+            })
+        ));
+        assert_eq!(store.notifier.entry_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn archive_drops_the_notifier_entry_and_waits_on_it_time_out() {
+        let store = Arc::new(SqliteStore::open_memory().await.unwrap());
+        let old = BoardId::new("old").unwrap();
+        store.create_board(&old, None).await.unwrap();
+        let waiter = {
+            let (store, old) = (Arc::clone(&store), old.clone());
+            tokio::spawn(async move {
+                store
+                    .wait_past(&old, None, Duration::from_millis(300))
+                    .await
+            })
+        };
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(store.notifier.entry_count(), 1, "the waiter subscribed");
+
+        store.archive_board(&old).await.unwrap();
+        assert_eq!(store.notifier.entry_count(), 0, "archive drops the entry");
+        assert_eq!(
+            waiter.await.unwrap(),
+            Ok(false),
+            "a wait cut short by archive times out as usual"
+        );
+
+        let again = store.wait_past(&old, None, Duration::from_millis(20)).await;
+        assert_eq!(again, Ok(false));
+        assert_eq!(
+            store.notifier.entry_count(),
+            0,
+            "waiting on an archived board subscribes to nothing"
+        );
     }
 
     #[tokio::test]
