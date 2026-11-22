@@ -15,11 +15,11 @@ use axum::routing::{get, post};
 use axum::{Extension, Json, Router};
 use serde::Deserialize;
 use stigmer_core::{
-    parse_labels, BoardId, ChannelPath, ChannelsResponse, Cursor, ErrorCode, EventFilter,
-    EventsResponse, MessageId, NewMessage, Page, PostRequest, Posted, Principal, Target, Thread,
-    MAX_WAIT_SECS,
+    parse_labels, BoardId, BoardInfo, ChannelPath, ChannelsResponse, Cursor, ErrorCode,
+    EventFilter, EventsResponse, MessageId, NewMessage, Page, PostRequest, Posted, Principal,
+    Target, Thread, MAX_WAIT_SECS,
 };
-use stigmer_store::{CredentialScope, IdentityStore, Mode, Store, StoreError};
+use stigmer_store::{CredentialScope, IdentityStore, Mode, SecurityEvent, Store, StoreError};
 use tokio::sync::{watch, Semaphore};
 
 use crate::admin_routes;
@@ -28,6 +28,7 @@ use crate::authz::{Action, Authenticated, Authorize, Scope};
 use crate::config::ApiConfig;
 use crate::error::ApiError;
 use crate::host_guard::{require_allowed_host, AllowedHosts};
+use crate::join_routes;
 use crate::ratelimit::FailureLimiter;
 use crate::wait::read_events;
 
@@ -91,6 +92,7 @@ pub fn router<S: Store + IdentityStore, A: Authorize>(
     };
     let board_routes = Router::new()
         .merge(admin_routes::authenticated::<S, A>())
+        .merge(join_routes::authenticated::<S, A>())
         .route("/v1/boards/{board}/messages", post(post_message::<S, A>))
         .route("/v1/boards/{board}/channels", get(read_channels::<S, A>))
         .route("/v1/boards/{board}/events", get(read_events_route::<S, A>))
@@ -111,7 +113,7 @@ pub fn router<S: Store + IdentityStore, A: Authorize>(
         .route("/healthz", get(healthz))
         .route("/readyz", get(readyz::<S, A>))
         .merge(board_routes)
-        .merge(admin_routes::open::<S, A>())
+        .merge(join_routes::open::<S, A>())
         .fallback(unknown_route)
         .method_not_allowed_fallback(wrong_method)
         .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
@@ -120,6 +122,23 @@ pub fn router<S: Store + IdentityStore, A: Authorize>(
             require_allowed_host,
         ))
         .with_state(state)
+}
+
+impl<S: IdentityStore, A> AppState<S, A> {
+    /// Appends `event` to the security log after the action it records has already happened.
+    /// A failed write does not fail the request: it is reported through `config.warn` with the
+    /// event's kind, board and principal only (never its detail, which may name a source).
+    pub(crate) async fn audit_best_effort(&self, event: SecurityEvent) {
+        let line = format!(
+            "security log write failed: kind={} board={} principal={}",
+            event.kind,
+            event.board.as_ref().map_or("-", BoardId::as_str),
+            event.principal.as_deref().unwrap_or("-"),
+        );
+        if self.store.log_security(event).await.is_err() {
+            (self.config.warn)(&line);
+        }
+    }
 }
 
 async fn unknown_route() -> ApiError {
@@ -153,13 +172,25 @@ pub(crate) async fn visible_board<S: Store>(
     who: &Authenticated,
     raw: &str,
 ) -> Result<BoardId, ApiError> {
+    visible_board_info(store, who, raw)
+        .await
+        .map(|(board, _)| board)
+}
+
+/// Like `visible_board`, and also the board's info when resolving it had to read it (the
+/// instance credential and local mode), so the caller need not look it up again.
+pub(crate) async fn visible_board_info<S: Store>(
+    store: &S,
+    who: &Authenticated,
+    raw: &str,
+) -> Result<(BoardId, Option<BoardInfo>), ApiError> {
     let no_such_board = || ApiError::not_found("no such board");
     let board = BoardId::new(raw).map_err(|_| no_such_board())?;
     match &who.scope {
-        CredentialScope::Board(own) if *own == board => Ok(board),
+        CredentialScope::Board(own) if *own == board => Ok((board, None)),
         CredentialScope::Board(_) => Err(no_such_board()),
         CredentialScope::Instance => match store.get_board(&board).await {
-            Ok(_) => Ok(board),
+            Ok(info) => Ok((board, Some(info))),
             Err(StoreError::NotFound { .. }) => Err(no_such_board()),
             Err(err) => Err(err.into()),
         },

@@ -5,7 +5,7 @@ use stigmer_store::{
     Adoption, ConflictKind, CredentialScope, Entity, IdentityStore, Store, StoreError,
 };
 
-use crate::identity::{credential, invite, not_found, token_id, NOW};
+use crate::identity::{credential, invite, join_credential, not_found, token_id, NOW};
 use crate::support::{board, new_thread_on, ok, post_ok, principal};
 
 const ARCHIVED: StoreError = StoreError::Conflict(ConflictKind::BoardArchived);
@@ -50,7 +50,13 @@ pub(crate) async fn create_invite_on_archived_board_is_board_archived<S: Store +
     );
     assert_eq!(
         store
-            .consume_invite(&token_id(1), &hash, &principal("dave"), NOW)
+            .consume_invite(
+                &token_id(1),
+                &hash,
+                &principal("dave"),
+                NOW,
+                join_credential(100)
+            )
             .await,
         Err(not_found(Entity::Invite, token_id(1))),
         "{SCENARIO}: nothing was stored"
@@ -104,7 +110,13 @@ pub(crate) async fn consume_invite_for_archived_board_is_the_generic_not_found<
     for name in ["dave", "erin"] {
         assert_eq!(
             store
-                .consume_invite(&token_id(1), &hash, &principal(name), NOW + 1)
+                .consume_invite(
+                    &token_id(1),
+                    &hash,
+                    &principal(name),
+                    NOW + 1,
+                    join_credential(100)
+                )
                 .await,
             Err(not_found(Entity::Invite, token_id(1))),
             "{SCENARIO}: {name}, and the first refusal did not use the invite"

@@ -3,6 +3,10 @@
 // Each test binary uses a different subset of these helpers.
 #![allow(dead_code)]
 
+mod failing_log;
+#[allow(unused_imports)]
+pub use failing_log::LogFailingStore;
+
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
 
@@ -191,6 +195,14 @@ pub fn board_routes(on: &str, thread: &str) -> Vec<(Method, String, Option<Value
             Some(json!({"thread": thread, "text": "reply"})),
         ),
     ]
+}
+
+pub async fn get(net: &Net, uri: &str, token: &str) -> Reply {
+    send(&net.app, request(Method::GET, uri, Some(token), None)).await
+}
+
+pub async fn delete(net: &Net, uri: &str, token: &str) -> Reply {
+    send(&net.app, request(Method::DELETE, uri, Some(token), None)).await
 }
 
 /// A fresh instance-admin credential.

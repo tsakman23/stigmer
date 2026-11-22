@@ -12,7 +12,7 @@ mod identity;
 
 pub use identity::{
     Adoption, Consumed, Credential, CredentialScope, IdentityStore, Member, Mode, NewCredential,
-    NewInvite, SecurityEvent, SecurityEventKind,
+    NewInvite, NewJoinCredential, SecurityEvent, SecurityEventKind,
 };
 
 pub use stigmer_core::{BoardInfo, EventFilter, Message, Page, Posted, Thread, ThreadSummary};
@@ -313,7 +313,7 @@ mod tests {
     }
 
     // Compile-time check, as above, for the identity store.
-    #[allow(dead_code)]
+    #[allow(dead_code, clippy::too_many_arguments)]
     fn identity_futures_are_send<S: IdentityStore>(
         store: &S,
         board: &BoardId,
@@ -321,6 +321,7 @@ mod tests {
         id: &stigmer_core::TokenId,
         credential: NewCredential,
         invite: NewInvite,
+        join: NewJoinCredential,
         event: SecurityEvent,
     ) {
         use stigmer_core::{PrincipalKind, Role};
@@ -340,7 +341,7 @@ mod tests {
         assert_send(store.revoke_credential(id, 0));
         assert_send(store.revoke_board_credentials(board, true, 0));
         assert_send(store.create_invite(invite, 0));
-        assert_send(store.consume_invite(id, &[0; 32], name, 0));
+        assert_send(store.consume_invite(id, &[0; 32], name, 0, join));
         assert_send(store.log_security(event));
         assert_send(store.security_log(10));
     }

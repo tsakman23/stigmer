@@ -214,14 +214,23 @@ async fn archive_allowed_for_instance_admin_and_board_admin_only() {
         StatusCode::NOT_FOUND
     );
     assert_eq!(archive(Some(ops_admin), "ops").await.status, StatusCode::OK);
+    let root_for_read = root.clone();
     assert_eq!(archive(Some(root), "dev").await.status, StatusCode::OK);
-    // The instance credential reads only the board's summary.
-    let summary = send(
-        &net.app,
-        request(Method::GET, "/v1/boards/dev", Some(&dev_admin), None),
-    )
-    .await;
+    // The board's own admin still reads its archived summary.
+    let summary = get(&net, "/v1/boards/dev", &dev_admin).await;
     assert_eq!(summary.json()["archived"], true);
+    // The instance credential sees the summary and nothing else about the board.
+    let summary = get(&net, "/v1/boards/dev", &root_for_read).await;
+    assert_eq!(summary.status, StatusCode::OK, "{}", summary.body);
+    let mut keys: Vec<_> = summary
+        .json()
+        .as_object()
+        .unwrap()
+        .keys()
+        .cloned()
+        .collect();
+    keys.sort();
+    assert_eq!(keys, ["archived", "created_at_ms", "id"]);
     let kinds: Vec<_> = net
         .store
         .security_log(50)
@@ -237,38 +246,6 @@ async fn archive_allowed_for_instance_admin_and_board_admin_only() {
             .count(),
         2
     );
-}
-
-#[tokio::test]
-async fn whoami_matches_the_credential() {
-    let net = network().await;
-    let root = instance_token(&net.store).await;
-    let main = board("main");
-    let admin = member_token(&net.store, &main, "ann", Role::Admin).await;
-    let bridge = member_token(&net.store, &main, "hook", Role::Bridge).await;
-    async fn who(net: &Net, token: String) -> serde_json::Value {
-        let reply = send(
-            &net.app,
-            request(Method::GET, "/v1/whoami", Some(&token), None),
-        )
-        .await;
-        assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
-        reply.json()
-    }
-    assert_eq!(
-        who(&net, admin).await,
-        json!({"principal": "ann", "kind": "human", "board": "main", "role": "admin", "instance_admin": false})
-    );
-    assert_eq!(
-        who(&net, bridge).await,
-        json!({"principal": "hook", "kind": "bridge", "board": "main", "role": "bridge", "instance_admin": false})
-    );
-    assert_eq!(
-        who(&net, root).await,
-        json!({"principal": "root", "kind": "human", "board": null, "role": null, "instance_admin": true})
-    );
-    let anon = send(&net.app, request(Method::GET, "/v1/whoami", None, None)).await;
-    assert_eq!(anon.status, StatusCode::UNAUTHORIZED);
 }
 
 #[tokio::test]

@@ -49,23 +49,6 @@ impl Audit<'_> {
         self.event(SecurityEventKind::InviteCreated, board, what)
     }
 
-    /// `by` is the new member.
-    pub(crate) fn joined(
-        &self,
-        board: &BoardId,
-        invite: &TokenId,
-        token: &TokenId,
-        kind: PrincipalKind,
-        role: Role,
-    ) -> SecurityEvent {
-        let what = format!(
-            "invite={invite} token={token} kind={} role={}",
-            kind.as_str(),
-            role.as_str()
-        );
-        self.event(SecurityEventKind::Join, board, what)
-    }
-
     pub(crate) fn token_revoked(
         &self,
         board: &BoardId,

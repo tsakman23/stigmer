@@ -9,12 +9,13 @@ use std::future::Future;
 use stigmer_core::{hash_secret, BoardId, PrincipalKind, Role, TokenId};
 use stigmer_store::{
     ConflictKind, CredentialScope, Entity, IdentityStore, Member, Mode, NewCredential, NewInvite,
-    SecurityEvent, SecurityEventKind, Store, StoreError,
+    NewJoinCredential, SecurityEvent, SecurityEventKind, Store, StoreError,
 };
 
 use crate::support::{board, ok, principal};
 use crate::{
-    identity_adoption, identity_archive, identity_credentials, identity_invites, identity_members,
+    identity_adoption, identity_archive, identity_credentials, identity_invites, identity_join,
+    identity_members,
 };
 
 /// The scenarios' fixed "now", in milliseconds since the Unix epoch.
@@ -44,6 +45,13 @@ where
     identity_invites::invite_with_taken_name_conflicts_and_stays_unconsumed(factory().await).await;
     identity_invites::concurrent_consumes_of_one_invite_create_exactly_one_member(factory().await)
         .await;
+    identity_join::join_creates_member_credential_and_audit_row_atomically(factory().await).await;
+    identity_join::join_failure_leaves_no_member_credential_or_audit_row(factory().await).await;
+    identity_join::create_credential_on_archived_board_is_board_archived(factory().await).await;
+    identity_join::concurrent_joins_with_one_invite_create_exactly_one_member_and_one_credential(
+        factory().await,
+    )
+    .await;
     identity_adoption::list_local_authors_returns_distinct_sorted_authors(factory().await).await;
     identity_adoption::adopt_local_authors_creates_members_and_flips_author_kind_atomically(
         factory().await,
@@ -74,6 +82,15 @@ pub(crate) fn hash_of(seed: &str) -> [u8; 32] {
 
 pub(crate) fn hex(hash: &[u8; 32]) -> String {
     hash.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// The credential `consume_invite` creates for a new member: id `n`, valid for 90 days.
+pub(crate) fn join_credential(n: u8) -> NewJoinCredential {
+    NewJoinCredential {
+        id: token_id(n),
+        secret_hash: hash_of(&format!("join-{n}")),
+        expires_at_ms: NOW + 90 * 24 * HOUR,
+    }
 }
 
 /// A credential with id `n` for `who`, valid for 90 days from [`NOW`].
@@ -265,17 +282,33 @@ async fn no_secret_material_in_security_log_rows<S: Store + IdentityStore>(store
     let main = BoardId::main();
     let token = credential(1, CredentialScope::Board(main.clone()), "alice");
     let into = invite(2, &main, Role::Member, PrincipalKind::Agent);
-    let (token_hash, invite_hash, wrong_hash) =
-        (token.secret_hash, into.secret_hash, hash_of("wrong"));
+    let (token_hash, invite_hash, wrong_hash, join_hash) = (
+        token.secret_hash,
+        into.secret_hash,
+        hash_of("wrong"),
+        join_credential(100).secret_hash,
+    );
     ok(store.create_credential(token, NOW).await, SCENARIO);
     ok(store.create_invite(into, NOW).await, SCENARIO);
 
     let refused = store
-        .consume_invite(&token_id(2), &wrong_hash, &principal("dave"), NOW)
+        .consume_invite(
+            &token_id(2),
+            &wrong_hash,
+            &principal("dave"),
+            NOW,
+            join_credential(100),
+        )
         .await;
     let joined = ok(
         store
-            .consume_invite(&token_id(2), &invite_hash, &principal("dave"), NOW)
+            .consume_invite(
+                &token_id(2),
+                &invite_hash,
+                &principal("dave"),
+                NOW,
+                join_credential(100),
+            )
             .await,
         format_args!("{SCENARIO}: join"),
     );
@@ -307,16 +340,17 @@ async fn no_secret_material_in_security_log_rows<S: Store + IdentityStore>(store
     }
     shown.extend(log.iter().map(|e| format!("{e:?}")));
     for text in &shown {
-        for hash in [&token_hash, &invite_hash, &wrong_hash] {
+        for hash in [&token_hash, &invite_hash, &wrong_hash, &join_hash] {
             assert!(
                 !text.contains(&hex(hash)) && !text.contains(&format!("{hash:?}")),
                 "{SCENARIO}: a secret hash leaked into {text}"
             );
         }
     }
+    // The two rows given above, plus the join's own row from `consume_invite`.
     assert_eq!(
         log.len(),
-        2,
-        "{SCENARIO}: the store logs only what it is given"
+        3,
+        "{SCENARIO}: the store logs only what it is given and the join"
     );
 }

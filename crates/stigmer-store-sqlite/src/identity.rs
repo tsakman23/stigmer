@@ -6,7 +6,7 @@ use std::future::Future;
 use stigmer_core::{BoardId, Principal, PrincipalKind, Role, TokenId};
 use stigmer_store::{
     Adoption, Consumed, Credential, IdentityStore, Member, Mode, NewCredential, NewInvite,
-    SecurityEvent, StoreError,
+    NewJoinCredential, SecurityEvent, StoreError,
 };
 
 use crate::{credentials, members, SqliteStore};
@@ -143,9 +143,12 @@ impl IdentityStore for SqliteStore {
         secret_hash: &[u8; 32],
         name: &Principal,
         now_ms: i64,
+        credential: NewJoinCredential,
     ) -> impl Future<Output = Result<Consumed, StoreError>> + Send {
         let (id, secret_hash, name) = (id.clone(), *secret_hash, name.clone());
-        self.run(move |conn| credentials::consume_invite(conn, &id, &secret_hash, &name, now_ms))
+        self.run(move |conn| {
+            credentials::consume_invite(conn, &id, &secret_hash, &name, now_ms, credential)
+        })
     }
 
     fn log_security(

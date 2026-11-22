@@ -16,27 +16,24 @@ use axum::routing::{delete, get, post};
 use axum::{Extension, Json, Router};
 use serde::de::DeserializeOwned;
 use stigmer_core::{
-    generate_secret, hash_secret, parse_secret, BoardId, BoardInfo, BoardSummary, BoardsResponse,
-    CreateBoardRequest, ErrorCode, InviteRequest, InviteResponse, JoinRequest, JoinResponse,
-    MemberInfo, MembersResponse, Principal, PrincipalKind, Role, SecretKind, TokenId, TokenInfo,
-    TokensResponse, WhoAmI,
+    generate_secret, BoardInfo, BoardSummary, BoardsResponse, CreateBoardRequest, ErrorCode,
+    InviteRequest, InviteResponse, MemberInfo, MembersResponse, Principal, PrincipalKind, Role,
+    SecretKind, TokenId, TokenInfo, TokensResponse,
 };
-use stigmer_store::{
-    CredentialScope, IdentityStore, Mode, NewCredential, NewInvite, Store, StoreError,
-};
+use stigmer_store::{CredentialScope, IdentityStore, Mode, NewInvite, Store};
 
-use crate::audit::{join_rate_limited, Audit};
+use crate::audit::Audit;
 use crate::auth::{client_source, PeerAddr};
 use crate::authz::{Action, Authenticated, Authorize, Scope};
 use crate::error::ApiError;
-use crate::ratelimit::{Logged, Source};
-use crate::routes::{authorize_board, board_scope, path_or_400, visible_board, AppState};
+use crate::ratelimit::Source;
+use crate::routes::{
+    authorize_board, board_scope, path_or_400, visible_board, visible_board_info, AppState,
+};
 
 const MINUTE_MS: i64 = 60_000;
 const DEFAULT_INVITE_MINUTES: u32 = 60;
 const MAX_INVITE_MINUTES: u32 = 7 * 24 * 60;
-/// How long a token from `join` lives.
-const TOKEN_LIFETIME_MS: i64 = 90 * 24 * 60 * MINUTE_MS;
 const LOCAL_MODE_MESSAGE: &str = "this server is in local mode; run stigmerd admin enable-auth";
 
 /// Routes behind the authentication middleware.
@@ -59,16 +56,10 @@ pub(crate) fn authenticated<S: Store + IdentityStore, A: Authorize>() -> Router<
             "/v1/boards/{board}/tokens/{id}",
             delete(revoke_token::<S, A>),
         )
-        .route("/v1/whoami", get(whoami::<S, A>))
-}
-
-/// Routes that take no token.
-pub(crate) fn open<S: Store + IdentityStore, A: Authorize>() -> Router<AppState<S, A>> {
-    Router::new().route("/v1/join", post(join::<S, A>))
 }
 
 /// The address a request is attributed to, for rate limiting and the security log.
-struct ClientSource(Source);
+pub(crate) struct ClientSource(pub(crate) Source);
 
 impl<S: Store + IdentityStore, A: Authorize> FromRequestParts<AppState<S, A>> for ClientSource {
     type Rejection = ApiError;
@@ -86,18 +77,20 @@ impl<S: Store + IdentityStore, A: Authorize> FromRequestParts<AppState<S, A>> fo
     }
 }
 
-fn now<S, A>(state: &AppState<S, A>) -> i64 {
+pub(crate) fn now<S, A>(state: &AppState<S, A>) -> i64 {
     (state.config.clock)()
 }
 
-fn require_network<S, A>(state: &AppState<S, A>) -> Result<(), ApiError> {
+pub(crate) fn require_network<S, A>(state: &AppState<S, A>) -> Result<(), ApiError> {
     match state.config.mode {
         Mode::Network => Ok(()),
         Mode::Local => Err(ApiError::new(ErrorCode::Conflict, LOCAL_MODE_MESSAGE)),
     }
 }
 
-fn json_body<T: DeserializeOwned>(body: Result<Bytes, BytesRejection>) -> Result<T, ApiError> {
+pub(crate) fn json_body<T: DeserializeOwned>(
+    body: Result<Bytes, BytesRejection>,
+) -> Result<T, ApiError> {
     let bytes = body.map_err(|e| {
         if e.status() == StatusCode::PAYLOAD_TOO_LARGE {
             ApiError::new(ErrorCode::TooLarge, "request body too large")
@@ -146,10 +139,7 @@ async fn create_board<S: Store + IdentityStore, A: Authorize>(
         source,
         by: &who.principal,
     };
-    state
-        .store
-        .log_security(audit.board_created(&info.id))
-        .await?;
+    state.audit_best_effort(audit.board_created(&info.id)).await;
     Ok((StatusCode::CREATED, Json(summary(&info))))
 }
 
@@ -184,13 +174,17 @@ async fn get_board<S: Store + IdentityStore, A: Authorize>(
     Extension(who): Extension<Authenticated>,
     path: Result<Path<String>, PathRejection>,
 ) -> Result<Json<BoardSummary>, ApiError> {
-    let board = visible_board(&*state.store, &who, &path_or_400(path)?).await?;
+    let (board, known) = visible_board_info(&*state.store, &who, &path_or_400(path)?).await?;
     let action = own_board_action(&who, Action::Read);
     state
         .authz
         .check(&who, action, &board_scope(&board))
         .await?;
-    Ok(Json(summary(&state.store.get_board(&board).await?)))
+    let info = match known {
+        Some(info) => info,
+        None => state.store.get_board(&board).await?,
+    };
+    Ok(Json(summary(&info)))
 }
 
 /// Archives a board: first every non-admin credential is revoked, then the board is archived.
@@ -218,10 +212,7 @@ async fn archive_board<S: Store + IdentityStore, A: Authorize>(
         source,
         by: &who.principal,
     };
-    state
-        .store
-        .log_security(audit.board_archived(&board))
-        .await?;
+    state.audit_best_effort(audit.board_archived(&board)).await;
     Ok(Json(summary(&info)))
 }
 
@@ -271,9 +262,8 @@ async fn remove_member<S: Store + IdentityStore, A: Authorize>(
         by: &who.principal,
     };
     state
-        .store
-        .log_security(audit.member_removed(&board, &name))
-        .await?;
+        .audit_best_effort(audit.member_removed(&board, &name))
+        .await;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -318,7 +308,7 @@ async fn create_invite<S: Store + IdentityStore, A: Authorize>(
         by: &who.principal,
     };
     let row = audit.invite_created(&board, &secret.id, req.kind, req.role);
-    state.store.log_security(row).await?;
+    state.audit_best_effort(row).await;
     Ok((
         StatusCode::CREATED,
         Json(InviteResponse {
@@ -391,125 +381,7 @@ async fn revoke_token<S: Store + IdentityStore, A: Authorize>(
             by: &who.principal,
         };
         let row = audit.token_revoked(&board, &id, &credential.principal);
-        state.store.log_security(row).await?;
+        state.audit_best_effort(row).await;
     }
     Ok(StatusCode::NO_CONTENT)
-}
-
-/// Redeems an invite for a member and a 90 day token, shown once in the response.
-///
-/// Every invite problem is the same 401. If anything fails after the invite was consumed, the
-/// new member is removed again (best effort, which also revokes any credential) and the answer
-/// is 500; the invite is spent, so the admin mints a new one. No token is stored, logged or
-/// echoed except in the success response.
-async fn join<S: Store + IdentityStore, A: Authorize>(
-    State(state): State<AppState<S, A>>,
-    ClientSource(source): ClientSource,
-    body: Result<Bytes, BytesRejection>,
-) -> Result<(StatusCode, Json<JoinResponse>), ApiError> {
-    require_network(&state)?;
-    let at_ms = now(&state);
-    // Every attempt counts, successful or not; the reservation is never refunded.
-    if let Err(retry_after) = state.joins.reserve(source, at_ms) {
-        if state.joins.should_log(source, Logged::RateLimited, at_ms) {
-            state
-                .store
-                .log_security(join_rate_limited(at_ms, source))
-                .await?;
-        }
-        return Err(ApiError::rate_limited(retry_after));
-    }
-    let req: JoinRequest = json_body(body)?;
-    let (id, secret) =
-        parse_secret(SecretKind::Invite, &req.invite).map_err(|_| ApiError::unauthorized())?;
-    let consumed = match state
-        .store
-        .consume_invite(&id, &hash_secret(&secret), &req.name, at_ms)
-        .await
-    {
-        Ok(consumed) => consumed,
-        Err(StoreError::NotFound { .. }) => return Err(ApiError::unauthorized()),
-        Err(err) => return Err(err.into()),
-    };
-    let issued = issue_token(&state, &consumed.board, &req.name, &id, source, at_ms).await;
-    match issued {
-        Ok(response) => Ok((
-            StatusCode::CREATED,
-            Json(JoinResponse {
-                board: consumed.board,
-                role: consumed.role,
-                kind: consumed.kind,
-                ..response
-            }),
-        )),
-        Err(err) => {
-            // Ignored on purpose: this is already a failure path and the caller gets its 500.
-            let _ = state
-                .store
-                .remove_member(&consumed.board, &req.name, at_ms)
-                .await;
-            Err(err)
-        }
-    }
-}
-
-/// Creates the new member's credential and logs the join. The response has the token and
-/// expiry; the caller fills in board, role and kind.
-async fn issue_token<S: Store + IdentityStore, A: Authorize>(
-    state: &AppState<S, A>,
-    board: &BoardId,
-    name: &Principal,
-    invite: &TokenId,
-    source: Source,
-    at_ms: i64,
-) -> Result<JoinResponse, ApiError> {
-    let member = state
-        .store
-        .get_member(board, name)
-        .await?
-        .ok_or_else(ApiError::internal)?;
-    let secret = generate_secret(SecretKind::Token).map_err(|_| ApiError::internal())?;
-    let expires_at_ms = at_ms.saturating_add(TOKEN_LIFETIME_MS);
-    let credential = NewCredential {
-        id: secret.id.clone(),
-        secret_hash: secret.hash,
-        scope: CredentialScope::Board(board.clone()),
-        principal: name.clone(),
-        expires_at_ms,
-    };
-    state.store.create_credential(credential, at_ms).await?;
-    let audit = Audit {
-        at_ms,
-        source,
-        by: name,
-    };
-    let row = audit.joined(board, invite, &secret.id, member.kind, member.role);
-    state.store.log_security(row).await?;
-    Ok(JoinResponse {
-        token: secret.full,
-        board: board.clone(),
-        role: member.role,
-        kind: member.kind,
-        expires_at_ms,
-    })
-}
-
-/// Who the credential is. Needs any valid token and touches no board, so there is nothing to
-/// authorize beyond authentication itself.
-async fn whoami<S: Store + IdentityStore, A: Authorize>(
-    State(state): State<AppState<S, A>>,
-    Extension(who): Extension<Authenticated>,
-) -> Json<WhoAmI> {
-    let instance_admin =
-        state.config.mode == Mode::Network && who.scope == CredentialScope::Instance;
-    Json(WhoAmI {
-        principal: who.principal,
-        kind: who.kind,
-        board: match who.scope {
-            CredentialScope::Board(board) => Some(board),
-            CredentialScope::Instance => None,
-        },
-        role: who.role,
-        instance_admin,
-    })
 }

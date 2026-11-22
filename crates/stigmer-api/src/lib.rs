@@ -8,6 +8,7 @@ mod config;
 mod error;
 mod host_guard;
 mod ipnet;
+mod join_routes;
 mod limits;
 mod loopback;
 mod ratelimit;
@@ -16,7 +17,7 @@ mod wait;
 
 pub use auth::PeerAddr;
 pub use authz::{Action, AllowAll, Authenticated, Authorize, Denied, RoleAuthorize, Scope};
-pub use config::{ApiConfig, Clock};
+pub use config::{ApiConfig, Clock, Warn};
 pub use ipnet::{IpNet, IpNetError};
 pub use limits::Limits;
 pub use loopback::{require_loopback, BindError};

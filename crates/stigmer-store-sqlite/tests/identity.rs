@@ -3,12 +3,21 @@
 use rusqlite::Connection;
 use stigmer_core::{generate_secret, BoardId, PrincipalKind, Role, SecretKind};
 use stigmer_store::{
-    CredentialScope, Entity, IdentityStore, NewCredential, NewInvite, SecurityEvent,
-    SecurityEventKind, StoreError,
+    CredentialScope, Entity, IdentityStore, NewCredential, NewInvite, NewJoinCredential,
+    SecurityEvent, SecurityEventKind, StoreError,
 };
 use stigmer_store_sqlite::SqliteStore;
 
 const NOW: i64 = 1_700_000_000_000;
+
+fn join_credential() -> NewJoinCredential {
+    let secret = generate_secret(SecretKind::Token).unwrap();
+    NewJoinCredential {
+        id: secret.id,
+        secret_hash: secret.hash,
+        expires_at_ms: NOW + 1,
+    }
+}
 
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
@@ -147,11 +156,13 @@ async fn unknown_invite_id_is_refused_exactly_like_a_wrong_secret() {
 
     // An unknown id, including with the all-zero hash the store compares unknown ids against.
     for hash in [unknown.hash, [0u8; 32], invite.hash] {
-        let result = store.consume_invite(&unknown.id, &hash, &dave, NOW).await;
+        let result = store
+            .consume_invite(&unknown.id, &hash, &dave, NOW, join_credential())
+            .await;
         assert_eq!(result, Err(refused(&unknown.id)));
     }
     let wrong = store
-        .consume_invite(&invite.id, &unknown.hash, &dave, NOW)
+        .consume_invite(&invite.id, &unknown.hash, &dave, NOW, join_credential())
         .await;
     assert_eq!(wrong, Err(refused(&invite.id)));
     assert!(store
@@ -159,4 +170,49 @@ async fn unknown_invite_id_is_refused_exactly_like_a_wrong_secret() {
         .await
         .unwrap()
         .is_empty());
+}
+
+#[tokio::test]
+async fn refused_join_leaves_no_credential_member_or_join_row_in_the_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("board.db");
+    let store = SqliteStore::open(&path).await.unwrap();
+    let main = BoardId::main();
+    let alice = stigmer_core::Principal::new("alice").unwrap();
+    store
+        .add_member(&main, &alice, PrincipalKind::Human, Role::Admin, NOW)
+        .await
+        .unwrap();
+    let invite = generate_secret(SecretKind::Invite).unwrap();
+    let new = NewInvite {
+        id: invite.id.clone(),
+        secret_hash: invite.hash,
+        board: main,
+        role: Role::Member,
+        kind: PrincipalKind::Agent,
+        created_by: alice.clone(),
+        expires_at_ms: NOW + 1,
+    };
+    store.create_invite(new, NOW).await.unwrap();
+
+    let refused = store
+        .consume_invite(&invite.id, &invite.hash, &alice, NOW, join_credential())
+        .await;
+    assert!(
+        matches!(refused, Err(StoreError::Conflict(_))),
+        "{refused:?}"
+    );
+
+    let conn = Connection::open(&path).unwrap();
+    let count = |sql: &str| -> i64 { conn.query_row(sql, [], |row| row.get(0)).unwrap() };
+    assert_eq!(count("SELECT count(*) FROM credentials"), 0);
+    assert_eq!(count("SELECT count(*) FROM principals"), 1);
+    assert_eq!(
+        count("SELECT count(*) FROM security_log WHERE kind = 'join'"),
+        0
+    );
+    assert_eq!(
+        count("SELECT count(*) FROM invites WHERE used_at_ms IS NOT NULL"),
+        0
+    );
 }

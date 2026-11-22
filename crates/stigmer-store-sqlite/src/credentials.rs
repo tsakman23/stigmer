@@ -1,10 +1,10 @@
 //! Credentials, invites and the security log. Only secret hashes are stored, never secrets.
 
-use rusqlite::{Connection, OptionalExtension, Row};
+use rusqlite::{Connection, OptionalExtension, Row, Transaction};
 use stigmer_core::{hashes_match, BoardId, Principal, Role, TokenId};
 use stigmer_store::{
-    Consumed, Credential, CredentialScope, Entity, NewCredential, NewInvite, SecurityEvent,
-    SecurityEventKind, StoreError,
+    Consumed, Credential, CredentialScope, Entity, NewCredential, NewInvite, NewJoinCredential,
+    SecurityEvent, SecurityEventKind, StoreError,
 };
 
 use crate::boards::{require, require_writable};
@@ -14,7 +14,7 @@ use crate::{backend, not_found};
 const CREDENTIAL_COLUMNS: &str = "SELECT id, secret_hash, board_id, principal, expires_at_ms,
     revoked_at_ms, last_seen_ms FROM credentials";
 
-/// Stores a credential; a board-scoped one needs an existing board.
+/// Stores a credential; a board-scoped one needs an existing, unarchived board.
 pub(crate) fn create(
     conn: &mut Connection,
     credential: NewCredential,
@@ -24,10 +24,21 @@ pub(crate) fn create(
     let board = match &credential.scope {
         CredentialScope::Instance => None,
         CredentialScope::Board(board) => {
-            require(&tx, board)?;
-            Some(board.as_str())
+            require_writable(&tx, board)?;
+            Some(board)
         }
     };
+    insert_credential(&tx, &credential, board, now_ms)?;
+    tx.commit().map_err(backend)
+}
+
+/// Inserts a credential row inside the caller's transaction.
+fn insert_credential(
+    tx: &Transaction<'_>,
+    credential: &NewCredential,
+    board: Option<&BoardId>,
+    now_ms: i64,
+) -> Result<(), StoreError> {
     tx.execute(
         "INSERT INTO credentials
              (id, secret_hash, board_id, principal, created_at_ms, expires_at_ms)
@@ -35,14 +46,14 @@ pub(crate) fn create(
         (
             credential.id.as_str(),
             &credential.secret_hash[..],
-            board,
+            board.map(BoardId::as_str),
             credential.principal.as_str(),
             now_ms,
             credential.expires_at_ms,
         ),
     )
     .map_err(backend)?;
-    tx.commit().map_err(backend)
+    Ok(())
 }
 
 /// The credential `id`, or `None`.
@@ -169,14 +180,16 @@ pub(crate) fn create_invite(
 }
 
 /// Checks and uses an invite in one `BEGIN IMMEDIATE` transaction: lookup, constant-time hash
-/// comparison, expiry, use and archived-board checks, member insert and the used mark. Every
-/// refusal of the invite itself is the same `NotFound`, so callers cannot tell why it failed.
+/// comparison, expiry, use and archived-board checks, member insert, the member's credential,
+/// the used mark and the `Join` log row. Every refusal of the invite itself is the same
+/// `NotFound`, so callers cannot tell why it failed; any failure rolls everything back.
 pub(crate) fn consume_invite(
     conn: &mut Connection,
     id: &TokenId,
     secret_hash: &[u8; 32],
     name: &Principal,
     now_ms: i64,
+    join: NewJoinCredential,
 ) -> Result<Consumed, StoreError> {
     let tx = immediate(conn)?;
     let stored = tx
@@ -216,11 +229,29 @@ pub(crate) fn consume_invite(
     let board = BoardId::new(&stored.board).map_err(backend)?;
     let (role, kind) = (parse_role(&stored.role)?, parse_kind(&stored.kind)?);
     let member = insert(&tx, &board, name, kind, role, now_ms)?;
+    let credential = NewCredential {
+        id: join.id,
+        secret_hash: join.secret_hash,
+        scope: CredentialScope::Board(board.clone()),
+        principal: name.clone(),
+        expires_at_ms: join.expires_at_ms,
+    };
+    insert_credential(&tx, &credential, Some(&board), now_ms)?;
     tx.execute(
         "UPDATE invites SET used_at_ms = ?2 WHERE id = ?1",
         (id.as_str(), now_ms),
     )
     .map_err(backend)?;
+    log_security(
+        &tx,
+        SecurityEvent {
+            at_ms: now_ms,
+            kind: SecurityEventKind::Join,
+            board: Some(board.clone()),
+            principal: Some(name.to_string()),
+            detail: format!("joined as {}/{}", kind.as_str(), role.as_str()),
+        },
+    )?;
     tx.commit().map_err(backend)?;
     Ok(Consumed {
         board,

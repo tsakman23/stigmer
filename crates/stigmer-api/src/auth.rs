@@ -87,9 +87,8 @@ async fn network_caller<S: IdentityStore, A: Authorize>(
             .should_log(source, Logged::RateLimited, now)
         {
             state
-                .store
-                .log_security(rate_limited_event(now, source))
-                .await?;
+                .audit_best_effort(rate_limited_event(now, source))
+                .await;
         }
         return Err(ApiError::rate_limited(retry_after));
     }
@@ -103,9 +102,8 @@ async fn network_caller<S: IdentityStore, A: Authorize>(
         .should_log(source, Logged::AuthFailed, now)
     {
         state
-            .store
-            .log_security(auth_failed_event(now, source, token.as_ref()))
-            .await?;
+            .audit_best_effort(auth_failed_event(now, source, token.as_ref()))
+            .await;
     }
     Err(ApiError::unauthorized())
 }

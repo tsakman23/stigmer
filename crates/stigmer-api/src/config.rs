@@ -12,6 +12,10 @@ use crate::limits::Limits;
 /// The current time in ms since the Unix epoch. Injected so tests control expiry.
 pub type Clock = Arc<dyn Fn() -> i64 + Send + Sync>;
 
+/// Receives a one-line warning (no secrets) for something that failed but did not fail the
+/// request, such as a security log write after a completed mutation. Defaults to stderr.
+pub type Warn = Arc<dyn Fn(&str) + Send + Sync>;
+
 /// Everything the router needs to know besides the store, the authorizer and shutdown.
 #[derive(Clone)]
 pub struct ApiConfig {
@@ -27,6 +31,8 @@ pub struct ApiConfig {
     pub limits: Limits,
     /// Reads the time for credential expiry and last-seen stamps.
     pub clock: Clock,
+    /// Where best-effort failures are reported.
+    pub warn: Warn,
 }
 
 impl ApiConfig {
@@ -48,6 +54,7 @@ impl ApiConfig {
             trusted_proxies: Vec::new(),
             limits: Limits::default(),
             clock: Arc::new(system_time_ms),
+            warn: Arc::new(|line| eprintln!("stigmer: warning: {line}")),
         }
     }
 }

@@ -113,6 +113,25 @@ impl fmt::Debug for NewInvite {
     }
 }
 
+/// The credential `consume_invite` creates for the new member, on the invite's board. Only the
+/// hash of its secret is kept.
+#[derive(Clone, PartialEq, Eq)]
+pub struct NewJoinCredential {
+    pub id: TokenId,
+    pub secret_hash: [u8; 32],
+    pub expires_at_ms: i64,
+}
+
+impl fmt::Debug for NewJoinCredential {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("NewJoinCredential")
+            .field("id", &self.id)
+            .field("secret_hash", &REDACTED)
+            .field("expires_at_ms", &self.expires_at_ms)
+            .finish()
+    }
+}
+
 /// What consuming an invite produced: the new member, with the invite's board, role and kind.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Consumed {
@@ -204,10 +223,10 @@ const REDACTED: &str = "<redacted>";
 /// `NotFound` with `Entity::Board`.
 ///
 /// An archived board takes no new identities: `add_member`, `create_invite` and
-/// `adopt_local_authors` refuse it with `Conflict(ConflictKind::BoardArchived)`, and
-/// `consume_invite` refuses an invite into it like any other unusable invite. Reads,
-/// `remove_member`, credential creation and revocation keep working on archived boards, as the
-/// archive flow needs them.
+/// `adopt_local_authors` refuse it with `Conflict(ConflictKind::BoardArchived)`, as does
+/// `create_credential` for that board, and `consume_invite` refuses an invite into it like any
+/// other unusable invite. Reads, `remove_member` and revocation keep working on archived boards,
+/// as the archive flow needs them.
 pub trait IdentityStore: Send + Sync + 'static {
     /// The instance mode. A fresh store is `Mode::Local`.
     fn mode(&self) -> impl Future<Output = Result<Mode, StoreError>> + Send;
@@ -269,7 +288,8 @@ pub trait IdentityStore: Send + Sync + 'static {
         now_ms: i64,
     ) -> impl Future<Output = Result<u64, StoreError>> + Send;
 
-    /// Stores a credential created at `now_ms`.
+    /// Stores a credential created at `now_ms`. A board-scoped credential for an archived board
+    /// is `Conflict(ConflictKind::BoardArchived)`; the instance scope is not tied to a board.
     fn create_credential(
         &self,
         credential: NewCredential,
@@ -324,16 +344,19 @@ pub trait IdentityStore: Send + Sync + 'static {
 
     /// In one transaction: checks the invite (its hash compared in constant time, valid while
     /// `now_ms < expires_at_ms`, unused, board not archived), adds `name` as a member with the
-    /// invite's role and kind, and marks the invite used. An unknown id, a wrong hash, an expired
-    /// invite, a used one and one into an archived board are all the same `NotFound` with
-    /// `Entity::Invite`. A name already on the board is `Conflict(ConflictKind::NameTaken)` and
-    /// leaves the invite unused.
+    /// invite's role and kind, stores `credential` for that member on the invite's board, marks
+    /// the invite used and appends a `SecurityEventKind::Join` row (board, member name, kind and
+    /// role words, no secrets). Either all of it happens or none. An unknown id, a wrong hash, an
+    /// expired invite, a used one and one into an archived board are all the same `NotFound` with
+    /// `Entity::Invite`. A name already on the board is `Conflict(ConflictKind::NameTaken)`.
+    /// Every failure leaves the invite unused and no member, credential or log row behind.
     fn consume_invite(
         &self,
         id: &TokenId,
         secret_hash: &[u8; 32],
         name: &Principal,
         now_ms: i64,
+        credential: NewJoinCredential,
     ) -> impl Future<Output = Result<Consumed, StoreError>> + Send;
 
     /// Appends an entry to the security log.

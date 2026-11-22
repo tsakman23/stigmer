@@ -17,6 +17,7 @@ mod identity_adoption;
 mod identity_archive;
 mod identity_credentials;
 mod identity_invites;
+mod identity_join;
 mod identity_members;
 mod posts;
 mod reads;

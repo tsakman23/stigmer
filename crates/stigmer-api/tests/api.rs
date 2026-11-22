@@ -18,7 +18,7 @@ use stigmer_core::{
 };
 use stigmer_store::{
     Adoption, ChainReport, Consumed, Credential, IdentityStore, Member, Mode, NewCredential,
-    NewInvite, SecurityEvent, Store, StoreError,
+    NewInvite, NewJoinCredential, SecurityEvent, Store, StoreError,
 };
 use stigmer_store_sqlite::SqliteStore;
 use tokio::sync::watch;
@@ -897,8 +897,10 @@ impl IdentityStore for RacingStore {
         secret_hash: &[u8; 32],
         name: &Principal,
         now_ms: i64,
+        credential: NewJoinCredential,
     ) -> impl Future<Output = Result<Consumed, StoreError>> + Send {
-        self.inner.consume_invite(id, secret_hash, name, now_ms)
+        self.inner
+            .consume_invite(id, secret_hash, name, now_ms, credential)
     }
 
     fn log_security(

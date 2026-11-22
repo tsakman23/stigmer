@@ -5,7 +5,7 @@ use std::sync::Arc;
 use stigmer_core::{BoardId, PrincipalKind, Role};
 use stigmer_store::{ConflictKind, Consumed, Entity, IdentityStore, Store, StoreError};
 
-use crate::identity::{hash_of, invite, member, not_found, token_id, HOUR, NOW};
+use crate::identity::{hash_of, invite, join_credential, member, not_found, token_id, HOUR, NOW};
 use crate::support::{board, ok, principal};
 
 pub(crate) async fn invite_consumes_once<S: Store + IdentityStore>(store: S) {
@@ -25,7 +25,13 @@ pub(crate) async fn invite_consumes_once<S: Store + IdentityStore>(store: S) {
     );
     assert_eq!(
         store
-            .consume_invite(&token_id(1), &hash, &principal("dave"), NOW + 1)
+            .consume_invite(
+                &token_id(1),
+                &hash,
+                &principal("dave"),
+                NOW + 1,
+                join_credential(100)
+            )
             .await,
         Ok(Consumed {
             board: research.clone(),
@@ -42,7 +48,13 @@ pub(crate) async fn invite_consumes_once<S: Store + IdentityStore>(store: S) {
     );
     assert_eq!(
         store
-            .consume_invite(&token_id(1), &hash, &principal("erin"), NOW + 2)
+            .consume_invite(
+                &token_id(1),
+                &hash,
+                &principal("erin"),
+                NOW + 2,
+                join_credential(100)
+            )
             .await,
         Err(not_found(Entity::Invite, token_id(1))),
         "{SCENARIO}: second use"
@@ -64,7 +76,13 @@ pub(crate) async fn invite_expired_is_not_found<S: IdentityStore>(store: S) {
 
     for at_ms in [expires, expires + HOUR] {
         let late = store
-            .consume_invite(&token_id(1), &hash, &principal("dave"), at_ms)
+            .consume_invite(
+                &token_id(1),
+                &hash,
+                &principal("dave"),
+                at_ms,
+                join_credential(100),
+            )
             .await;
         assert_eq!(
             late,
@@ -79,7 +97,13 @@ pub(crate) async fn invite_expired_is_not_found<S: IdentityStore>(store: S) {
     );
     // The refusals did not use it: just before expiry it still works.
     let in_time = store
-        .consume_invite(&token_id(1), &hash, &principal("dave"), expires - 1)
+        .consume_invite(
+            &token_id(1),
+            &hash,
+            &principal("dave"),
+            expires - 1,
+            join_credential(100),
+        )
         .await;
     assert!(in_time.is_ok(), "{SCENARIO}: in time, got {in_time:?}");
 }
@@ -96,7 +120,13 @@ pub(crate) async fn invite_wrong_hash_is_not_found_and_not_consumed<S: IdentityS
     for wrong in [hash_of("guess"), one_bit_off] {
         assert_eq!(
             store
-                .consume_invite(&token_id(1), &wrong, &principal("dave"), NOW)
+                .consume_invite(
+                    &token_id(1),
+                    &wrong,
+                    &principal("dave"),
+                    NOW,
+                    join_credential(100)
+                )
                 .await,
             Err(not_found(Entity::Invite, token_id(1))),
             "{SCENARIO}: wrong hash"
@@ -104,7 +134,13 @@ pub(crate) async fn invite_wrong_hash_is_not_found_and_not_consumed<S: IdentityS
     }
     assert_eq!(
         store
-            .consume_invite(&token_id(2), &hash, &principal("dave"), NOW)
+            .consume_invite(
+                &token_id(2),
+                &hash,
+                &principal("dave"),
+                NOW,
+                join_credential(100)
+            )
             .await,
         Err(not_found(Entity::Invite, token_id(2))),
         "{SCENARIO}: unknown id looks the same"
@@ -115,7 +151,13 @@ pub(crate) async fn invite_wrong_hash_is_not_found_and_not_consumed<S: IdentityS
         "{SCENARIO}: no member"
     );
     let right = store
-        .consume_invite(&token_id(1), &hash, &principal("dave"), NOW)
+        .consume_invite(
+            &token_id(1),
+            &hash,
+            &principal("dave"),
+            NOW,
+            join_credential(100),
+        )
         .await;
     assert!(right.is_ok(), "{SCENARIO}: still usable, got {right:?}");
 }
@@ -143,7 +185,13 @@ pub(crate) async fn invite_with_taken_name_conflicts_and_stays_unconsumed<S: Ide
 
     assert_eq!(
         store
-            .consume_invite(&token_id(1), &hash, &principal("alice"), NOW + 1)
+            .consume_invite(
+                &token_id(1),
+                &hash,
+                &principal("alice"),
+                NOW + 1,
+                join_credential(100)
+            )
             .await,
         Err(StoreError::Conflict(ConflictKind::NameTaken)),
         "{SCENARIO}: taken name"
@@ -154,7 +202,13 @@ pub(crate) async fn invite_with_taken_name_conflicts_and_stays_unconsumed<S: Ide
         "{SCENARIO}: alice keeps her role"
     );
     let bob = store
-        .consume_invite(&token_id(1), &hash, &principal("bob"), NOW + 2)
+        .consume_invite(
+            &token_id(1),
+            &hash,
+            &principal("bob"),
+            NOW + 2,
+            join_credential(100),
+        )
         .await;
     assert_eq!(
         bob.map(|c| c.member),
@@ -186,7 +240,15 @@ pub(crate) async fn concurrent_consumes_of_one_invite_create_exactly_one_member<
             let store = Arc::clone(&store);
             tokio::spawn(async move {
                 let name = principal(&format!("agent-{i}"));
-                store.consume_invite(&token_id(1), &hash, &name, NOW).await
+                store
+                    .consume_invite(
+                        &token_id(1),
+                        &hash,
+                        &name,
+                        NOW,
+                        join_credential(100 + i as u8),
+                    )
+                    .await
             })
         })
         .collect();
