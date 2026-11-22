@@ -10,6 +10,8 @@
 
 use std::hint::black_box;
 use std::net::IpAddr;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use axum::extract::{Request, State};
 use axum::http::header::AUTHORIZATION;
@@ -22,15 +24,50 @@ use stigmer_store::{
 };
 
 use crate::authz::{Authenticated, Authorize};
+use crate::config::Warn;
 use crate::error::ApiError;
 use crate::ipnet::IpNet;
 use crate::ratelimit::{Logged, Source};
 use crate::routes::{reader, AppState};
 
-/// The address of the connection a request came in on. The server inserts it as a request
-/// extension; without it, every request shares one source for rate limiting.
+/// The address of the connection a request came in on, inserted by the server as a request
+/// extension. Network mode requires it: rate limiting and the security log are keyed by source,
+/// so a request without it is a server misconfiguration and is answered 500. Local mode does
+/// not use it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PeerAddr(pub IpAddr);
+
+/// Reports a missing peer address once per router (one router per server process).
+#[derive(Clone)]
+pub(crate) struct PeerGuard {
+    warned: Arc<AtomicBool>,
+    warn: Warn,
+}
+
+impl PeerGuard {
+    pub(crate) fn new(warn: Warn) -> Self {
+        Self {
+            warned: Arc::new(AtomicBool::new(false)),
+            warn,
+        }
+    }
+}
+
+/// Middleware for network mode: 500 `internal` unless the request carries a `PeerAddr`.
+/// Failing closed keeps clients from sharing one rate-limit bucket by accident.
+pub(crate) async fn require_peer(
+    State(guard): State<PeerGuard>,
+    request: Request,
+    next: Next,
+) -> Response {
+    if request.extensions().get::<PeerAddr>().is_some() {
+        return next.run(request).await;
+    }
+    if !guard.warned.swap(true, Ordering::Relaxed) {
+        (guard.warn)("request without a peer address refused; the server must set PeerAddr");
+    }
+    ApiError::internal().into_response()
+}
 
 /// Compared against when a token id is unknown, so a miss costs the same hash work as a wrong
 /// secret.

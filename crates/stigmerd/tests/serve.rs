@@ -338,3 +338,68 @@ fn slow_header_connection_is_closed_after_the_timeout() {
     let (status, _) = http(&server.addr, "GET", "/healthz", &[], "");
     assert_eq!(status, 200);
 }
+
+/// Connects to `addr` from the local address `from`, or `None` when the OS has no such address
+/// (macOS configures only 127.0.0.1 on the loopback interface by default).
+fn connect_from(from: &str, addr: &str) -> Option<std::net::TcpStream> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_io()
+        .build()
+        .expect("runtime");
+    let stream = runtime.block_on(async {
+        let socket = tokio::net::TcpSocket::new_v4().ok()?;
+        socket.bind(from.parse().ok()?).ok()?;
+        socket
+            .connect(addr.parse().ok()?)
+            .await
+            .ok()?
+            .into_std()
+            .ok()
+    })?;
+    stream.set_nonblocking(false).expect("blocking");
+    Some(stream)
+}
+
+fn bad_token_request(addr: &str) -> Vec<u8> {
+    format!(
+        "GET /v1/boards/main/events?timeout_s=0 HTTP/1.1\r\nHost: {addr}\r\n\
+         Authorization: Bearer garbage\r\nConnection: close\r\n\r\n"
+    )
+    .into_bytes()
+}
+
+#[cfg(unix)]
+#[test]
+fn peer_address_is_always_set_in_network_mode() {
+    use std::io::Write;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let data = dir.path().join("data");
+    assert_eq!(run_bounded(&["admin", "enable-auth"], &data).code, Some(0));
+    let mut server = start(&data);
+    let auth = [("Authorization", "Bearer garbage")];
+    let path = "/v1/boards/main/events?timeout_s=0";
+    // The default budget is ten failures a minute per source.
+    for _ in 0..10 {
+        assert_eq!(http(&server.addr, "GET", path, &auth, "").0, 401);
+    }
+    assert_eq!(http(&server.addr, "GET", path, &auth, "").0, 429);
+    match connect_from("127.0.0.2:0", &server.addr) {
+        Some(mut other) => {
+            other
+                .write_all(&bad_token_request(&server.addr))
+                .expect("write");
+            let reply = read_to_close(&mut other);
+            assert!(
+                reply.starts_with("HTTP/1.1 401"),
+                "another client must keep its own budget: {reply}"
+            );
+        }
+        // Covered instead by serve::tests::each_connection_is_rate_limited_as_its_own_source.
+        None => eprintln!("127.0.0.2 is not available here; skipping the second client"),
+    }
+    sigterm(&server);
+    assert_eq!(wait_for_exit(&mut server, Duration::from_secs(5)), Some(0));
+    let log = run_bounded(&["admin", "security-log"], &data);
+    assert!(log.stdout.contains("source=127.0.0.1"), "{}", log.stdout);
+    assert!(!log.stdout.contains("source=unknown"), "{}", log.stdout);
+}

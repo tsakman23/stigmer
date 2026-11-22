@@ -6,6 +6,7 @@ use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
 
+use axum::body::{Bytes, HttpBody};
 use axum::extract::Request;
 use axum::Router;
 use hyper::body::Incoming;
@@ -103,22 +104,25 @@ async fn connection(
 }
 
 /// The router with `PeerAddr(peer)` inserted into every request's extensions.
-fn tagged(
+fn tagged<B>(
     app: &Router,
     peer: IpAddr,
 ) -> impl tower::Service<
-    Request<Incoming>,
+    Request<B>,
     Response = axum::response::Response,
     Error = std::convert::Infallible,
     Future = impl Send,
 > + Clone
        + Send
-       + 'static {
-    app.clone()
-        .map_request(move |mut request: Request<Incoming>| {
-            request.extensions_mut().insert(PeerAddr(peer));
-            request
-        })
+       + 'static
+where
+    B: HttpBody<Data = Bytes> + Send + 'static,
+    B::Error: Into<axum::BoxError>,
+{
+    app.clone().map_request(move |mut request: Request<B>| {
+        request.extensions_mut().insert(PeerAddr(peer));
+        request
+    })
 }
 
 /// Runs the HTTP connection to completion, switching to a graceful shutdown (finish the
@@ -148,4 +152,50 @@ async fn drive<I, S>(
     }
     conn.as_mut().graceful_shutdown();
     let _ = conn.await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::StatusCode;
+    use stigmer_api::{router, ApiConfig, RoleAuthorize};
+    use stigmer_store::IdentityStore;
+    use stigmer_store_sqlite::SqliteStore;
+
+    async fn bad_token_status(app: &Router, peer: &str) -> StatusCode {
+        let request = Request::builder()
+            .uri("/v1/boards/main/events")
+            .header("authorization", "Bearer garbage")
+            .body(Body::empty())
+            .unwrap();
+        let service = tagged(app, peer.parse().unwrap());
+        service.oneshot(request).await.unwrap().status()
+    }
+
+    /// The connection layer gives each connection its own source, so a burst from one client
+    /// is limited without touching another.
+    #[tokio::test]
+    async fn each_connection_is_rate_limited_as_its_own_source() {
+        let store = Arc::new(SqliteStore::open_memory().await.unwrap());
+        store.enable_network_mode().await.unwrap();
+        let (_tx, rx) = watch::channel(false);
+        let config = ApiConfig::network();
+        let budget = config.limits.auth_failures_per_minute;
+        let app = router(store, RoleAuthorize, rx, config);
+        for _ in 0..budget {
+            assert_eq!(
+                bad_token_status(&app, "192.0.2.1").await,
+                StatusCode::UNAUTHORIZED
+            );
+        }
+        assert_eq!(
+            bad_token_status(&app, "192.0.2.1").await,
+            StatusCode::TOO_MANY_REQUESTS
+        );
+        assert_eq!(
+            bad_token_status(&app, "192.0.2.2").await,
+            StatusCode::UNAUTHORIZED
+        );
+    }
 }

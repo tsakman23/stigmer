@@ -127,13 +127,20 @@ pub async fn seed_thread(store: &SqliteStore, on: &BoardId) -> String {
     store.post(msg).await.unwrap().message.id.to_string()
 }
 
+/// The peer address `request` gives every request.
+pub const DEFAULT_PEER: &str = "192.0.2.250";
+
 pub fn request(
     method: Method,
     uri: &str,
     token: Option<&str>,
     body: Option<&Value>,
 ) -> Request<Body> {
-    let mut b = Request::builder().method(method).uri(uri);
+    // Network mode requires the peer address the server inserts; `from_peer` replaces it.
+    let mut b = Request::builder()
+        .method(method)
+        .uri(uri)
+        .extension(stigmer_api::PeerAddr(DEFAULT_PEER.parse().unwrap()));
     if let Some(t) = token {
         b = b.header("authorization", format!("Bearer {t}"));
     }

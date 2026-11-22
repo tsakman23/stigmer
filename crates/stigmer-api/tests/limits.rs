@@ -4,13 +4,13 @@
 mod common;
 
 use std::sync::atomic::Ordering;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use axum::body::Body;
 use axum::http::{Method, Request, StatusCode};
 use common::*;
-use stigmer_api::{router, AllowAll, ApiConfig, IpNet, Limits, RoleAuthorize};
+use stigmer_api::{router, AllowAll, ApiConfig, IpNet, Limits, PeerAddr, RoleAuthorize};
 use stigmer_core::{BoardId, Role};
 use stigmer_store::{IdentityStore, Mode, SecurityEventKind};
 use stigmer_store_sqlite::SqliteStore;
@@ -114,14 +114,55 @@ async fn failed_auth_is_rate_limited_per_source_with_429_and_retry_after() {
     );
 }
 
+fn without_peer(mut req: Request<Body>) -> Request<Body> {
+    req.extensions_mut().remove::<PeerAddr>();
+    req
+}
+
 #[tokio::test]
-async fn requests_without_a_peer_address_share_one_bucket() {
-    let net = network_with(RoleAuthorize, |c| c.limits.auth_failures_per_minute = 2).await;
-    for _ in 0..2 {
-        let reply = send(&net.app, events_with("garbage")).await;
-        assert_eq!(reply.status, StatusCode::UNAUTHORIZED);
+async fn network_mode_request_without_peer_addr_is_500() {
+    let warnings = Arc::new(Mutex::new(Vec::<String>::new()));
+    let sink = Arc::clone(&warnings);
+    let net = network_with(RoleAuthorize, move |c| {
+        c.warn = Arc::new(move |line| sink.lock().unwrap().push(line.to_owned()));
+    })
+    .await;
+    let good = member_token(&net.store, &BoardId::main(), "alice", Role::Member).await;
+    // Fail closed on every route, with or without a valid token, without saying why.
+    for req in [
+        events_with(&good),
+        events_with("garbage"),
+        request(Method::GET, "/healthz", None, None),
+        request(Method::POST, "/v1/join", None, None),
+    ] {
+        let reply = send(&net.app, without_peer(req)).await;
+        assert_eq!(reply.status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(
+            reply.body,
+            r#"{"error":{"code":"internal","message":"internal error"}}"#
+        );
     }
-    assert_rate_limited(&send(&net.app, events_with("garbage")).await);
+    // One warning for the process, naming the misconfiguration and no request data.
+    let lines = warnings.lock().unwrap().clone();
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert!(lines[0].contains("peer address"), "{lines:?}");
+    assert!(!lines[0].contains(&good), "{lines:?}");
+    // Nothing was attributed to a shared unknown source.
+    assert!(log_of(&net.store, SecurityEventKind::AuthFailed)
+        .await
+        .is_empty());
+    // With the peer address the same request is served.
+    let reply = send(&net.app, from_peer(events_with(&good), "192.0.2.1")).await;
+    assert_eq!(reply.status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn local_mode_needs_no_peer_addr() {
+    let store = Arc::new(SqliteStore::open_memory().await.unwrap());
+    let (_tx, rx) = watch::channel(false);
+    let app = router(store, AllowAll, rx, ApiConfig::local());
+    let req = without_peer(request(Method::GET, "/v1/boards/main/events", None, None));
+    assert_eq!(send(&app, req).await.status, StatusCode::OK);
 }
 
 #[tokio::test]

@@ -23,7 +23,7 @@ use stigmer_store::{CredentialScope, IdentityStore, Mode, SecurityEvent, Store, 
 use tokio::sync::{watch, Semaphore};
 
 use crate::admin_routes;
-use crate::auth::authenticate;
+use crate::auth::{authenticate, require_peer, PeerGuard};
 use crate::authz::{Action, Authenticated, Authorize, Scope};
 use crate::config::ApiConfig;
 use crate::error::ApiError;
@@ -75,6 +75,8 @@ pub fn router<S: Store + IdentityStore, A: Authorize>(
     config: ApiConfig,
 ) -> Router {
     let allowed_hosts = AllowedHosts::new(&config.allowed_hosts);
+    let peer_guard =
+        (config.mode == Mode::Network).then(|| PeerGuard::new(Arc::clone(&config.warn)));
     let state = AppState {
         store,
         authz,
@@ -104,12 +106,13 @@ pub fn router<S: Store + IdentityStore, A: Authorize>(
     // The admin routes (boards, members, invites, tokens, whoami) join the authenticated group;
     // `POST /v1/join` is the one open route besides health, behind the host guard and its own
     // rate limit.
-    // Request order: the host guard (outermost) refuses foreign Host/Origin first; then, on board
+    // Request order: in network mode a request without the peer address is refused first (500);
+    // then the host guard refuses foreign Host/Origin first; then, on board
     // routes only, the authentication layer answers 429 -> 401; then each handler answers 404
     // (board not visible) -> 403 (authorizer) -> the request's own errors. Health checks are
     // open, and the unknown-route 404 and wrong-method 405 fallbacks are unauthenticated by
     // design: they reveal only the public shape of the routes.
-    Router::new()
+    let app = Router::new()
         .route("/healthz", get(healthz))
         .route("/readyz", get(readyz::<S, A>))
         .merge(board_routes)
@@ -121,7 +124,12 @@ pub fn router<S: Store + IdentityStore, A: Authorize>(
             allowed_hosts,
             require_allowed_host,
         ))
-        .with_state(state)
+        .with_state(state);
+    // Outermost in network mode: without the peer address nothing else can be judged.
+    match peer_guard {
+        Some(guard) => app.layer(axum::middleware::from_fn_with_state(guard, require_peer)),
+        None => app,
+    }
 }
 
 impl<S: IdentityStore, A> AppState<S, A> {
