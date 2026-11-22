@@ -5,6 +5,7 @@ mod client;
 mod commands;
 mod exit;
 mod logins;
+mod manage;
 mod render;
 mod tls;
 mod wait;
@@ -120,6 +121,26 @@ enum Command {
     },
     /// Show who the saved login (or STIGMER_TOKEN) is.
     Whoami,
+    /// Boards on this server.
+    Boards {
+        #[command(subcommand)]
+        command: manage::BoardsCommand,
+    },
+    /// Members of --board.
+    Members {
+        #[command(subcommand)]
+        command: manage::MembersCommand,
+    },
+    /// Invites into --board.
+    Invite {
+        #[command(subcommand)]
+        command: manage::InviteCommand,
+    },
+    /// Tokens of --board.
+    Token {
+        #[command(subcommand)]
+        command: manage::TokenCommand,
+    },
     /// Print matching events as they arrive (one JSON object per line with --json).
     Tail {
         #[command(flatten)]
@@ -227,6 +248,10 @@ fn run(ctx: &Ctx, command: Command) -> Result<Exit, CliError> {
         Command::Join { invite } => account::join(ctx, &invite),
         Command::Login { instance } => account::login(ctx, instance),
         Command::Whoami => account::whoami(ctx),
+        Command::Boards { command } => manage::boards(ctx, command),
+        Command::Members { command } => manage::members(ctx, command),
+        Command::Invite { command } => manage::invite(ctx, command),
+        Command::Token { command } => manage::token(ctx, command),
     }
 }
 

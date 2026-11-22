@@ -117,7 +117,7 @@ impl CliError {
             ErrorCode::NotFound => (
                 Exit::NotFound,
                 "not_found",
-                "check the id; list threads with: stigmer read <channel>".into(),
+                "check the id and --board; list threads with: stigmer read <channel>".into(),
             ),
             ErrorCode::MethodNotAllowed => (
                 Exit::Failure,

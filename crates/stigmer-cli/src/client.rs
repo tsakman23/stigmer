@@ -83,6 +83,11 @@ impl Client {
         format!("{}/v1/boards/{}/{path}", self.base, self.board)
     }
 
+    /// A route of this client's board, such as `members`.
+    pub(crate) fn board_route(&self, path: &str) -> String {
+        self.url(path)
+    }
+
     /// A route outside any board, such as `whoami` or `boards`.
     pub(crate) fn root_route(&self, path: &str) -> String {
         format!("{}/v1/{path}", self.base)
@@ -100,6 +105,21 @@ impl Client {
         body: &B,
     ) -> Result<T, CliError> {
         self.finish(self.identify(self.agent.post(url)).send_json(body))
+    }
+
+    /// POSTs an empty body to `url` and decodes the JSON response.
+    pub(crate) fn post_empty<T: DeserializeOwned>(&self, url: &str) -> Result<T, CliError> {
+        self.finish(self.identify(self.agent.post(url)).send_empty())
+    }
+
+    /// DELETEs `url`; success has no body.
+    pub(crate) fn delete(&self, url: &str) -> Result<(), CliError> {
+        let sent = self.identify(self.agent.delete(url)).call();
+        let response = sent.map_err(|e| self.network_error(e))?;
+        if response.status().is_success() {
+            return Ok(());
+        }
+        Err(self.failure(response)?)
     }
 
     fn identify<B>(&self, request: RequestBuilder<B>) -> RequestBuilder<B> {
