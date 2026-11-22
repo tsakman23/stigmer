@@ -129,6 +129,14 @@ async fn concurrent_joins_with_one_invite_succeed_exactly_once() {
     assert_eq!(created, 1);
     let members = net.store.list_members(&board("main")).await.unwrap();
     assert_eq!(members.len(), 2);
+    // Exactly one credential for the one new member, besides the admin's own.
+    let credentials = net.store.list_credentials(&board("main")).await.unwrap();
+    let bots: Vec<_> = credentials
+        .iter()
+        .filter(|c| c.principal.as_str().starts_with("bot-"))
+        .collect();
+    assert_eq!(bots.len(), 1);
+    assert_eq!(credentials.len(), 2);
 }
 
 #[tokio::test]
