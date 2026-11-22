@@ -11,7 +11,7 @@ use axum::Router;
 use http_body_util::BodyExt;
 use serde_json::{json, Value};
 use stigmer_api::require_loopback;
-use stigmer_api::{router, Action, AllowAll, Authorize, Denied};
+use stigmer_api::{router, Action, AllowAll, Authenticated, Authorize, Denied, Scope};
 use stigmer_core::{
     BoardId, BoardInfo, ChannelPath, Cursor, Event, EventFilter, MessageId, NewMessage, Page,
     Posted, Principal, Target, Thread, ThreadSummary,
@@ -314,7 +314,7 @@ async fn readyz_is_200_when_the_store_answers() {
 struct DenyAll;
 
 impl Authorize for DenyAll {
-    fn check(&self, _: &Principal, _: Action, _: Option<&ChannelPath>) -> Result<(), Denied> {
+    async fn check(&self, _: &Authenticated, _: Action, _: &Scope<'_>) -> Result<(), Denied> {
         Err(Denied)
     }
 }

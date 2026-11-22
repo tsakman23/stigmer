@@ -12,13 +12,13 @@ use axum::{Json, Router};
 use serde::Deserialize;
 use stigmer_core::{
     parse_labels, BoardId, ChannelPath, ChannelsResponse, Cursor, ErrorCode, EventFilter,
-    EventsResponse, MessageId, NewMessage, Page, PostRequest, Posted, Principal, Target, Thread,
-    MAX_WAIT_SECS,
+    EventsResponse, MessageId, NewMessage, Page, PostRequest, Posted, Principal, PrincipalKind,
+    Role, Target, Thread, MAX_WAIT_SECS,
 };
-use stigmer_store::Store;
+use stigmer_store::{CredentialScope, Store};
 use tokio::sync::watch;
 
-use crate::authz::{Action, Authorize};
+use crate::authz::{Action, Authenticated, Authorize, Scope};
 use crate::error::ApiError;
 use crate::host_guard::require_loopback_host;
 use crate::wait::read_events;
@@ -122,6 +122,25 @@ pub(crate) fn reader(headers: &HeaderMap) -> Result<Principal, ApiError> {
     }
 }
 
+/// A local-mode caller: the named principal, trusted as the instance admin.
+fn local_caller(principal: Principal) -> Authenticated {
+    Authenticated {
+        principal,
+        kind: PrincipalKind::Agent,
+        scope: CredentialScope::Instance,
+        role: Some(Role::Admin),
+        credential: None,
+    }
+}
+
+/// The whole board as an authorization scope. M1 never narrows a check to a channel.
+fn board_scope(board: &BoardId) -> Scope<'_> {
+    Scope::Board {
+        board,
+        channel: None,
+    }
+}
+
 pub(crate) fn query_or_400<T>(query: Result<Query<T>, QueryRejection>) -> Result<T, ApiError> {
     query
         .map(|Query(q)| q)
@@ -177,12 +196,15 @@ async fn post_message<S: Store, A: Authorize>(
             ))
         }
     };
-    let channel = match &target {
-        Target::NewThread { channel } => channel.clone(),
-        Target::Reply { thread } => state.store.read_thread(&board, thread).await?.root.channel,
-    };
-    let msg = NewMessage::new(board, target, who.clone(), req.text, req.labels, key)?;
-    state.authz.check(&who, Action::Post, Some(&channel))?;
+    state
+        .authz
+        .check(
+            &local_caller(who.clone()),
+            Action::Post,
+            &board_scope(&board),
+        )
+        .await?;
+    let msg = NewMessage::new(board, target, who, req.text, req.labels, key)?;
     let posted = state.store.post(msg).await?;
     let status = if posted.replayed {
         StatusCode::OK
@@ -218,7 +240,10 @@ async fn read_channels<S: Store, A: Authorize>(
     let prefix = ChannelPath::new(prefix)?;
     let before = q.before.as_deref().map(MessageId::new).transpose()?;
     let limit = parse_limit(q.limit.as_deref(), DEFAULT_CHANNEL_LIMIT)?;
-    state.authz.check(&who, Action::Read, Some(&prefix))?;
+    state
+        .authz
+        .check(&local_caller(who), Action::Read, &board_scope(&board))
+        .await?;
     let threads = state
         .store
         .read_channel(&board, &prefix, Page { limit, before })
@@ -235,10 +260,11 @@ async fn read_thread<S: Store, A: Authorize>(
     let board = require_main_board(&board)?;
     let who = reader(&headers)?;
     let id = MessageId::new(&id)?;
-    let thread = state.store.read_thread(&board, &id).await?;
     state
         .authz
-        .check(&who, Action::Read, Some(&thread.root.channel))?;
+        .check(&local_caller(who), Action::Read, &board_scope(&board))
+        .await?;
+    let thread = state.store.read_thread(&board, &id).await?;
     Ok(Json(thread))
 }
 
@@ -305,7 +331,8 @@ async fn read_events_route<S: Store, A: Authorize>(
     let timeout = Duration::from_secs(timeout_s.min(MAX_WAIT_SECS));
     state
         .authz
-        .check(&who, Action::Read, filter.channel_prefix.as_ref())?;
+        .check(&local_caller(who), Action::Read, &board_scope(&board))
+        .await?;
     // `from_now` is `after=<head>`, with the head read once here; on an empty board it is no
     // cursor at all, since nothing existed to skip.
     let after = if from_now {

@@ -7,6 +7,6 @@ mod loopback;
 mod routes;
 mod wait;
 
-pub use authz::{Action, AllowAll, Authorize, Denied};
+pub use authz::{Action, AllowAll, Authenticated, Authorize, Denied, RoleAuthorize, Scope};
 pub use loopback::{require_loopback, BindError};
 pub use routes::router;
