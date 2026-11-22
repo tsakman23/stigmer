@@ -145,7 +145,11 @@ impl CliError {
                 "this server is newer than the CLI; see the message above".into(),
             ),
         };
-        Self::new(exit, code, detail.message, next)
+        let message = match &detail.raw_code {
+            Some(raw) => format!("{} (server error code: {raw})", detail.message),
+            None => detail.message,
+        };
+        Self::new(exit, code, message, next)
     }
 
     /// The report on stderr: two lines, or one JSON object with `--json`.
@@ -175,6 +179,7 @@ mod tests {
     fn api(code: ErrorCode) -> CliError {
         CliError::api(ErrorDetail {
             code,
+            raw_code: None,
             message: "m".to_owned(),
         })
     }
@@ -190,6 +195,21 @@ mod tests {
         assert_eq!(api(ErrorCode::Internal).exit.code(), 1);
         assert_eq!(api(ErrorCode::MethodNotAllowed).exit.code(), 1);
         assert_eq!(api(ErrorCode::InvalidCursor).code, "invalid_cursor");
+    }
+
+    #[test]
+    fn unknown_error_code_prints_the_raw_code() {
+        let detail: ErrorDetail =
+            serde_json::from_str(r#"{"code":"quota_exceeded","message":"too many"}"#).unwrap();
+        let err = CliError::api(detail);
+        assert_eq!(err.exit.code(), 1);
+        assert_eq!(err.code, "unknown");
+        assert!(
+            err.render(false).contains("quota_exceeded"),
+            "{}",
+            err.render(false)
+        );
+        assert!(err.render(false).contains("too many"));
     }
 
     #[test]

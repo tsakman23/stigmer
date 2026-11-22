@@ -8,6 +8,7 @@ use crate::{
     BoardId, ChannelPath, Cursor, Event, Label, MessageId, Principal, PrincipalKind, Role,
     ThreadSummary, TokenId,
 };
+use serde::de::IntoDeserializer;
 
 /// The longest a single events request may wait, in seconds; the server clamps longer
 /// timeouts to this and clients plan their long-poll chunks around it.
@@ -67,10 +68,37 @@ pub enum ErrorCode {
 }
 
 /// The code and a human-readable message of an error.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// `raw_code` is set only when the server sent a code this version does not know (then
+/// `code` is `ErrorCode::Unknown`); it keeps the original text so clients can show it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ErrorDetail {
     pub code: ErrorCode,
+    #[serde(skip)]
+    pub raw_code: Option<String>,
     pub message: String,
+}
+
+impl<'de> Deserialize<'de> for ErrorDetail {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        struct Raw {
+            code: String,
+            message: String,
+        }
+        let raw = Raw::deserialize(deserializer)?;
+        let code = ErrorCode::deserialize(
+            IntoDeserializer::<serde::de::value::Error>::into_deserializer(raw.code.as_str()),
+        )
+        .map_err(serde::de::Error::custom)?;
+        // A literal "unknown" is the wire name of Unknown itself; only newer values are kept.
+        let raw_code = (code == ErrorCode::Unknown && raw.code != "unknown").then_some(raw.code);
+        Ok(Self {
+            code,
+            raw_code,
+            message: raw.message,
+        })
+    }
 }
 
 /// Every error response body.
@@ -228,6 +256,7 @@ mod tests {
         let body = ErrorBody {
             error: ErrorDetail {
                 code: ErrorCode::InvalidCursor,
+                raw_code: None,
                 message: "nope".to_owned(),
             },
         };
@@ -272,6 +301,49 @@ mod tests {
             assert_eq!(
                 serde_json::from_str::<ErrorCode>(&format!("\"{name}\"")).unwrap(),
                 code
+            );
+        }
+    }
+
+    #[test]
+    fn unknown_code_keeps_raw_text() {
+        let body: ErrorBody =
+            serde_json::from_str(r#"{"error":{"code":"rate_limited_v2","message":"slow"}}"#)
+                .unwrap();
+        assert_eq!(body.error.code, ErrorCode::Unknown);
+        assert_eq!(body.error.raw_code.as_deref(), Some("rate_limited_v2"));
+        assert_eq!(body.error.message, "slow");
+    }
+
+    #[test]
+    fn known_code_has_no_raw_code() {
+        let body: ErrorBody =
+            serde_json::from_str(r#"{"error":{"code":"forbidden","message":"no"}}"#).unwrap();
+        assert_eq!(body.error.code, ErrorCode::Forbidden);
+        assert_eq!(body.error.raw_code, None);
+        // A literal "unknown" is a known wire name for Unknown; there is nothing newer to keep.
+        let lit: ErrorBody =
+            serde_json::from_str(r#"{"error":{"code":"unknown","message":"x"}}"#).unwrap();
+        assert_eq!(lit.error.code, ErrorCode::Unknown);
+    }
+
+    #[test]
+    fn error_body_json_for_known_codes_is_unchanged() {
+        for (code, name) in [
+            (ErrorCode::InvalidInput, "invalid_input"),
+            (ErrorCode::Unauthorized, "unauthorized"),
+            (ErrorCode::BoardArchived, "board_archived"),
+        ] {
+            let body = ErrorBody {
+                error: ErrorDetail {
+                    code,
+                    raw_code: None,
+                    message: "m".to_owned(),
+                },
+            };
+            assert_eq!(
+                serde_json::to_string(&body).unwrap(),
+                format!(r#"{{"error":{{"code":"{name}","message":"m"}}}}"#)
             );
         }
     }

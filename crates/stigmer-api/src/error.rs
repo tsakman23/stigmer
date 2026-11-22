@@ -79,6 +79,7 @@ impl IntoResponse for ApiError {
         let status = self.status();
         let body = ErrorBody {
             error: ErrorDetail {
+                raw_code: None,
                 code: self.code,
                 message: self.message,
             },
