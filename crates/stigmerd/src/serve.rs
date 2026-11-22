@@ -43,8 +43,9 @@ pub(crate) struct Listen {
 /// What every connection task shares.
 struct Shared {
     app: Router,
+    /// HTTP/1 only, on plain and TLS connections alike, so the header read timeout bounds every
+    /// connection (hyper has no such timeout for HTTP/2).
     http1: Builder<TokioExecutor>,
-    http2: Builder<TokioExecutor>,
     tls: Option<TlsAcceptor>,
     handshake_timeout: Duration,
 }
@@ -57,19 +58,16 @@ pub(crate) async fn run(
     listen: Listen,
     mut shutdown: watch::Receiver<bool>,
 ) {
-    // The protocol is fixed per connection (ALPN on TLS, HTTP/1.1 otherwise) rather than sniffed,
-    // so a client that sends nothing still meets the header timeout.
+    // HTTP/1.1 is fixed rather than sniffed, so a client that sends nothing still meets the
+    // header timeout; TLS offers only http/1.1 by ALPN for the same reason.
     let mut http1 = Builder::new(TokioExecutor::new()).http1_only();
     http1
         .http1()
         .timer(TokioTimer::new())
         .header_read_timeout(listen.header_read_timeout);
-    let mut http2 = Builder::new(TokioExecutor::new()).http2_only();
-    http2.http2().timer(TokioTimer::new());
     let shared = Arc::new(Shared {
         app,
         http1,
-        http2,
         tls: listen.tls.clone(),
         handshake_timeout: listen.header_read_timeout,
     });
@@ -136,13 +134,9 @@ async fn connection(
     else {
         return;
     };
-    let builder = match stream.get_ref().1.alpn_protocol() {
-        Some(b"h2") => &shared.http2,
-        _ => &shared.http1,
-    };
     drive(
         stream,
-        builder,
+        &shared.http1,
         tagged(&shared.app, peer.ip(), true),
         shutdown,
     )

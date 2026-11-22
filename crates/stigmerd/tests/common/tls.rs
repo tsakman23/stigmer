@@ -55,6 +55,13 @@ impl TestCa {
         }
     }
 
+    /// A client that trusts only this CA, speaks only TLS 1.3 and offers `protocols` by ALPN.
+    pub fn client_alpn(&self, protocols: &[&[u8]]) -> Arc<ClientConfig> {
+        let mut config = (*self.client(&TLS13)).clone();
+        config.alpn_protocols = protocols.iter().map(|p| p.to_vec()).collect();
+        Arc::new(config)
+    }
+
     /// A client that trusts only this CA and speaks only `version`.
     pub fn client(&self, version: &'static SupportedProtocolVersion) -> Arc<ClientConfig> {
         let provider = Arc::new(rustls::crypto::ring::default_provider());
@@ -115,6 +122,8 @@ impl PairFiles {
 /// What one TLS exchange saw: the server's leaf certificate and the raw HTTP response.
 pub struct TlsReply {
     pub peer_cert: Vec<u8>,
+    /// The protocol agreed by ALPN, if any.
+    pub alpn: Option<Vec<u8>>,
     pub response: String,
 }
 
@@ -132,6 +141,7 @@ pub fn https_raw(
     let mut tls = StreamOwned::new(conn, sock);
     tls.write_all(request)?;
     tls.flush()?;
+    let alpn = tls.conn.alpn_protocol().map(<[u8]>::to_vec);
     let peer_cert = tls
         .conn
         .peer_certificates()
@@ -151,6 +161,7 @@ pub fn https_raw(
     }
     Ok(TlsReply {
         peer_cert,
+        alpn,
         response: String::from_utf8_lossy(&raw).into_owned(),
     })
 }
@@ -178,4 +189,43 @@ pub fn request(method: &str, path: &str, extra: &[(&str, &str)], body: &str) -> 
 /// `https_raw` with TLS 1.3 that must succeed.
 pub fn https_get(addr: &str, ca: &TestCa, path: &str, extra: &[(&str, &str)]) -> TlsReply {
     https_raw(addr, ca.client(&TLS13), &get(path, extra)).expect("tls exchange")
+}
+
+/// The rustls error behind a failed exchange, if that is what failed it.
+pub fn tls_error(err: &std::io::Error) -> Option<&rustls::Error> {
+    err.get_ref()?.downcast_ref::<rustls::Error>()
+}
+
+/// Completes a TLS handshake with `config`, then sends nothing and returns how long the server
+/// took to close the connection. A connection still open after `RAW_READ_TIMEOUT` fails the test.
+pub fn idle_after_handshake(addr: &str, config: Arc<ClientConfig>) -> std::time::Duration {
+    let name = ServerName::try_from("localhost").expect("server name");
+    let mut conn = ClientConnection::new(config, name).expect("client connection");
+    let mut sock = TcpStream::connect(addr).expect("connect");
+    sock.set_read_timeout(Some(super::RAW_READ_TIMEOUT))
+        .expect("read timeout");
+    while conn.is_handshaking() {
+        conn.complete_io(&mut sock).expect("handshake");
+    }
+    let started = std::time::Instant::now();
+    let mut tls = StreamOwned::new(conn, sock);
+    let mut buf = [0u8; 1024];
+    loop {
+        match tls.read(&mut buf) {
+            Ok(0) => break,
+            Ok(_) => {}
+            Err(e)
+                if e.kind() == std::io::ErrorKind::WouldBlock
+                    || e.kind() == std::io::ErrorKind::TimedOut =>
+            {
+                panic!(
+                    "idle TLS connection still open after {:?}",
+                    super::RAW_READ_TIMEOUT
+                )
+            }
+            // Closed without close_notify, or reset: closed either way.
+            Err(_) => break,
+        }
+    }
+    started.elapsed()
 }

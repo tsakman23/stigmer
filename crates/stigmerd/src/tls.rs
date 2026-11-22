@@ -159,7 +159,7 @@ impl ResolvesServerCert for CurrentPair {
     }
 }
 
-/// TLS 1.3 only, no client certificates, HTTP/2 or HTTP/1.1 by ALPN.
+/// TLS 1.3 only, no client certificates, HTTP/1.1 only by ALPN.
 pub(crate) fn server_config(
     provider: Arc<CryptoProvider>,
     current: Arc<CurrentPair>,
@@ -169,6 +169,9 @@ pub(crate) fn server_config(
         .map_err(|e| format!("cannot set up TLS: {e}"))?
         .with_no_client_auth()
         .with_cert_resolver(current);
-    config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+    // HTTP/1.1 only: hyper's header read timeout covers HTTP/1 alone, so an idle HTTP/2
+    // connection would hold a connection slot for ever. A client offering only h2 is refused
+    // with a no_application_protocol alert.
+    config.alpn_protocols = vec![b"http/1.1".to_vec()];
     Ok(Arc::new(config))
 }

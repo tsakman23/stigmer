@@ -22,8 +22,8 @@ rate limiting needs the real peer address of every connection.
   rather than putting every client into one rate-limit bucket. The loop caps open connections
   (`--max-connections`, default 1024; the excess is dropped unanswered) and bounds the header
   read and TLS handshake to 10 s.
-- TLS is rustls with the ring provider, TLS 1.3 only, no client certificates, ALPN `h2` and
-  `http/1.1`, and `Strict-Transport-Security: max-age=31536000` on every TLS response. The pair
+- TLS is rustls with the ring provider, TLS 1.3 only, no client certificates, ALPN `http/1.1`
+  only, and `Strict-Transport-Security: max-age=31536000` on every TLS response. The pair
   is served through a resolver over a shared cell. Every 5 s the files' modification times are
   checked; on a change both files are loaded and swapped in only if they parse and the key
   matches the certificate, so a half-written pair is never served. A bad candidate keeps the old
@@ -41,6 +41,11 @@ rate limiting needs the real peer address of every connection.
 - Certificates rotate without a restart and without ending open waits; a rotation tool must
   write both files, and the new pair is picked up within one check interval after the second
   write.
-- HTTP/2 connections negotiated by ALPN have no header-read timeout of their own; the connection
-  cap bounds them.
+- HTTP/2 is deliberately not offered in M1, over TLS (ALPN) or plain (no h2c). Hyper's header
+  read timeout covers HTTP/1 only; an HTTP/2 connection that completes its preface and then
+  sends nothing would hold a connection slot indefinitely, and enough of them would exhaust
+  `--max-connections`. Every connection, plain or TLS, is therefore HTTP/1.1 and bounded by the
+  header read timeout. A client offering only `h2` is refused with a `no_application_protocol`
+  alert; browsers fall back to HTTP/1.1. Offering HTTP/2 later needs an idle bound of its own
+  (for example keep-alive pings with a timeout, or a per-connection idle deadline).
 - `X-Forwarded-Proto` is not used: nothing in the API depends on the scheme yet.

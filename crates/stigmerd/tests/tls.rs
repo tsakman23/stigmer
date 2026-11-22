@@ -6,7 +6,10 @@ mod common;
 use std::path::Path;
 use std::time::Duration;
 
-use common::tls::{get, https_get, https_raw, request, PairFiles, TestCa, TLS12, TLS13};
+use common::tls::{
+    get, https_get, https_raw, idle_after_handshake, request, tls_error, PairFiles, TestCa, TLS12,
+    TLS13,
+};
 use common::{http, raw, run_bounded, start, start_capturing, start_with, Server};
 
 /// A network-mode data dir under `dir`.
@@ -568,4 +571,69 @@ fn non_loopback_bind_without_tls_or_proxy_exits_2_and_creates_nothing() {
             "a refused start must not create the data dir"
         );
     }
+}
+
+#[test]
+fn h2_only_client_cannot_negotiate_h2_and_gets_http1_or_fails_alpn() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (server, ca, _files, _leaf) = tls_server(dir.path(), &[]);
+    // Offering only h2: the server has no protocol in common and refuses the handshake.
+    let err = match https_raw(
+        &server.addr,
+        ca.client_alpn(&[b"h2"]),
+        &get("/healthz", &[]),
+    ) {
+        Ok(reply) => panic!("h2-only client was served: {:?}", reply.alpn),
+        Err(err) => err,
+    };
+    assert!(
+        matches!(
+            tls_error(&err),
+            Some(rustls::Error::AlertReceived(
+                rustls::AlertDescription::NoApplicationProtocol
+            ))
+        ),
+        "{err:?}"
+    );
+    // Offering both, as browsers do: HTTP/1.1 is chosen.
+    let reply = https_raw(
+        &server.addr,
+        ca.client_alpn(&[b"h2", b"http/1.1"]),
+        &get("/healthz", &[]),
+    )
+    .expect("tls exchange");
+    assert_eq!(reply.alpn.as_deref(), Some(&b"http/1.1"[..]));
+    assert!(
+        reply.response.starts_with("HTTP/1.1 200"),
+        "{}",
+        reply.response
+    );
+}
+
+#[test]
+fn idle_tls_connection_is_closed_after_the_header_timeout() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (server, ca, _files, _leaf) = tls_server(dir.path(), &["--header-read-timeout-ms", "300"]);
+    for protocols in [&[b"h2".as_slice(), b"http/1.1"][..], &[][..]] {
+        let elapsed = idle_after_handshake(&server.addr, ca.client_alpn(protocols));
+        assert!(
+            elapsed < Duration::from_secs(3),
+            "closed only after {elapsed:?}"
+        );
+    }
+}
+
+#[test]
+fn tls_handshake_timeout_closes_a_client_that_sends_nothing_after_tcp_connect() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (server, _ca, _files, _leaf) = tls_server(dir.path(), &["--header-read-timeout-ms", "300"]);
+    let started = std::time::Instant::now();
+    let mut stream = std::net::TcpStream::connect(&server.addr).expect("connect");
+    let reply = common::read_to_close(&mut stream);
+    let elapsed = started.elapsed();
+    assert!(reply.is_empty(), "{reply:?}");
+    assert!(
+        elapsed < Duration::from_secs(3),
+        "closed only after {elapsed:?}"
+    );
 }
