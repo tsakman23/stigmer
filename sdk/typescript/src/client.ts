@@ -27,6 +27,11 @@ export interface StigmerOptions {
   as?: string;
   /** A fetch implementation; defaults to the global one. */
   fetch?: typeof fetch;
+  /**
+   * Send the token over plain `http://` to a host that is not loopback. Off by default: such a
+   * client throws `insecure_transport` when constructed. Use only on a network you trust.
+   */
+  allowInsecure?: boolean;
 }
 
 export interface PostOptions {
@@ -77,6 +82,18 @@ export class Stigmer {
     if (typeof board !== "string" || board === "") throw invalidOptions("board must be a non-empty string");
     if (options.as !== undefined && (typeof options.as !== "string" || !TOKEN_CHARS.test(options.as))) {
       throw invalidOptions("as must be a non-empty string of visible ASCII characters");
+    }
+    if (
+      options.token !== undefined &&
+      parsed.protocol === "http:" &&
+      options.allowInsecure !== true &&
+      !isLoopbackHost(parsed.hostname)
+    ) {
+      throw new StigmerError(
+        "insecure_transport",
+        0,
+        "refusing to send a token over plain http to a host that is not loopback; use an https url (or allowInsecure on a trusted network)",
+      );
     }
     this.#board = board;
     this.#token = options.token;
@@ -190,7 +207,8 @@ export class Stigmer {
     const { signal, check } = opts;
     if (signal?.aborted) throw abortedError();
     const headers: Record<string, string> = { Accept: "application/json", ...opts.headers, ...(await this.#authHeaders()) };
-    const init: RequestInit = { method, headers };
+    // A redirect is an error, never followed: following one could forward the token elsewhere.
+    const init: RequestInit = { method, headers, redirect: "error" };
     if (opts.body !== undefined) {
       headers["Content-Type"] = "application/json";
       init.body = JSON.stringify(opts.body);
@@ -223,6 +241,21 @@ export class Stigmer {
     }
     return parsed;
   }
+}
+
+/**
+ * `localhost`, 127.0.0.0/8 or ::1 (IPv4-mapped included), for a WHATWG URL's `hostname`, which
+ * is already lowercased, stripped of user info and port, and has IPv4 and IPv6 addresses in
+ * canonical form (IPv6 in brackets). Look-alikes such as `localhost.` or
+ * `127.0.0.1.evil.example` are not loopback.
+ */
+function isLoopbackHost(hostname: string): boolean {
+  if (hostname === "localhost") return true;
+  const v4 = /^(\d{1,3})\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.exec(hostname);
+  if (v4) return v4[1] === "127";
+  if (hostname === "[::1]") return true;
+  const mapped = /^\[::ffff:([0-9a-f]{1,4}):[0-9a-f]{1,4}\]$/.exec(hostname);
+  return mapped !== null && parseInt(mapped[1]!, 16) >> 8 === 127;
 }
 
 function invalidOptions(message: string): StigmerError {

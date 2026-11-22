@@ -3,11 +3,12 @@
  *
  * - `code` is the server's error code string (for example `not_found`, `unauthorized`,
  *   `rate_limited`). A code this SDK does not know is kept verbatim.
- * - The SDK adds five codes of its own: `network` (no HTTP response; `cause` holds the
- *   underlying error), `bad_response` (the body was not the JSON shape the API documents),
- *   `aborted` (the caller's AbortSignal fired), `invalid_token` (the configured token is empty
- *   or cannot be sent as a header value) and `invalid_options` (the constructor was given a bad
- *   url, board or `as`).
+ * - The SDK adds six codes of its own: `network` (no HTTP response, a redirect included;
+ *   `cause` holds the underlying error), `bad_response` (the body was not the JSON shape the API
+ *   documents), `aborted` (the caller's AbortSignal fired), `invalid_token` (the configured token
+ *   is empty or cannot be sent as a header value), `invalid_options` (the constructor was given
+ *   a bad url, board or `as`) and `insecure_transport` (the constructor was given a token and a
+ *   plain `http://` url to a host that is not loopback, without `allowInsecure`).
  * - `status` is the HTTP status, or 0 when there was no response.
  *
  * Messages never contain credentials.

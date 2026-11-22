@@ -6,6 +6,7 @@ export interface Seen {
   headers: Headers;
   body: string | undefined;
   signal: AbortSignal | undefined;
+  redirect: RequestInit["redirect"];
 }
 
 type Reply = Response | ((seen: Seen) => Response | Promise<Response>) | Error;
@@ -23,6 +24,7 @@ export function scriptedFetch(replies: Reply[] | Reply): { fetch: NonNullable<St
       headers: new Headers(init?.headers),
       body: typeof init?.body === "string" ? init.body : undefined,
       signal: init?.signal ?? undefined,
+      redirect: init?.redirect,
     };
     seen.push(entry);
     const next = queue ? queue.shift() : single;

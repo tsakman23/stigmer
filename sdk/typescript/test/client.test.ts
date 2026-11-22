@@ -9,7 +9,7 @@ import { EMPTY_EVENTS, errorBody, json, scriptedFetch } from "./fakes.js";
 const SECRET = "stg_secretvalue1234567890";
 
 function client(fetchFn: ReturnType<typeof scriptedFetch>["fetch"], extra: Record<string, unknown> = {}) {
-  return new Stigmer({ url: "http://board.test:7878", fetch: fetchFn, ...extra });
+  return new Stigmer({ url: "http://127.0.0.1:7878", fetch: fetchFn, ...extra });
 }
 
 test("bearer_token_sent_in_header_never_in_url", async () => {
