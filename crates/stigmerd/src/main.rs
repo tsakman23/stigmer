@@ -86,6 +86,10 @@ async fn serve(data_dir: PathBuf, bind: SocketAddr) -> Result<(), Failure> {
     let signals = Signals::install()
         .map_err(|e| Failure::Runtime(format!("cannot register signal handlers: {e}")))?;
 
+    // A missing data dir means local mode, so refuse before creating anything.
+    if !data_dir.exists() {
+        check_bind(bind, Mode::Local)?;
+    }
     let data = DataDir::open(&data_dir)?;
     let db_path = data.db_path();
     let store = SqliteStore::open(&db_path).await.map_err(|e| {

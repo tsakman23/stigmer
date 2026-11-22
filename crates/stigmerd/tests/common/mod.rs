@@ -126,3 +126,52 @@ pub fn wait_for_exit(server: &mut Server, within: Duration) -> Option<i32> {
     }
     None
 }
+
+/// What a bounded run of the binary printed and how it ended.
+pub struct Bounded {
+    pub code: Option<i32>,
+    pub stdout: String,
+    pub stderr: String,
+}
+
+/// Runs `stigmerd <args> --data-dir <data>` to completion. The child sits under the Drop
+/// guard, so if it has not exited within `RUN_TIMEOUT` the test fails and the child is killed.
+pub fn run_bounded(args: &[&str], data: &Path) -> Bounded {
+    let child = Command::new(env!("CARGO_BIN_EXE_stigmerd"))
+        .args(args)
+        .arg("--data-dir")
+        .arg(data)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn stigmerd");
+    let mut guarded = Server {
+        child,
+        addr: String::new(),
+    };
+    let deadline = Instant::now() + RUN_TIMEOUT;
+    let code = loop {
+        if let Some(status) = guarded.child.try_wait().expect("try_wait") {
+            break status.code();
+        }
+        assert!(
+            Instant::now() < deadline,
+            "stigmerd {args:?} did not exit within {RUN_TIMEOUT:?}"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    let read = |pipe: Option<&mut dyn Read>| {
+        let mut text = String::new();
+        if let Some(pipe) = pipe {
+            pipe.read_to_string(&mut text).expect("read pipe");
+        }
+        text
+    };
+    Bounded {
+        code,
+        stdout: read(guarded.child.stdout.as_mut().map(|p| p as &mut dyn Read)),
+        stderr: read(guarded.child.stderr.as_mut().map(|p| p as &mut dyn Read)),
+    }
+}
+
+const RUN_TIMEOUT: Duration = Duration::from_secs(10);

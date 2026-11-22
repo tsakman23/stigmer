@@ -5,7 +5,7 @@ mod common;
 use std::process::Command;
 use std::time::Duration;
 
-use common::{http, sigterm, spawn_guarded, start, wait_for_exit};
+use common::{http, run_bounded, sigterm, spawn_guarded, start, wait_for_exit};
 
 #[test]
 fn serve_starts_and_healthz_answers() {
@@ -19,13 +19,9 @@ fn serve_starts_and_healthz_answers() {
 #[test]
 fn serve_refuses_0_0_0_0_with_nonzero_exit() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let out = Command::new(env!("CARGO_BIN_EXE_stigmerd"))
-        .args(["serve", "--bind", "0.0.0.0:0", "--data-dir"])
-        .arg(dir.path())
-        .output()
-        .expect("run stigmerd");
-    assert_eq!(out.status.code(), Some(2));
-    assert!(String::from_utf8_lossy(&out.stderr).contains("0.0.0.0"));
+    let out = run_bounded(&["serve", "--bind", "0.0.0.0:0"], dir.path());
+    assert_eq!(out.code, Some(2));
+    assert!(out.stderr.contains("0.0.0.0"));
     assert!(out.stdout.is_empty());
 }
 
@@ -207,34 +203,28 @@ fn lock_file_is_0600() {
     assert_eq!(mode & 0o777, 0o600, "mode {mode:o}");
 }
 
-fn run_stigmerd(args: &[&str], data: &std::path::Path) -> std::process::Output {
-    Command::new(env!("CARGO_BIN_EXE_stigmerd"))
-        .args(args)
-        .arg("--data-dir")
-        .arg(data)
-        .output()
-        .expect("run stigmerd")
-}
-
 #[test]
 fn serve_refuses_non_loopback_bind_in_local_mode() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let out = run_stigmerd(&["serve", "--bind", "0.0.0.0:0"], dir.path());
-    assert_eq!(out.status.code(), Some(2));
-    let err = String::from_utf8_lossy(&out.stderr);
-    assert!(err.contains("0.0.0.0:0"), "stderr: {err}");
-    assert!(err.contains("needs network mode"), "stderr: {err}");
+    let out = run_bounded(&["serve", "--bind", "0.0.0.0:0"], dir.path());
+    assert_eq!(out.code, Some(2));
+    assert!(out.stderr.contains("0.0.0.0:0"), "stderr: {}", out.stderr);
+    assert!(
+        out.stderr.contains("needs network mode"),
+        "stderr: {}",
+        out.stderr
+    );
     assert!(out.stdout.is_empty());
 }
 
 #[test]
 fn serve_refuses_non_loopback_in_network_mode_without_tls_or_trusted_proxy() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let enable = run_stigmerd(&["admin", "enable-auth"], dir.path());
-    assert_eq!(enable.status.code(), Some(0));
-    let out = run_stigmerd(&["serve", "--bind", "0.0.0.0:0"], dir.path());
-    assert_eq!(out.status.code(), Some(2));
-    let err = String::from_utf8_lossy(&out.stderr);
+    let enable = run_bounded(&["admin", "enable-auth"], dir.path());
+    assert_eq!(enable.code, Some(0));
+    let out = run_bounded(&["serve", "--bind", "0.0.0.0:0"], dir.path());
+    assert_eq!(out.code, Some(2));
+    let err = &out.stderr;
     assert!(err.contains("0.0.0.0:0"), "stderr: {err}");
     assert!(
         err.contains("requires TLS or a trusted proxy"),
@@ -248,11 +238,31 @@ fn serve_refuses_non_loopback_in_network_mode_without_tls_or_trusted_proxy() {
 }
 
 #[test]
+fn serve_refusal_on_a_missing_data_dir_creates_nothing() {
+    for bind in ["0.0.0.0:0", "192.0.2.1:7878"] {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let data = dir.path().join("data");
+        let out = run_bounded(&["serve", "--bind", bind], &data);
+        assert_eq!(out.code, Some(2), "{bind}: stderr: {}", out.stderr);
+        assert!(out.stderr.contains(bind), "{bind}: stderr: {}", out.stderr);
+        assert!(
+            out.stderr.contains("needs network mode"),
+            "stderr: {}",
+            out.stderr
+        );
+        assert!(
+            !data.exists(),
+            "{bind}: refusal must not create the data dir"
+        );
+    }
+}
+
+#[test]
 fn network_mode_on_loopback_serves_plain_http_and_requires_auth() {
     let dir = tempfile::tempdir().expect("tempdir");
     let data = dir.path().join("data");
-    let enable = run_stigmerd(&["admin", "enable-auth"], &data);
-    assert_eq!(enable.status.code(), Some(0));
+    let enable = run_bounded(&["admin", "enable-auth"], &data);
+    assert_eq!(enable.code, Some(0));
     let server = start(&data);
     assert_eq!(http(&server.addr, "GET", "/healthz", &[], "").0, 200);
     let (status, _) = http(
