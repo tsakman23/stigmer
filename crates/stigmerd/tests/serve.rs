@@ -233,7 +233,7 @@ fn serve_refuses_non_loopback_in_network_mode_without_tls_or_trusted_proxy() {
         "stderr: {err}"
     );
     assert!(
-        err.contains("--tls-cert/--tls-key/--trusted-proxy are not available yet in this build"),
+        err.contains("pass --tls-cert and --tls-key, or --trusted-proxy"),
         "stderr: {err}"
     );
     assert!(out.stdout.is_empty());

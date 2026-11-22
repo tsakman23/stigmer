@@ -10,7 +10,7 @@ use std::time::Duration;
 use admin::AdminCommand;
 use clap::{Args, Parser, Subcommand};
 use lock::DataDir;
-use stigmer_api::{router, AllowAll, ApiConfig, RoleAuthorize};
+use stigmer_api::{router, AllowAll, ApiConfig, IpNet, RoleAuthorize};
 use stigmer_store::{IdentityStore, Mode};
 use stigmer_store_sqlite::SqliteStore;
 use tokio::sync::watch;
@@ -47,7 +47,8 @@ struct ServeArgs {
     /// Directory holding the board database (created if missing).
     #[arg(long, default_value = "./.stigmer")]
     data_dir: PathBuf,
-    /// Address to listen on. Must be a loopback address for now.
+    /// Address to listen on. A non-loopback address needs network mode (stigmerd admin
+    /// enable-auth) and either --tls-cert/--tls-key or --trusted-proxy.
     #[arg(long, default_value = "127.0.0.1:7878")]
     bind: SocketAddr,
     /// Most connections open at once; further connections are closed without a response.
@@ -63,6 +64,15 @@ struct ServeArgs {
     /// either changes.
     #[arg(long, value_name = "PEM", requires = "tls_cert")]
     tls_key: Option<PathBuf>,
+    /// Address range of a reverse proxy (CIDR or a bare address; repeatable or comma separated).
+    /// Its X-Forwarded-For is believed; without TLS, plain HTTP is accepted only from these
+    /// ranges and other peers are dropped.
+    #[arg(long = "trusted-proxy", value_name = "CIDR", value_delimiter = ',')]
+    trusted_proxies: Vec<IpNet>,
+    /// A host name accepted in Host and Origin besides loopback, such as the name the board is
+    /// served under (repeatable). Every other name stays refused.
+    #[arg(long = "allowed-host", value_name = "NAME")]
+    allowed_hosts: Vec<String>,
     /// How often the TLS files are checked for changes, in ms (for tests).
     #[arg(long, default_value_t = 5_000, hide = true, value_parser = clap::value_parser!(u64).range(1..))]
     tls_reload_interval_ms: u64,
@@ -112,13 +122,16 @@ async fn serve(args: ServeArgs) -> Result<(), Failure> {
         tls_cert,
         tls_key,
         tls_reload_interval_ms,
+        trusted_proxies,
+        allowed_hosts,
     } = args;
     let signals = Signals::install()
         .map_err(|e| Failure::Runtime(format!("cannot register signal handlers: {e}")))?;
 
+    let secured = tls_cert.is_some() || !trusted_proxies.is_empty();
     // A missing data dir means local mode, so refuse before creating anything.
     if !data_dir.exists() {
-        check_bind(bind, Mode::Local)?;
+        check_bind(bind, Mode::Local, secured)?;
     }
     // Clap guarantees the two flags come together.
     let tls_files = match (tls_cert, tls_key) {
@@ -140,7 +153,7 @@ async fn serve(args: ServeArgs) -> Result<(), Failure> {
         .mode()
         .await
         .map_err(|e| Failure::Runtime(format!("cannot read instance mode: {e}")))?;
-    check_bind(bind, mode)?;
+    check_bind(bind, mode, secured)?;
 
     let listener = tokio::net::TcpListener::bind(bind)
         .await
@@ -151,14 +164,15 @@ async fn serve(args: ServeArgs) -> Result<(), Failure> {
 
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let store = Arc::new(store);
+    let mut config = match mode {
+        Mode::Local => ApiConfig::local(),
+        Mode::Network => ApiConfig::network(),
+    };
+    config.allowed_hosts = allowed_hosts;
+    config.trusted_proxies.clone_from(&trusted_proxies);
     let app = match mode {
-        Mode::Local => router(store, AllowAll, shutdown_rx.clone(), ApiConfig::local()),
-        Mode::Network => router(
-            store,
-            RoleAuthorize,
-            shutdown_rx.clone(),
-            ApiConfig::network(),
-        ),
+        Mode::Local => router(store, AllowAll, shutdown_rx.clone(), config),
+        Mode::Network => router(store, RoleAuthorize, shutdown_rx.clone(), config),
     };
 
     let scheme = if tls.is_some() { "https" } else { "http" };
@@ -174,6 +188,12 @@ async fn serve(args: ServeArgs) -> Result<(), Failure> {
         // u32 always fits a usize on the platforms Rust supports for this server.
         max_connections: usize::try_from(max_connections).unwrap_or(usize::MAX),
         header_read_timeout: Duration::from_millis(header_read_timeout_ms),
+        // With TLS any peer may connect; without it, only the proxies (when any are listed).
+        plain_from: if tls.is_some() {
+            Vec::new()
+        } else {
+            trusted_proxies
+        },
         tls,
     };
     let server = serve::run(listener, app, listen, shutdown_rx);
@@ -207,22 +227,23 @@ fn start_tls(files: tls::PairFiles, reload_every: Duration) -> Result<TlsAccepto
     Ok(TlsAcceptor::from(config))
 }
 
-/// Refuses a non-loopback bind. TLS and trusted-proxy support are not in this build, so
-/// network mode cannot serve beyond loopback yet either.
-fn check_bind(bind: SocketAddr, mode: Mode) -> Result<(), Failure> {
+/// Refuses a non-loopback bind unless the instance is in network mode and `secured` (TLS or a
+/// trusted proxy is configured). A loopback bind is always allowed, in either mode.
+fn check_bind(bind: SocketAddr, mode: Mode, secured: bool) -> Result<(), Failure> {
     if bind.ip().is_loopback() {
         return Ok(());
     }
-    Err(Failure::Config(match mode {
-        Mode::Local => format!(
+    match (mode, secured) {
+        (Mode::Network, true) => Ok(()),
+        (Mode::Local, _) => Err(Failure::Config(format!(
             "refusing to bind {bind}: a non-loopback address needs network mode; \
              run stigmerd admin enable-auth first"
-        ),
-        Mode::Network => format!(
-            "refusing to bind {bind}: a non-loopback address requires TLS or a trusted proxy \
-             (--tls-cert/--tls-key/--trusted-proxy are not available yet in this build)"
-        ),
-    }))
+        ))),
+        (Mode::Network, false) => Err(Failure::Config(format!(
+            "refusing to bind {bind}: a non-loopback address requires TLS or a trusted proxy; \
+             pass --tls-cert and --tls-key, or --trusted-proxy"
+        ))),
+    }
 }
 
 /// Shutdown signal streams, registered up front so a signal that arrives during
@@ -262,5 +283,29 @@ impl Signals {
 
     async fn wait(self) {
         let _ = tokio::signal::ctrl_c().await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn allowed(bind: &str, mode: Mode, secured: bool) -> bool {
+        check_bind(bind.parse().unwrap(), mode, secured).is_ok()
+    }
+
+    #[test]
+    fn non_loopback_binds_need_network_mode_and_tls_or_a_proxy() {
+        for loopback in ["127.0.0.1:7878", "127.1.2.3:1", "[::1]:7878"] {
+            for mode in [Mode::Local, Mode::Network] {
+                assert!(allowed(loopback, mode, false), "{loopback}");
+            }
+        }
+        for public in ["0.0.0.0:443", "192.0.2.1:7878", "[::]:443"] {
+            assert!(!allowed(public, Mode::Local, false), "{public}");
+            assert!(!allowed(public, Mode::Local, true), "{public}");
+            assert!(!allowed(public, Mode::Network, false), "{public}");
+            assert!(allowed(public, Mode::Network, true), "{public}");
+        }
     }
 }

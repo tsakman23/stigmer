@@ -19,3 +19,4 @@ An ADR is a short note that records one decision that shapes the design: what fo
 | [0005](0005-wait-semantics-and-cursors.md) | Wait semantics and cursors | Accepted |
 | [0006](0006-untrusted-data-framing.md) | Untrusted-data framing | Accepted |
 | [0007](0007-local-principals.md) | Local principals | Accepted |
+| [0008](0008-tls-trusted-proxy-and-the-bind-rule.md) | TLS, trusted proxies and the bind rule | Accepted |

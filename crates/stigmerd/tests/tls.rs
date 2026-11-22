@@ -403,3 +403,169 @@ fn partial_write_of_cert_then_key_never_serves_a_mismatched_pair() {
     files.write_key(&second.key_pem);
     wait_for_cert(&server.addr, &ca, &second.der, Duration::from_secs(5));
 }
+
+#[test]
+fn trusted_proxy_accepts_plain_http_only_from_listed_ranges() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let data = network_data(dir.path());
+    // Loopback is outside the listed range: the connection is dropped before any HTTP.
+    {
+        let server = start_with(&data, &["--trusted-proxy", "10.0.0.0/8"]);
+        let reply = raw(&server.addr, &get("/healthz", &[]));
+        assert!(reply.is_empty(), "an unlisted peer got: {reply:?}");
+    }
+    // Listed (comma separated and repeated forms): served, and its forwarding is believed.
+    let server = start_with(
+        &data,
+        &[
+            "--trusted-proxy",
+            "10.0.0.0/8,127.0.0.0/8",
+            "--trusted-proxy",
+            "fd00::/8",
+        ],
+    );
+    let reply = raw(&server.addr, &get("/healthz", &[]));
+    assert!(reply.starts_with("HTTP/1.1 200"), "{reply}");
+    let bad = |client: &str| {
+        let reply = raw(
+            &server.addr,
+            &get(
+                "/v1/boards/main/events?timeout_s=0",
+                &[
+                    ("Authorization", "Bearer garbage"),
+                    ("X-Forwarded-For", client),
+                ],
+            ),
+        );
+        reply
+            .split_whitespace()
+            .nth(1)
+            .unwrap_or_default()
+            .to_owned()
+    };
+    for _ in 0..10 {
+        assert_eq!(bad("192.0.2.1"), "401");
+    }
+    assert_eq!(bad("192.0.2.1"), "429");
+    // Another client behind the same proxy has its own budget.
+    assert_eq!(bad("192.0.2.2"), "401");
+}
+
+#[test]
+fn trusted_proxy_with_tls_accepts_any_peer() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (server, ca, _files, _leaf) = tls_server(dir.path(), &["--trusted-proxy", "10.0.0.0/8"]);
+    let reply = https_get(&server.addr, &ca, "/healthz", &[]);
+    assert!(
+        reply.response.starts_with("HTTP/1.1 200"),
+        "{}",
+        reply.response
+    );
+}
+
+#[test]
+fn allowed_host_flag_permits_that_host_and_rebinding_still_blocked() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let data = network_data(dir.path());
+    let with_host = |addr: &str, host: &str, origin: Option<&str>| {
+        let mut req = format!("GET /healthz HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n");
+        if let Some(origin) = origin {
+            req.push_str(&format!("Origin: {origin}\r\n"));
+        }
+        req.push_str("\r\n");
+        let reply = raw(addr, req.as_bytes());
+        reply
+            .split_whitespace()
+            .nth(1)
+            .unwrap_or_default()
+            .to_owned()
+    };
+    {
+        let server = start(&data);
+        assert_eq!(with_host(&server.addr, "board.example", None), "403");
+    }
+    let server = start_with(&data, &["--allowed-host", "board.example"]);
+    assert_eq!(with_host(&server.addr, "board.example", None), "200");
+    assert_eq!(with_host(&server.addr, "Board.Example:443", None), "200");
+    assert_eq!(
+        with_host(&server.addr, "board.example", Some("https://board.example")),
+        "200"
+    );
+    assert_eq!(with_host(&server.addr, "evil.example", None), "403");
+    assert_eq!(
+        with_host(&server.addr, "board.example.evil.example", None),
+        "403"
+    );
+    assert_eq!(
+        with_host(&server.addr, "board.example", Some("https://evil.example")),
+        "403"
+    );
+}
+
+#[test]
+fn invalid_trusted_proxy_cidr_exits_2() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let data = network_data(dir.path());
+    for bad in ["10.0.0.0/33", "proxy.example", "10.0.0.0/8,10.1.0.0/+8"] {
+        let out = run_bounded(
+            &["serve", "--bind", "127.0.0.1:0", "--trusted-proxy", bad],
+            &data,
+        );
+        assert_eq!(out.code, Some(2), "{bad}: {}", out.stderr);
+        let named = bad.rsplit(',').next().unwrap_or(bad);
+        assert!(out.stderr.contains(named), "{bad}: {}", out.stderr);
+        assert!(out.stdout.is_empty());
+    }
+}
+
+#[test]
+fn non_loopback_bind_without_tls_or_proxy_exits_2_and_creates_nothing() {
+    // Network mode: the message names what is missing.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let data = network_data(dir.path());
+    let before: Vec<_> = std::fs::read_dir(&data)
+        .expect("data dir")
+        .map(|e| e.expect("entry").file_name())
+        .collect();
+    let out = run_bounded(&["serve", "--bind", "0.0.0.0:0"], &data);
+    assert_eq!(out.code, Some(2), "{}", out.stderr);
+    assert!(out.stderr.contains("0.0.0.0:0"), "{}", out.stderr);
+    assert!(out.stderr.contains("--tls-cert"), "{}", out.stderr);
+    assert!(out.stderr.contains("--trusted-proxy"), "{}", out.stderr);
+    assert!(out.stdout.is_empty());
+    let after: Vec<_> = std::fs::read_dir(&data)
+        .expect("data dir")
+        .map(|e| e.expect("entry").file_name())
+        .collect();
+    assert_eq!(before.len(), after.len(), "{before:?} -> {after:?}");
+
+    // A missing data dir is local mode: refused up front even with TLS or a proxy given.
+    let fresh = dir.path().join("fresh");
+    let files = PairFiles::in_dir(dir.path());
+    files.write(&TestCa::new().leaf());
+    let mut tls_args = vec![
+        "serve".to_owned(),
+        "--bind".to_owned(),
+        "192.0.2.1:7878".to_owned(),
+    ];
+    tls_args.extend(files.flags());
+    let tls_args: Vec<&str> = tls_args.iter().map(String::as_str).collect();
+    for args in [
+        &tls_args[..],
+        &[
+            "serve",
+            "--bind",
+            "0.0.0.0:0",
+            "--trusted-proxy",
+            "10.0.0.0/8",
+        ][..],
+    ] {
+        let out = run_bounded(args, &fresh);
+        assert_eq!(out.code, Some(2), "{args:?}: {}", out.stderr);
+        assert!(out.stderr.contains("needs network mode"), "{}", out.stderr);
+        assert!(
+            !fresh.exists(),
+            "a refused start must not create the data dir"
+        );
+    }
+}

@@ -15,7 +15,7 @@ use hyper::body::Incoming;
 use hyper_util::rt::{TokioExecutor, TokioIo, TokioTimer};
 use hyper_util::server::conn::auto::Builder;
 use hyper_util::service::TowerToHyperService;
-use stigmer_api::PeerAddr;
+use stigmer_api::{IpNet, PeerAddr};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, watch, OwnedSemaphorePermit, Semaphore};
@@ -36,6 +36,8 @@ pub(crate) struct Listen {
     pub(crate) header_read_timeout: Duration,
     /// Serve TLS (only) when set.
     pub(crate) tls: Option<TlsAcceptor>,
+    /// When not empty, connections from peers outside these ranges are dropped unread.
+    pub(crate) plain_from: Vec<IpNet>,
 }
 
 /// What every connection task shares.
@@ -68,7 +70,7 @@ pub(crate) async fn run(
         app,
         http1,
         http2,
-        tls: listen.tls,
+        tls: listen.tls.clone(),
         handshake_timeout: listen.header_read_timeout,
     });
     let slots = Arc::new(Semaphore::new(listen.max_connections));
@@ -87,6 +89,10 @@ pub(crate) async fn run(
                 }
             },
         };
+        if !admits(&listen.plain_from, peer.ip()) {
+            drop(stream);
+            continue;
+        }
         let Ok(permit) = Arc::clone(&slots).try_acquire_owned() else {
             // Over the cap: close at once, before reading a byte.
             drop(stream);
@@ -104,6 +110,11 @@ pub(crate) async fn run(
     drop(listener);
     drop(alive);
     let _ = all_closed.recv().await;
+}
+
+/// True when `ranges` is empty (no restriction) or one of them holds `peer`.
+fn admits(ranges: &[IpNet], peer: IpAddr) -> bool {
+    ranges.is_empty() || ranges.iter().any(|range| range.contains(peer))
 }
 
 /// Serves one accepted connection; the permit and the alive sender are held until it ends.
