@@ -3,16 +3,19 @@
 use std::future::IntoFuture;
 use std::io::Write;
 use std::net::SocketAddr;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
 use std::time::Duration;
 
 use clap::{Parser, Subcommand};
+use lock::DataDir;
 use stigmer_api::{require_loopback, router, AllowAll, ApiConfig, RoleAuthorize};
 use stigmer_store::{IdentityStore, Mode};
 use stigmer_store_sqlite::SqliteStore;
 use tokio::sync::{oneshot, watch};
+
+mod lock;
 
 /// How long in-flight requests get to finish after a shutdown signal.
 const DRAIN_LIMIT: Duration = Duration::from_secs(5);
@@ -38,7 +41,7 @@ enum Command {
 }
 
 /// Why the server stopped without a clean shutdown; carries the process exit code.
-enum Failure {
+pub enum Failure {
     /// The requested configuration is invalid.
     Config(String),
     /// Opening the database or binding the port failed.
@@ -66,8 +69,8 @@ async fn serve(data_dir: PathBuf, bind: SocketAddr) -> Result<(), Failure> {
     let signals = Signals::install()
         .map_err(|e| Failure::Runtime(format!("cannot register signal handlers: {e}")))?;
 
-    create_data_dir(&data_dir)?;
-    let db_path = data_dir.join("stigmer.db");
+    let data = DataDir::open(&data_dir)?;
+    let db_path = data.db_path();
     let store = SqliteStore::open(&db_path).await.map_err(|e| {
         Failure::Runtime(format!("cannot open database {}: {e}", db_path.display()))
     })?;
@@ -124,40 +127,6 @@ async fn serve(data_dir: PathBuf, bind: SocketAddr) -> Result<(), Failure> {
             }
         } => Ok(()),
     }
-}
-
-/// Creates the data directory, private to the owner (0700) on unix. An existing
-/// directory keeps its mode; a warning goes to stderr if others can access it.
-fn create_data_dir(data_dir: &Path) -> Result<(), Failure> {
-    let mut builder = std::fs::DirBuilder::new();
-    builder.recursive(true);
-    #[cfg(unix)]
-    std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
-    builder.create(data_dir).map_err(|e| {
-        Failure::Runtime(format!(
-            "cannot create data dir {}: {e}",
-            data_dir.display()
-        ))
-    })?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mode = std::fs::metadata(data_dir)
-            .map_err(|e| {
-                Failure::Runtime(format!("cannot read data dir {}: {e}", data_dir.display()))
-            })?
-            .permissions()
-            .mode();
-        if mode & 0o077 != 0 {
-            eprintln!(
-                "stigmerd: warning: data dir {} is accessible by group or others (mode {:o}); consider: chmod 700 {}",
-                data_dir.display(),
-                mode & 0o777,
-                data_dir.display()
-            );
-        }
-    }
-    Ok(())
 }
 
 /// Shutdown signal streams, registered up front so a signal that arrives during

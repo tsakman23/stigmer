@@ -1,130 +1,11 @@
 //! End-to-end tests that run the real stigmerd binary.
 
-use std::io::{BufRead, BufReader, Read, Write};
-use std::net::TcpStream;
-use std::path::Path;
-use std::process::{Child, Command, Stdio};
-use std::sync::mpsc;
-use std::time::{Duration, Instant};
+mod common;
 
-const STARTUP_TIMEOUT: Duration = Duration::from_secs(10);
+use std::process::Command;
+use std::time::Duration;
 
-/// Kills the child on drop so a failing test cannot leak a server process.
-struct Server {
-    child: Child,
-    addr: String,
-}
-
-impl Drop for Server {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-    }
-}
-
-fn start(data_dir: &Path) -> Server {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_stigmerd"));
-    cmd.args(["serve", "--bind", "127.0.0.1:0", "--data-dir"])
-        .arg(data_dir);
-    spawn_guarded(cmd, STARTUP_TIMEOUT)
-}
-
-/// Spawns the command under the Drop guard at once, then waits (bounded) for the
-/// listening line. A wrong or missing line fails the test without leaking the child.
-fn spawn_guarded(mut cmd: Command, wait: Duration) -> Server {
-    let mut child = cmd
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
-        .spawn()
-        .expect("spawn child");
-    let stdout = child.stdout.take().expect("piped stdout");
-    let mut server = Server {
-        child,
-        addr: String::new(),
-    };
-    let (tx, rx) = mpsc::channel();
-    std::thread::spawn(move || {
-        let mut line = String::new();
-        let _ = BufReader::new(stdout).read_line(&mut line);
-        let _ = tx.send(line);
-    });
-    let line = rx
-        .recv_timeout(wait)
-        .unwrap_or_else(|_| panic!("no listening line within {wait:?}"));
-    server.addr = line
-        .strip_prefix("listening on http://")
-        .and_then(|rest| rest.split_whitespace().next())
-        .unwrap_or_else(|| panic!("unexpected first line: {line:?}"))
-        .to_owned();
-    server
-}
-
-/// Sends one HTTP/1.1 request and returns (status, body).
-fn http(
-    addr: &str,
-    method: &str,
-    path: &str,
-    headers: &[(&str, &str)],
-    body: &str,
-) -> (u16, String) {
-    let mut stream = TcpStream::connect(addr).expect("connect");
-    let mut req = format!("{method} {path} HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n");
-    for (k, v) in headers {
-        req.push_str(&format!("{k}: {v}\r\n"));
-    }
-    req.push_str(&format!("Content-Length: {}\r\n\r\n{body}", body.len()));
-    stream.write_all(req.as_bytes()).expect("write");
-    let mut raw = String::new();
-    stream.read_to_string(&mut raw).expect("read");
-    let (head, body) = raw.split_once("\r\n\r\n").expect("http response");
-    let status = head
-        .split_whitespace()
-        .nth(1)
-        .and_then(|s| s.parse().ok())
-        .expect("status code");
-    (status, chunked_decoded(head, body))
-}
-
-fn chunked_decoded(head: &str, body: &str) -> String {
-    if !head
-        .to_ascii_lowercase()
-        .contains("transfer-encoding: chunked")
-    {
-        return body.to_owned();
-    }
-    let mut out = String::new();
-    let mut rest = body;
-    while let Some((size, tail)) = rest.split_once("\r\n") {
-        let n = usize::from_str_radix(size.trim(), 16).unwrap_or(0);
-        if n == 0 || tail.len() < n {
-            break;
-        }
-        out.push_str(&tail[..n]);
-        rest = tail[n..].trim_start_matches("\r\n");
-    }
-    out
-}
-
-#[cfg(unix)]
-fn sigterm(server: &Server) {
-    let status = Command::new("kill")
-        .args(["-TERM", &server.child.id().to_string()])
-        .status()
-        .expect("run kill");
-    assert!(status.success());
-}
-
-#[cfg(unix)]
-fn wait_for_exit(server: &mut Server, within: Duration) -> Option<i32> {
-    let deadline = Instant::now() + within;
-    while Instant::now() < deadline {
-        if let Some(status) = server.child.try_wait().expect("try_wait") {
-            return status.code();
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    None
-}
+use common::{http, sigterm, spawn_guarded, start, wait_for_exit};
 
 #[test]
 fn serve_starts_and_healthz_answers() {
@@ -248,4 +129,80 @@ fn fresh_data_dir_is_created_with_mode_0700() {
         .permissions()
         .mode();
     assert_eq!(mode & 0o777, 0o700, "mode {mode:o}");
+}
+
+#[cfg(unix)]
+#[test]
+fn second_serve_on_same_data_dir_fails_with_lock_message() {
+    use std::io::Read;
+    use std::process::Stdio;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let data = dir.path().join("data");
+    let _first = start(&data);
+    let child = Command::new(env!("CARGO_BIN_EXE_stigmerd"))
+        .args(["serve", "--bind", "127.0.0.1:0", "--data-dir"])
+        .arg(&data)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn second serve");
+    let mut second = common::Server {
+        child,
+        addr: String::new(),
+    };
+    let code = wait_for_exit(&mut second, Duration::from_secs(5));
+    assert_eq!(code, Some(1), "second serve must exit 1 and not serve");
+    let mut stderr = String::new();
+    second
+        .child
+        .stderr
+        .take()
+        .expect("piped stderr")
+        .read_to_string(&mut stderr)
+        .expect("read stderr");
+    assert!(
+        stderr.contains("data directory is in use by another stigmerd process; stop it first"),
+        "stderr: {stderr}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn database_files_are_0600_and_dir_0700() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let data = dir.path().join("data");
+    let server = start(&data);
+    // Write once so SQLite has created its -wal and -shm files.
+    let (status, _) = http(
+        &server.addr,
+        "POST",
+        "/v1/boards/main/messages",
+        &[
+            ("X-Stigmer-As", "alice"),
+            ("Content-Type", "application/json"),
+        ],
+        r#"{"channel":"eng","text":"hello"}"#,
+    );
+    assert_eq!(status, 201);
+    let mode =
+        |p: &std::path::Path| std::fs::metadata(p).expect("metadata").permissions().mode() & 0o777;
+    assert_eq!(mode(&data), 0o700);
+    for name in ["stigmer.db", "stigmer.db-wal", "stigmer.db-shm"] {
+        assert_eq!(mode(&data.join(name)), 0o600, "{name}");
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn lock_file_is_0600() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let data = dir.path().join("data");
+    let _server = start(&data);
+    let mode = std::fs::metadata(data.join("stigmer.lock"))
+        .expect("lock file")
+        .permissions()
+        .mode();
+    assert_eq!(mode & 0o777, 0o600, "mode {mode:o}");
 }
