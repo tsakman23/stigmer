@@ -173,7 +173,10 @@ Exit tests (`crates/stigmer-cli/tests/e2e_m1.rs`): separate CLI processes with t
 - `stigmerd admin` subcommands run against the data directory with the server stopped (they take the same lock), rather than through the API.
 - TLS offers only `http/1.1` by ALPN, and HTTP/2 is compiled out of `stigmerd`: hyper's header-read timeout does not cover HTTP/2, so an idle HTTP/2 connection could hold a connection slot for ever ([0010](adr/0010-tls-and-trusted-proxy.md)).
 - `PeerAddr` is mandatory in network mode: a request without it is refused with 500 rather than sharing one rate-limit bucket with every other client.
-- Failed authentications are limited by source only, not also by token id as the design said ([0011](adr/0011-authentication-policy-401-403-404.md)).
+- Failed authentications are limited by source only, not also by token id as the design said: a 32-byte secret cannot be brute-forced, and a per-id budget would let anyone who knows an id lock that token out; the id still appears in the `auth_failed` security log detail ([0011](adr/0011-authentication-policy-401-403-404.md)).
+- `X-Forwarded-Proto` is ignored (the design said it is honoured from trusted proxies): nothing needs the scheme. Only `X-Forwarded-For` is read, and HSTS is sent only on built-in TLS; a proxy that terminates TLS should add its own ([0010](adr/0010-tls-and-trusted-proxy.md)).
+- The request limits are serve flags: `--max-waits` (default 256), `--auth-failures-per-minute` and `--join-per-minute` (default 10 each), beside `--max-connections` and `--max-connections-per-source` (README, Operations; [0011](adr/0011-authentication-policy-401-403-404.md)).
+- Local mode is exactly M0 (loopback, no authentication), so every caller on loopback acts as the instance admin and can create and archive boards other than `main`. This is by design; network mode is the access-controlled mode ([0004](adr/0004-authorization-seam.md)).
 - The `Join` security log row is written in the same store transaction as the member, the credential and the used invite.
 - Archive runs archive-then-revoke, so no join can slip a live credential in between ([0008](adr/0008-board-isolation-and-credentials.md)).
 - Exit codes 6 (unauthorized), 7 (forbidden) and 8 (rate limited) were added to the CLI; the plan had a refused token exit 1.
@@ -191,6 +194,10 @@ Exit tests (`crates/stigmer-cli/tests/e2e_m1.rs`): separate CLI processes with t
   - A /0 `--trusted-proxy` range prints a warning (anyone can then forge `X-Forwarded-For`).
   - The SDK refuses to send a token over plain `http://` to a host that is not loopback (`insecure_transport`, unless `allowInsecure`) and never follows redirects.
 
+### Deliberate non-changes
+
+- Time stays a bare `i64` of milliseconds since the Unix epoch, not a `UnixMillis` newtype. A newtype would touch the wire format, the store and nearly every test for no behaviour change; the wire keeps plain integers, and fields and parameters already carry the unit in their names (`at_ms`, `expires_at_ms`, `now_ms`). Revisit if a mixed-unit bug ever appears.
+
 ### Known gaps carried into M2 and later
 
 - Authorization cost: every authenticated request reads the credential and the membership and writes the credential's last-seen time before the authorizer runs; there is no cache. M4 grants add their own lookups.
@@ -199,7 +206,7 @@ Exit tests (`crates/stigmer-cli/tests/e2e_m1.rs`): separate CLI processes with t
 - Security log rows other than `Join` and `principals_adopted` are written after the mutation, best effort, not in its transaction.
 - The rate limiters track at most 10,000 sources each; when full of busy sources, a new source is refused for about a minute (fail closed), which an attacker with many addresses can use to lock out new clients. Limiter state is per process.
 - The SDK has no framing helper (its example has a simplified one; [0006](adr/0006-untrusted-data-framing.md)) and no wrappers for boards, members, invites, tokens or join.
-- The per-source connection cap counts the peer address; proxies listed in `--trusted-proxy` are exempt from it (only `--max-connections` bounds them), so a /0 proxy range removes the per-source cap for everyone.
+- The per-source connection cap counts the peer address; proxies listed in `--trusted-proxy` are exempt from it (only `--max-connections` bounds them), so any wide proxy range removes the per-source cap for every host inside it, and a /0 range for everyone (only /0 prints a warning).
 - The wire enums `ErrorCode` and `EventKind` have `Unknown` fallbacks, but the handling is minimal: the CLI exits 1 and prints the raw error code, prints an unknown event kind as `unknown`, and the SDK passes unknown codes through as strings.
 - The conformance suite has no scenario for concurrent `create_board` calls with the same name.
 - `stigmer login` reads the token from a terminal with echo on; pipe it in instead.

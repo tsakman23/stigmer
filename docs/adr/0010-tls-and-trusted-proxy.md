@@ -76,14 +76,18 @@ rate limiting needs the real peer address of every connection.
   header read timeout. A client offering only `h2` is refused with a `no_application_protocol`
   alert; browsers fall back to HTTP/1.1. Offering HTTP/2 later needs an idle bound of its own
   (for example keep-alive pings with a timeout, or a per-connection idle deadline).
-- `X-Forwarded-Proto` is not used: nothing in the API depends on the scheme yet.
+- `X-Forwarded-Proto` is intentionally ignored: nothing in the API depends on the scheme, and only
+  `X-Forwarded-For` is read from a trusted proxy. HSTS is sent only when `stigmerd` serves TLS
+  itself; a proxy that terminates TLS should add its own.
 - The key-permission warning runs only at startup; a key replaced later with looser permissions
   is reloaded without a new warning.
 - Clients behind a proxy that is not declared share the proxy's address as their source, and so
   one failed-authentication budget ([0011](0011-authentication-policy-401-403-404.md)).
 - The per-source connection cap counts the peer address. Proxies listed in `--trusted-proxy`
   are exempt from it (only `--max-connections` bounds them), so a proxy's connection pool is not
-  cut at 64; a proxy that is not declared is capped like any other source.
+  cut at 64; a proxy that is not declared is capped like any other source. The exemption covers
+  every address in a listed range, so any wide range (not only /0) removes the per-source cap for
+  every host inside it: list the proxies' own addresses or the narrowest range that holds them.
 
 Amended 2026-11-22 (M1, Task 10): HTTP/2 compiled out; `PeerAddr`, accept-error, hidden-flag
 and `X-Forwarded-For` rules recorded.

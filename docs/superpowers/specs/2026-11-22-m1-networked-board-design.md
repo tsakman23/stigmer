@@ -57,7 +57,7 @@ Identity storage: extend `Store` versus a separate `IdentityStore` trait on the 
 ### 6.4 Authorization and the 401/403/404 policy
 - `Authorize` becomes async: `check(&self, who: &Authenticated, action: Action, scope: Scope)`. `Authenticated` carries principal, kind, board scope, role and credential id. Actions: Read, Post, ManageMembers, ManageBoards. `Scope` is board plus optional channel (same meaning as today: None is board-wide).
 - Missing, malformed, unknown, expired or revoked token: 401 `unauthorized` with one generic message. Valid token but role too weak: 403 `forbidden`. Valid token used against a board it does not belong to, or a board that does not exist: 404 `not_found` (existence is not leaked). The thread-filtered events case in ADR 0004 stays an M4 item.
-- Failed authentications are rate limited per source address and per token id, and written to the security log.
+- Failed authentications are rate limited per source address only, and written to the security log with the source and, when the token parsed, its id. Not per token id: a 32-byte secret cannot be brute-forced, so a per-id budget adds no protection, while it would let anyone who knows an id lock that token out (corrected during the build; see "Changes made during the build").
 
 ### 6.5 Boards and the store
 - `Store` gains `create_board`, `list_boards`, `archive_board`. An archived board refuses posts (409 `conflict`, kind BoardArchived), stays readable to admins, and all its tokens are revoked.
@@ -70,8 +70,8 @@ POST /boards (instance admin), GET /boards (instance admin: all; board member: o
 Limits: max concurrent connections (default 1024), header read timeout 10 s, max concurrent waits (default 256), per-source limit on `/v1/join` and failed auth (default 10 per minute).
 
 ### 6.7 TLS and proxy (user's choice: both)
-- `--tls-cert` and `--tls-key` (PEM): rustls, TLS 1.3 only, no self-signed generation. Files are re-read when their modification time changes (checked every few seconds) without a restart or ending open waits. `Strict-Transport-Security` is sent when serving TLS.
-- `--trusted-proxy <cidr,...>`: plain HTTP accepted only from those source ranges; `X-Forwarded-Proto` / `X-Forwarded-For` honoured only from them; `--allowed-host <name>` (repeatable) extends the Host/Origin allow-list, which stays loopback-only by default. Rebinding protection stays on.
+- `--tls-cert` and `--tls-key` (PEM): rustls, TLS 1.3 only, no self-signed generation. Files are re-read when their modification time changes (checked every few seconds) without a restart or ending open waits. `Strict-Transport-Security` is sent only when `stigmerd` itself serves TLS; behind a proxy that terminates TLS, the proxy should add its own.
+- `--trusted-proxy <cidr,...>`: plain HTTP accepted only from those source ranges; only `X-Forwarded-For` is used, and only from them (it decides the client address for rate limiting and the security log); `X-Forwarded-Proto` is intentionally ignored, as nothing in the API depends on the scheme; `--allowed-host <name>` (repeatable) extends the Host/Origin allow-list, which stays loopback-only by default. Rebinding protection stays on.
 - The CLI uses system roots for https URLs plus `--ca-cert <file>` for a private CA. No pinning.
 
 ### 6.8 CLI
@@ -110,5 +110,26 @@ Exact schema, token lengths within the stated shape, rustls crate wiring and the
 3. Bootstrap. A fresh network-mode data dir always creates `main`. `stigmerd admin enable-auth` creates the instance-admin credential AND mints one admin invite into `main` (single use, 24 hours, printed once; `--no-main-invite` skips it). `map-local-principals` requires at least one `--admin <name>` when it maps anyone, so `main` always has a board admin.
 4. Hash chain versus mapping. `author_kind` is a column on messages and is NOT an input to the event hash (the hash covers seq, kind, actor, message id, thread id, channel and time). Mapping local principals rewrites only `author_kind` (and creates principals and memberships); no event or hash is touched, and `verify_chain` must still pass afterwards (tested).
 5. Routes. The API is already `/v1/boards/{board}/...` with `main` enforced by `require_main_board`; M1 removes that restriction and adds routes. Existing routes, request and response shapes are unchanged, so v0.1.0 clients and the M0 e2e test keep working in local mode.
-6. Rate limits. A limited request gets 429 with new ErrorCode `rate_limited` and a `Retry-After` header. Limiting is checked before credential verification and keyed by source address (and token id once parsed), so the 401 body stays identical. An older client sees `Unknown` and the 429 status.
+6. Rate limits. A limited request gets 429 with new ErrorCode `rate_limited` and a `Retry-After` header. Limiting is checked before credential verification and keyed by source address only (IPv4 per address, IPv6 per /64), so the 401 body stays identical. It is not keyed by token id: a 32-byte secret cannot be brute-forced, and a per-id bucket would let anyone who knows an id lock that token out; the id still appears in the `auth_failed` security log detail. An older client sees `Unknown` and the 429 status.
 7. Scope. In M1 every `check` passes the board only; the optional channel in `Scope` is reserved for M4 and is always None for M1 callers.
+
+## Changes made during the build
+
+Deliberate deviations from this design, as shipped in M1. The as-built record is docs/design.md section 14; the decisions are in docs/adr/.
+
+- Archive runs archive-then-revoke: once the board is archived no join can obtain a credential, so revoking afterwards leaves no window for a live credential (11.1, ADR 0008).
+- Failed-authentication limiting is keyed by source address only, not also by token id (6.4, 11.6, ADR 0011).
+- TLS offers only HTTP/1.1 (ALPN `http/1.1`) and HTTP/2 is compiled out of `stigmerd`, because hyper's header-read timeout does not bound an idle HTTP/2 connection (ADR 0010).
+- `X-Forwarded-Proto` is ignored; only `X-Forwarded-For` is read from trusted proxies, and HSTS is sent only on built-in TLS (6.7, ADR 0010).
+- Join is atomic in the store: the invite is checked and used, the member and credential are created and the `join` security log row is written in one transaction.
+- Security log rows for the API's admin mutations (boards, members, invites, tokens) are written after the mutation, best effort: a failed write is warned about and the mutation stands. Only `join` and `principals_adopted` are written in the mutation's transaction.
+- `PeerAddr` is mandatory in network mode: a request without it is refused with 500 instead of sharing one rate-limit bucket with every client (ADR 0010).
+- `main` cannot be archived (409 `conflict`); board names made only of dots are refused; the member name `instance-admin` is reserved (ADR 0008).
+- Open connections are capped per source address as well (`--max-connections-per-source`, default 64, IPv6 per /64); peers in `--trusted-proxy` ranges are exempt and bounded only by `--max-connections` (ADR 0010).
+- Every request body has a 10 s idle deadline between frames; a stalled body gets 408 with the new error code `request_timeout` (ADR 0010).
+- The limits in 6.6 are serve flags: `--max-connections`, `--max-connections-per-source`, `--max-waits`, `--auth-failures-per-minute` and `--join-per-minute` (README, Operations).
+- Extra admin commands: `stigmerd admin issue-member-token` (a token for an existing member, such as an adopted M0 author), `revoke-token <id>` (any credential, the instance token included), `new-instance-token` with `--revoke-others` (replace the instance token in one transaction), and `map-local-principals --skip <name>` (leave an author and its messages local; a rerun with only skipped authors left is "nothing to map").
+- The CLI exits 6 (unauthorized), 7 (forbidden) and 8 (rate limited), instead of 1 for every refusal.
+- `stigmer login` saves a token read from stdin (checked with `whoami`; `--instance` for the instance token), so the instance token and operator-issued member tokens can be used from the CLI.
+- A post's `author_kind` is derived from membership in the post transaction (`principal` for a member of the board, `local` otherwise), so a mapping rerun after members have posted finds nothing to map (11.4, ADR 0007).
+- Local mode stays exactly M0: every caller on loopback acts as the instance admin, so it can create and archive boards other than `main` (ADR 0004).

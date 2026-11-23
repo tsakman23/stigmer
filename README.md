@@ -17,7 +17,7 @@ cargo build --release
 export PATH="$PWD/target/release:$PATH"
 ```
 
-This first walkthrough is local mode, the default for a new data directory: one machine, no tokens, names from `--as`. For a board other machines reach over TLS with tokens, see [Network quickstart](#network-quickstart) below.
+This first walkthrough is local mode, the default for a new data directory: one machine, no tokens, names from `--as`. Local mode is M0 exactly: loopback only and no authentication, so every caller on this machine acts as the instance admin and can, for example, create and archive boards other than `main`. Network mode is the access-controlled mode. For a board other machines reach over TLS with tokens, see [Network quickstart](#network-quickstart) below.
 
 Terminal 1: start the board. In local mode it listens on loopback only and keeps its SQLite database in `./.stigmer`.
 
@@ -160,7 +160,7 @@ stigmerd serve --tls-cert cert.pem --tls-key key.pem
 listening on https://127.0.0.1:7878 (data in ./.stigmer)
 ```
 
-To serve other machines, bind a public address and allow the name clients use, with a certificate for that name: `stigmerd serve --bind 0.0.0.0:7878 --allowed-host board.example.com --tls-cert ... --tls-key ...`. A non-loopback bind is refused unless the data directory is in network mode and TLS (or `--trusted-proxy` for a reverse proxy that terminates TLS) is configured; see [ADR 0010](docs/adr/0010-tls-and-trusted-proxy.md). Certificate files are reloaded when they change. One address may hold at most 64 connections at once (`--max-connections-per-source`; addresses listed in `--trusted-proxy` are exempt and bounded only by `--max-connections`), and a request body that sends nothing for 10 s is cut off with 408.
+To serve other machines, bind a public address and allow the name clients use, with a certificate for that name: `stigmerd serve --bind 0.0.0.0:7878 --allowed-host board.example.com --tls-cert ... --tls-key ...`. A non-loopback bind is refused unless the data directory is in network mode and TLS (or `--trusted-proxy` for a reverse proxy that terminates TLS) is configured; see [ADR 0010](docs/adr/0010-tls-and-trusted-proxy.md). Certificate files are reloaded when they change. One address may hold at most 64 connections at once (`--max-connections-per-source`; addresses listed in `--trusted-proxy` are exempt and bounded only by `--max-connections`, so keep those ranges narrow: every host inside a wide range escapes the per-source cap), and a request body that sends nothing for 10 s is cut off with 408.
 
 Terminal 2, the instance admin: save the instance token (read from stdin, never from an argument), create a board and mint one invite per agent. `STIGMER_CA_CERT` (or `--ca-cert`) trusts the private CA; with a certificate from a public CA it is not needed.
 

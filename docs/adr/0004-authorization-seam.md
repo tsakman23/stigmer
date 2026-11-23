@@ -50,6 +50,9 @@ events through a thread filter.
 
 ## Consequences
 
+- Local mode stays exactly M0: loopback, no authentication. Every caller is the instance scope
+  with the admin role under `AllowAll`, so anyone on the machine can create boards and archive
+  any board but `main`. This is by design; network mode is the access-controlled mode.
 - `check` is async so M4 can consult grants in the store; `RoleAuthorize` itself does no I/O
   (the membership and role were read during authentication).
 - The design's other verbs (label, react, task.create, task.claim) arrive with their milestones;
