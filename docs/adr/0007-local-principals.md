@@ -25,9 +25,11 @@ explicit migration command, not automatically.
 
 M1 implements it as `stigmerd admin map-local-principals` (server stopped, data dir already in
 network mode). It lists the distinct authors of board `main` whose messages are still
-`'local'` and, without `--apply`, only prints the plan. Every author becomes a member of
-`main`: kind agent unless named with `--human`, role member unless named with `--admin`; at
-least one `--admin` is required so the board keeps an administrator. With `--apply`, one store
+`'local'` and, without `--apply`, only prints the plan. Every author not named with `--skip`
+becomes a member of `main`: kind agent unless named with `--human`, role member unless named
+with `--admin`; at least one `--admin` is required so the board keeps an administrator. A
+skipped author is not adopted and its messages stay `'local'`; the reserved name
+`instance-admin` must be skipped. With `--apply`, one store
 transaction (`IdentityStore::adopt_local_authors`) adds the members and sets those authors'
 messages to `author_kind = 'principal'`. A name already on the board refuses the whole mapping.
 An adopted member has no token yet; the operator issues one with `stigmerd admin
@@ -39,7 +41,11 @@ member of the board (a network-mode post, whose author is the credential's princ
 by an adopted name) is stored as `'principal'`; any other post is `'local'`, a self-declared name
 as in M0. The mapping sets `'principal'` on the adopted authors' existing messages. So a
 member's post never makes its author a local author, and running the mapping again after members
-have posted is a clean "nothing to map". (A local author whose name later joins the board by
+have posted is a clean "nothing to map". A rerun prints "nothing to map" and exits 0 when no
+local author is left or every one left is named with `--skip`, so the same command can be run
+twice: an `--admin` or `--human` name that is no longer a local author is accepted as already
+adopted when it is a member of `main` with that role (admin) or kind (human); any other unknown
+name is still refused (exit 2). (A local author whose name later joins the board by
 invite keeps its old `'local'` messages and is still listed; the mapping then refuses with name
 taken.) There is no backfill migration: M1 is unreleased, and an M1 database whose members
 posted under the earlier rule (every post `'local'`) is a development artifact only. The column
@@ -52,8 +58,8 @@ is still not on the wire.
   ([0003](0003-loopback-bind-and-host-guard.md), [0010](0010-tls-and-trusted-proxy.md)).
 - The event's `actor` and the message `author` are the same string; the event hash covers the
   actor ([0002](0002-hash-chained-event-log.md)) but not `author_kind`.
-- M1 wrote the mapping command. Every local author of `main` is adopted (there is no "leave
-  unmapped" option besides not running it), only `main` is mapped (M0 had no other board; a board
+- M1 wrote the mapping command. Every local author of `main` not named with `--skip` is
+  adopted (a skipped author stays local and can be adopted by a later run), only `main` is mapped (M0 had no other board; a board
   created in local mode under M1 keeps its local authors), and the kind did not reach the wire
   format.
 - Idempotency keys are unique per board and author name, so they inherit the same self-declared

@@ -1,7 +1,7 @@
 //! map-local-principals: turning board main's local authors into members.
 
 use stigmer_core::{BoardId, Principal, PrincipalKind, Role};
-use stigmer_store::{Adoption, ConflictKind, IdentityStore, StoreError};
+use stigmer_store::{Adoption, ConflictKind, IdentityStore, Member, StoreError};
 
 use super::{store_failure, INSTANCE_ADMIN};
 use crate::Failure;
@@ -28,15 +28,34 @@ pub(super) async fn map_local_principals<S: IdentityStore>(
     if authors.is_empty() {
         return Ok("nothing to map\n".into());
     }
-    let humans = known_authors(names.humans, &authors, "--human")?;
-    let admins = known_authors(names.admins, &authors, "--admin")?;
-    let skips = known_authors(names.skips, &authors, "--skip")?;
+    // A rerun names authors an earlier run adopted: they are members now, no longer local, and
+    // are accepted as already done when the membership matches the flag.
+    let members = store
+        .list_members(&main)
+        .await
+        .map_err(|e| store_failure("cannot list the members of main", &e))?;
+    let adopted_as = |name: &Principal, matches: fn(&Member) -> bool| {
+        members.iter().any(|m| &m.name == name && matches(m))
+    };
+    let humans = known_authors(names.humans, &authors, "--human", |name| {
+        adopted_as(name, |m| m.kind == PrincipalKind::Human)
+    })?;
+    let admins = known_authors(names.admins, &authors, "--admin", |name| {
+        adopted_as(name, |m| m.role == Role::Admin)
+    })?;
+    let skips = known_authors(names.skips, &authors, "--skip", |_| false)?;
     if let Some(both) = admins.iter().find(|name| skips.contains(name)) {
         return Err(Failure::Config(format!(
             "--admin {both} is also --skip; an admin must be adopted"
         )));
     }
-    if admins.is_empty() {
+    // Only skipped authors are left, as on a rerun after --skip: nothing to do, and no --admin
+    // is needed for it.
+    if authors.iter().all(|name| skips.contains(name)) {
+        return Ok("nothing to map\n".into());
+    }
+    // An --admin that is already an admin member keeps the board administered too.
+    if names.admins.is_empty() {
         return Err(Failure::Config(
             "at least one --admin is required so the board keeps an administrator".into(),
         ));
@@ -108,25 +127,31 @@ async fn name_taken<S: IdentityStore>(
     )
 }
 
-/// Parses `names` and checks each is one of the local `authors`.
+/// Parses `names` and returns those that are local `authors`. A name that is not local but
+/// `already_adopted` accepts is left out without error; any other name is refused.
 fn known_authors(
     names: &[String],
     authors: &[Principal],
     flag: &str,
+    already_adopted: impl Fn(&Principal) -> bool,
 ) -> Result<Vec<Principal>, Failure> {
     names
         .iter()
-        .map(|raw| {
-            let name =
-                Principal::new(raw).map_err(|e| Failure::Config(format!("{flag} {raw:?}: {e}")))?;
+        .filter_map(|raw| {
+            let name = match Principal::new(raw) {
+                Ok(name) => name,
+                Err(e) => return Some(Err(Failure::Config(format!("{flag} {raw:?}: {e}")))),
+            };
             if authors.contains(&name) {
-                Ok(name)
+                Some(Ok(name))
+            } else if already_adopted(&name) {
+                None
             } else {
                 let known: Vec<&str> = authors.iter().map(Principal::as_str).collect();
-                Err(Failure::Config(format!(
+                Some(Err(Failure::Config(format!(
                     "{flag} {raw}: not a local author of main (authors: {})",
                     known.join(", ")
-                )))
+                ))))
             }
         })
         .collect()

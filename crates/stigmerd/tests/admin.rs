@@ -1097,6 +1097,86 @@ fn map_local_principals_skip_leaves_the_author_local_and_adopts_the_rest() {
 
 #[cfg(unix)]
 #[test]
+fn rerun_after_skip_is_nothing_to_map() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let data = dir.path().join("data");
+    network_with_local_posts(
+        &data,
+        &[
+            ("alice", "one"),
+            ("instance-admin", "two"),
+            ("bob", "three"),
+        ],
+    );
+    let first = [
+        "map-local-principals",
+        "--human",
+        "alice",
+        "--admin",
+        "alice",
+        "--skip",
+        "instance-admin",
+    ];
+    let mut apply = first.to_vec();
+    apply.push("--apply");
+    let out = admin(&data, &apply);
+    assert_eq!(out.status.code(), Some(0), "stderr: {}", stderr(&out));
+
+    // The same command again, dry run or applied, and with only the skip: only the skipped
+    // author is left, and alice is already a human admin of main.
+    for args in [
+        &first[..],
+        &apply[..],
+        &["map-local-principals", "--skip", "instance-admin"][..],
+    ] {
+        let out = admin(&data, args);
+        assert_eq!(out.status.code(), Some(0), "{args:?}: {}", stderr(&out));
+        assert_eq!(stdout(&out).trim(), "nothing to map", "{args:?}");
+    }
+
+    // A name that is a member but not an admin, or not a member at all, is still refused.
+    for (flag, name) in [("--admin", "bob"), ("--admin", "zed"), ("--human", "bob")] {
+        let out = admin(
+            &data,
+            &[
+                "map-local-principals",
+                flag,
+                name,
+                "--skip",
+                "instance-admin",
+            ],
+        );
+        assert_eq!(
+            out.status.code(),
+            Some(2),
+            "{flag} {name}: {}",
+            stderr(&out)
+        );
+        assert!(
+            stderr(&out).contains(&format!("{flag} {name}")),
+            "{}",
+            stderr(&out)
+        );
+    }
+    with_store(&data, |store| async move {
+        let main = BoardId::main();
+        let members: Vec<String> = store
+            .list_members(&main)
+            .await
+            .expect("members")
+            .into_iter()
+            .map(|m| m.name.to_string())
+            .collect();
+        assert_eq!(members, ["alice", "bob"]);
+        assert_eq!(
+            store.list_local_authors(&main).await.expect("authors"),
+            [Principal::new("instance-admin").expect("name")]
+        );
+    });
+}
+
+#[cfg(unix)]
+#[test]
 fn map_local_principals_skip_unknown_name_is_exit_2() {
     let dir = tempfile::tempdir().expect("tempdir");
     let data = dir.path().join("data");
