@@ -8,6 +8,7 @@ ADRs 0001 and 0003 to 0007 shipped in v0.1.0, before this rule existed, and were
 
 - **Accepted**: as written when accepted.
 - **Accepted, amended**: changed in place before its first release; the Amendments section lists each change.
+- **Partly superseded by NNNN**: part of the decision is replaced by a later ADR, which is linked; the rest stands. Combined with the other statuses, for example "Accepted, amended; partly superseded by 0010".
 - **Superseded by NNNN**: replaced by a later ADR, which is linked.
 
 ## Adding one
@@ -23,7 +24,7 @@ ADRs 0001 and 0003 to 0007 shipped in v0.1.0, before this rule existed, and were
 |---|---|---|
 | [0001](0001-storage-behind-a-trait.md) | Storage behind a trait with a shared conformance suite | Accepted, amended |
 | [0002](0002-hash-chained-event-log.md) | Hash-chained, gapless per-board event log | Accepted |
-| [0003](0003-loopback-bind-and-host-guard.md) | Loopback-only bind and the Host/Origin guard | Accepted, amended |
+| [0003](0003-loopback-bind-and-host-guard.md) | Loopback-only bind and the Host/Origin guard | Accepted, amended; partly superseded by [0010](0010-tls-and-trusted-proxy.md) |
 | [0004](0004-authorization-seam.md) | Authorization seam | Accepted, amended |
 | [0005](0005-wait-semantics-and-cursors.md) | Wait semantics and cursors | Accepted, amended |
 | [0006](0006-untrusted-data-framing.md) | Untrusted-data framing | Accepted, amended |

@@ -1,6 +1,6 @@
 # NNNN. Title
 
-Status: Proposed | Accepted | Accepted, amended | Superseded by NNNN
+Status: Proposed | Accepted | Accepted, amended | Partly superseded by NNNN | Superseded by NNNN
 Date: YYYY-MM-DD
 
 ## Context

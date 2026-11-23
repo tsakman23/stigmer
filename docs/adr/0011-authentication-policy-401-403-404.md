@@ -35,7 +35,8 @@ how it was built (`stigmer-api`: `routes.rs`, `auth.rs`, `ratelimit.rs`, `join_r
   without access. The instance credential sees every board (404 only for one that does not
   exist) and gets 403 on content routes.
 - **Rate limiting by source, atomically.** Failed authentications are limited per source (10 per
-  minute; IPv4 per address, IPv6 per /64), checked before any credential is looked at. Every
+  minute by default, configurable with `--auth-failures-per-minute`; IPv4 per address, IPv6 per
+  /64), checked before any credential is looked at. Every
   request reserves one token from its source's bucket under the same lock as the check, and a
   request that authenticates gives it back, so concurrent guesses cannot overrun the limit. The
   limit is keyed by source only, not by token id (the design said both): a 256-bit secret cannot
@@ -51,7 +52,8 @@ how it was built (`stigmer-api`: `routes.rs`, `auth.rs`, `ratelimit.rs`, `join_r
   can be pruned, about a minute. The trade-off: an attacker with enough addresses can lock out
   new clients for that time, instead of growing memory without bound.
 - **Join has its own budget.** `POST /v1/join` takes no token; every attempt, successful or not,
-  spends one of 10 per source per minute, separate from the failed-authentication budget. The
+  spends one of 10 per source per minute by default (configurable with `--join-per-minute`),
+  separate from the failed-authentication budget. The
   budget is reserved before the body is read, so a limited client gets its 429 at once and
   cannot hold the request open by sending its body slowly. A join body that does not parse gets
   one generic 400 ("invalid join request") that echoes nothing the caller sent, as a swapped
@@ -77,4 +79,4 @@ First ships in v0.2.0, so it was amended in place during M1; after v0.2.0 ships 
 
 - 2026-11-22 (M1 final review): an events wait re-checks its credential at every wake; join reserves its budget before reading the body, and an unparsable join body gets a generic 400.
 - 2026-11-22: the cost of the per-wake re-check is recorded.
-- 2026-11-23: the three request budgets are set by `stigmerd serve` flags.
+- 2026-11-23: the three request budgets are set by `stigmerd serve` flags; the fixed "10 per minute" wording now says "by default".
