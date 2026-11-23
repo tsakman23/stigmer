@@ -4,7 +4,7 @@
 mod common;
 
 use std::process::Command;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use common::{http, run_bounded, start_with};
 
@@ -47,24 +47,40 @@ fn join_per_minute_sets_the_join_budget() {
     );
 }
 
+/// A wait that holds its slot until a post wakes it (or 30 s pass).
+fn spawn_long_wait(addr: &str) -> std::thread::JoinHandle<(u16, String)> {
+    let addr = addr.to_owned();
+    std::thread::spawn(move || http(&addr, "GET", "/v1/boards/main/events?timeout_s=30", &[], ""))
+}
+
 #[test]
 fn max_waits_bounds_concurrent_waits() {
     let dir = tempfile::tempdir().expect("tempdir");
     let server = start_with(&dir.path().join("data"), &["--max-waits", "1"]);
-    let addr = server.addr.clone();
-    let first = std::thread::spawn(move || {
-        http(&addr, "GET", "/v1/boards/main/events?timeout_s=3", &[], "")
-    });
-    // Give the first wait time to reach the server and take the only slot.
-    std::thread::sleep(Duration::from_millis(500));
-    let (status, body) = http(
-        &server.addr,
-        "GET",
-        "/v1/boards/main/events?timeout_s=1",
-        &[],
-        "",
-    );
-    assert_eq!(status, 429, "{body}");
+    let mut first = spawn_long_wait(&server.addr);
+    // No sleep: probe with short waits until one is refused, which proves the long wait holds
+    // the only slot. A probe that gets in first holds the slot itself for its 1 s and returns
+    // 200; if the long wait was refused meanwhile it is started again.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let (status, body) = http(
+            &server.addr,
+            "GET",
+            "/v1/boards/main/events?timeout_s=1",
+            &[],
+            "",
+        );
+        if status == 429 {
+            break;
+        }
+        assert_eq!(status, 200, "{body}");
+        if first.is_finished() {
+            let (status, body) = first.join().expect("first wait");
+            assert_eq!(status, 429, "only a refused wait ends this early: {body}");
+            first = spawn_long_wait(&server.addr);
+        }
+        assert!(Instant::now() < deadline, "a second wait was never refused");
+    }
     // A read that does not wait needs no slot.
     let (status, _) = http(
         &server.addr,
@@ -74,7 +90,21 @@ fn max_waits_bounds_concurrent_waits() {
         "",
     );
     assert_eq!(status, 200);
-    assert_eq!(first.join().expect("first wait").0, 200);
+    // A post wakes the long wait, which returns the event.
+    let (status, body) = http(
+        &server.addr,
+        "POST",
+        "/v1/boards/main/messages",
+        &[
+            ("X-Stigmer-As", "alice"),
+            ("Content-Type", "application/json"),
+        ],
+        r#"{"channel":"eng","text":"wake"}"#,
+    );
+    assert_eq!(status, 201, "{body}");
+    let (status, body) = first.join().expect("first wait");
+    assert_eq!(status, 200, "{body}");
+    assert!(body.contains("thread.created"), "{body}");
 }
 
 #[test]
