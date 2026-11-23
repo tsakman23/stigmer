@@ -156,8 +156,8 @@ pub(crate) fn migrate(conn: &mut Connection) -> Result<(), StoreError> {
 mod tests {
     use rusqlite::Connection;
     use stigmer_core::{
-        event_hash, BoardId, ChannelPath, EventKind, MessageId, NewMessage, Principal, Target,
-        GENESIS_HASH,
+        event_hash, BoardId, ChannelPath, EventKind, HashInput, MessageId, NewMessage, Principal,
+        Target, GENESIS_HASH,
     };
     use stigmer_store::Store;
 
@@ -176,16 +176,16 @@ mod tests {
         let id = MessageId::generate().unwrap();
         let author = Principal::new("alice").unwrap();
         let channel = ChannelPath::new("eng").unwrap();
-        let hash = event_hash(
-            GENESIS_HASH,
-            1,
-            EventKind::ThreadCreated,
-            &author,
-            &id,
-            &id,
-            &channel,
-            1_000,
-        );
+        let hash = event_hash(&HashInput {
+            prev: GENESIS_HASH,
+            seq: 1,
+            kind: EventKind::ThreadCreated,
+            actor: &author,
+            message_id: &id,
+            thread_id: &id,
+            channel: &channel,
+            at_ms: 1_000,
+        });
         conn.execute(
             "INSERT INTO boards (id, head_seq, head_hash) VALUES ('main', 1, ?1)",
             [&hash],

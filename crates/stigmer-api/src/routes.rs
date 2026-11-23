@@ -31,7 +31,7 @@ use crate::error::ApiError;
 use crate::host_guard::{require_allowed_host, AllowedHosts};
 use crate::join_routes;
 use crate::ratelimit::FailureLimiter;
-use crate::wait::{read_events, Read};
+use crate::wait::{read_events, Read, WaitRequest};
 
 /// Largest accepted request body.
 const MAX_BODY_BYTES: usize = 256 * 1024;
@@ -451,11 +451,13 @@ async fn read_events_route<S: Store + IdentityStore, A: Authorize>(
     let read = read_events(
         store,
         state.shutdown.clone(),
-        &board,
-        after,
-        &filter,
-        limit,
-        timeout,
+        WaitRequest {
+            board: &board,
+            after,
+            filter: &filter,
+            limit,
+            timeout,
+        },
         move || still_authenticated(store, caller, clock()),
     )
     .await?;

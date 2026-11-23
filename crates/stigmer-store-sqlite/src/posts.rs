@@ -2,8 +2,8 @@
 
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior};
 use stigmer_core::{
-    event_hash, BoardId, ChannelPath, Cursor, Event, EventKind, Label, Message, MessageId,
-    NewMessage, Principal, Target, GENESIS_HASH,
+    event_hash, BoardId, ChannelPath, Cursor, Event, EventKind, HashInput, Label, Message,
+    MessageId, NewMessage, Principal, Target, GENESIS_HASH,
 };
 use stigmer_store::{ChainReport, ConflictKind, Entity, Posted, StoreError};
 
@@ -71,16 +71,16 @@ pub(crate) fn post(conn: &mut Connection, msg: NewMessage) -> Result<Posted, Sto
         .checked_add(1)
         .ok_or_else(|| StoreError::Backend("event sequence overflow".into()))?;
     let at_ms = stigmer_core::now_ms();
-    let hash = event_hash(
-        &head_hash,
+    let hash = event_hash(&HashInput {
+        prev: &head_hash,
         seq,
         kind,
-        &msg.author,
-        &id,
-        &thread_id,
-        &channel,
+        actor: &msg.author,
+        message_id: &id,
+        thread_id: &thread_id,
+        channel: &channel,
         at_ms,
-    );
+    });
     let seq_sql = i64::try_from(seq).map_err(backend)?;
     let author_kind = author_kind(&tx, &msg.board, &msg.author)?;
 
@@ -276,16 +276,16 @@ pub(crate) fn verify_chain(
         let Some(event) = event_from_row(row)? else {
             return Ok(report_bad());
         };
-        let recomputed = event_hash(
-            &prev,
-            event.seq,
-            event.kind,
-            &event.actor,
-            &event.message_id,
-            &event.thread_id,
-            &event.channel,
-            event.at_ms,
-        );
+        let recomputed = event_hash(&HashInput {
+            prev: &prev,
+            seq: event.seq,
+            kind: event.kind,
+            actor: &event.actor,
+            message_id: &event.message_id,
+            thread_id: &event.thread_id,
+            channel: &event.channel,
+            at_ms: event.at_ms,
+        });
         if event.seq != expected_seq || event.hash != recomputed {
             return Ok(report_bad());
         }

@@ -19,7 +19,7 @@ pub use credentials::{
     TokenId, INVITE_PREFIX, TOKEN_PREFIX,
 };
 pub use error::CoreError;
-pub use event::{event_hash, Cursor, Event, EventKind, GENESIS_HASH, HASH_VERSION};
+pub use event::{event_hash, Cursor, Event, EventKind, HashInput, GENESIS_HASH, HASH_VERSION};
 pub use identity::{PrincipalKind, Role};
 pub use ids::{
     BoardId, ChannelPath, MessageId, Principal, MAX_CHANNEL_SEGMENTS, MAX_PRINCIPAL_CHARS,

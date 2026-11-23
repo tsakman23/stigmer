@@ -16,7 +16,18 @@ pub(crate) enum Read {
     NoLongerAllowed,
 }
 
-/// Reads events after `after`. With `timeout > 0` and nothing to return, waits until a
+/// What to read: the board, where to start, which events count and how long to wait.
+#[derive(Debug)]
+pub(crate) struct WaitRequest<'a> {
+    pub(crate) board: &'a BoardId,
+    pub(crate) after: Option<Cursor>,
+    pub(crate) filter: &'a EventFilter,
+    pub(crate) limit: u32,
+    /// Zero reads once and returns; anything else is a long poll with this deadline.
+    pub(crate) timeout: Duration,
+}
+
+/// Reads events after `request.after`. With `request.timeout > 0` and nothing to return, waits until a
 /// matching event lands, the deadline passes, or `shutdown` flips to `true`. The deadline is
 /// fixed once; wake-ups for events the filter rejects do not extend it.
 ///
@@ -24,15 +35,10 @@ pub(crate) enum Read {
 /// credential revoked, expired or removed while the request waited gets no events.
 ///
 /// Dropping the returned future cancels the wait, so a client disconnect needs no cleanup.
-#[allow(clippy::too_many_arguments)]
 pub(crate) async fn read_events<S, F, Fut>(
     store: &S,
     mut shutdown: watch::Receiver<bool>,
-    board: &BoardId,
-    after: Option<Cursor>,
-    filter: &EventFilter,
-    limit: u32,
-    timeout: Duration,
+    request: WaitRequest<'_>,
     mut still_allowed: F,
 ) -> Result<Read, StoreError>
 where
@@ -40,6 +46,13 @@ where
     F: FnMut() -> Fut,
     Fut: Future<Output = Result<bool, StoreError>>,
 {
+    let WaitRequest {
+        board,
+        after,
+        filter,
+        limit,
+        timeout,
+    } = request;
     let deadline = Instant::now() + timeout;
     loop {
         // Read the head first: everything up to it is examined by the query below, so if the

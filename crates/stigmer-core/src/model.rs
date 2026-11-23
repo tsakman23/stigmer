@@ -79,8 +79,8 @@ pub struct EventFilter {
 mod tests {
     use super::*;
     use crate::{
-        event_hash, BoardId, ChannelPath, Cursor, Event, EventKind, Label, MessageId, Principal,
-        GENESIS_HASH,
+        event_hash, BoardId, ChannelPath, Cursor, Event, EventKind, HashInput, Label, MessageId,
+        Principal, GENESIS_HASH,
     };
 
     fn sample() -> Posted {
@@ -98,16 +98,16 @@ mod tests {
             labels: vec![Label::new("kind", "bug").unwrap()],
             at_ms,
         };
-        let hash = event_hash(
-            GENESIS_HASH,
-            1,
-            EventKind::ThreadCreated,
-            &author,
-            &id,
-            &id,
-            &channel,
+        let hash = event_hash(&HashInput {
+            prev: GENESIS_HASH,
+            seq: 1,
+            kind: EventKind::ThreadCreated,
+            actor: &author,
+            message_id: &id,
+            thread_id: &id,
+            channel: &channel,
             at_ms,
-        );
+        });
         let event = Event {
             seq: 1,
             cursor: Cursor::from_seq(1),
