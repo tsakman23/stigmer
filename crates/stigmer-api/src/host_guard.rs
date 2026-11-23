@@ -71,13 +71,14 @@ fn headers_name_allowed_hosts(allowed: &AllowedHosts, headers: &HeaderMap) -> bo
     host_ok && origin_ok
 }
 
-/// The loopback spellings the guard admits. `stigmer_core::is_loopback_host` decides what is
-/// loopback; the guard is narrower on purpose and admits only `localhost` and the two addresses
-/// a loopback-bound server listens on, so other 127.0.0.0/8 literals and IPv4-mapped forms such
-/// as `[::ffff:127.0.0.1]` stay refused, as they were in M0.
+/// The loopback spellings the guard admits: `localhost` (any case), `127.0.0.1` and `[::1]`.
+///
+/// Deliberately its own explicit set rather than `stigmer_core::is_loopback_host` (which the
+/// CLI uses to decide whether a token may go over plain http): this is a DNS-rebinding defence,
+/// and the server listens on 127.0.0.1 and ::1, so admitting the rest of 127.0.0.0/8 or
+/// IPv4-mapped forms such as `[::ffff:127.0.0.1]` would add surface for no benefit.
 fn admits_loopback(host: &str) -> bool {
-    stigmer_core::is_loopback_host(host)
-        && (host.eq_ignore_ascii_case("localhost") || host == "127.0.0.1" || host == "[::1]")
+    host.eq_ignore_ascii_case("localhost") || host == "127.0.0.1" || host == "[::1]"
 }
 
 /// The host of `host[:port]` or `[v6][:port]`, or `None` when the port is malformed.
