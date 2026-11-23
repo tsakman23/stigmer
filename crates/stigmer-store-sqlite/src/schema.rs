@@ -57,6 +57,60 @@ pub(crate) const MIGRATIONS: &[&str] = &[
     // call 8: M1 maps local principals to real principals with an explicit migration command.
     // Kept out of the wire format and the core types.
     "ALTER TABLE messages ADD COLUMN author_kind TEXT NOT NULL DEFAULT 'local';",
+    // 5: board lifecycle. Boards that predate it (only `main`) keep created_at_ms 0 and no
+    // creator; a board made from now on is stamped when it is created.
+    "ALTER TABLE boards ADD COLUMN created_at_ms INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE boards ADD COLUMN created_by TEXT;
+    ALTER TABLE boards ADD COLUMN archived_at_ms INTEGER;",
+    // 6: identity (docs/superpowers/specs/2026-11-22-m1-networked-board-design.md, section 6).
+    // Every data directory starts, or stays after an upgrade, in local mode. Roles live on
+    // principals (board memberships), not on credentials. Secrets are stored only as their
+    // 32-byte sha256; a credential with no board is the instance-admin credential.
+    "CREATE TABLE instance (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        mode TEXT NOT NULL
+    );
+    INSERT INTO instance (id, mode) VALUES (1, 'local');
+    CREATE TABLE principals (
+        board_id TEXT NOT NULL REFERENCES boards(id),
+        name TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        role TEXT NOT NULL,
+        created_at_ms INTEGER NOT NULL,
+        PRIMARY KEY (board_id, name)
+    );
+    CREATE TABLE credentials (
+        id TEXT PRIMARY KEY,
+        secret_hash BLOB NOT NULL CHECK (length(secret_hash) = 32),
+        board_id TEXT REFERENCES boards(id),
+        principal TEXT NOT NULL,
+        created_at_ms INTEGER NOT NULL,
+        expires_at_ms INTEGER NOT NULL,
+        revoked_at_ms INTEGER,
+        last_seen_ms INTEGER
+    );
+    CREATE TABLE invites (
+        id TEXT PRIMARY KEY,
+        secret_hash BLOB NOT NULL CHECK (length(secret_hash) = 32),
+        board_id TEXT NOT NULL REFERENCES boards(id),
+        role TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        created_by TEXT NOT NULL,
+        created_at_ms INTEGER NOT NULL,
+        expires_at_ms INTEGER NOT NULL,
+        used_at_ms INTEGER
+    );
+    CREATE TABLE security_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        at_ms INTEGER NOT NULL,
+        kind TEXT NOT NULL,
+        board_id TEXT,
+        principal TEXT,
+        detail TEXT NOT NULL
+    );",
+    // 7: indexes for the per-board credential and member lookups.
+    "CREATE INDEX credentials_board ON credentials (board_id);
+    CREATE INDEX principals_board ON principals (board_id);",
 ];
 
 /// Brings the database up to the latest schema and makes sure board `main` exists.
@@ -86,8 +140,13 @@ pub(crate) fn migrate(conn: &mut Connection) -> Result<(), StoreError> {
         tx.commit().map_err(backend)?;
     }
     conn.execute(
-        "INSERT OR IGNORE INTO boards (id, head_seq, head_hash) VALUES (?1, 0, ?2)",
-        (BoardId::main().as_str(), GENESIS_HASH),
+        "INSERT OR IGNORE INTO boards (id, head_seq, head_hash, created_at_ms)
+         VALUES (?1, 0, ?2, ?3)",
+        (
+            BoardId::main().as_str(),
+            GENESIS_HASH,
+            stigmer_core::now_ms(),
+        ),
     )
     .map_err(backend)?;
     Ok(())
@@ -97,8 +156,8 @@ pub(crate) fn migrate(conn: &mut Connection) -> Result<(), StoreError> {
 mod tests {
     use rusqlite::Connection;
     use stigmer_core::{
-        event_hash, BoardId, ChannelPath, EventKind, MessageId, NewMessage, Principal, Target,
-        GENESIS_HASH,
+        event_hash, BoardId, ChannelPath, EventKind, HashInput, MessageId, NewMessage, Principal,
+        Target, GENESIS_HASH,
     };
     use stigmer_store::Store;
 
@@ -117,16 +176,16 @@ mod tests {
         let id = MessageId::generate().unwrap();
         let author = Principal::new("alice").unwrap();
         let channel = ChannelPath::new("eng").unwrap();
-        let hash = event_hash(
-            GENESIS_HASH,
-            1,
-            EventKind::ThreadCreated,
-            &author,
-            &id,
-            &id,
-            &channel,
-            1_000,
-        );
+        let hash = event_hash(&HashInput {
+            prev: GENESIS_HASH,
+            seq: 1,
+            kind: EventKind::ThreadCreated,
+            actor: &author,
+            message_id: &id,
+            thread_id: &id,
+            channel: &channel,
+            at_ms: 1_000,
+        });
         conn.execute(
             "INSERT INTO boards (id, head_seq, head_hash) VALUES ('main', 1, ?1)",
             [&hash],
@@ -212,6 +271,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn v4_database_upgrades_to_v5_and_keeps_main_as_it_was() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("board.db");
+        write_old_database(&path, 4);
+
+        let store = SqliteStore::open(&path).await.unwrap();
+
+        let conn = Connection::open(&path).unwrap();
+        let version: i64 = conn
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, MIGRATIONS.len() as i64);
+        let main = store.get_board(&BoardId::main()).await.unwrap();
+        assert_eq!(main.created_at_ms, 0, "a board older than migration 5");
+        assert_eq!(main.created_by, None);
+        assert_eq!(main.archived_at_ms, None);
+        assert_eq!(store.list_boards().await.unwrap(), vec![main]);
+
+        let other = BoardId::new("other").unwrap();
+        let created = store.create_board(&other, None).await.unwrap();
+        assert!(created.created_at_ms > 0);
+        let report = store.verify_chain(&BoardId::main()).await.unwrap();
+        assert!(report.valid);
+        assert_eq!(report.checked, 1);
+    }
+
+    #[tokio::test]
     async fn v3_database_upgrades_to_v4_and_marks_authors_local() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("board.db");
@@ -262,5 +348,87 @@ mod tests {
         let report = store.verify_chain(&BoardId::main()).await.unwrap();
         assert!(report.valid);
         assert_eq!(report.checked, 2);
+    }
+
+    #[tokio::test]
+    async fn v5_database_upgrades_to_v7_in_local_mode_with_identity_tables() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("board.db");
+        write_old_database(&path, 5);
+
+        let store = SqliteStore::open(&path).await.unwrap();
+
+        let conn = Connection::open(&path).unwrap();
+        let version: i64 = conn
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, 7);
+        let mode: String = conn
+            .query_row("SELECT mode FROM instance", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(
+            mode, "local",
+            "an upgraded data directory stays in local mode"
+        );
+        let found = |kind: &str, name: &str| -> i64 {
+            conn.query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = ?1 AND name = ?2",
+                [kind, name],
+                |row| row.get(0),
+            )
+            .unwrap()
+        };
+        for table in [
+            "instance",
+            "principals",
+            "credentials",
+            "invites",
+            "security_log",
+        ] {
+            assert_eq!(found("table", table), 1, "table {table}");
+            let rows: i64 = conn
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                    row.get(0)
+                })
+                .unwrap();
+            assert_eq!(rows, i64::from(table == "instance"), "rows in {table}");
+        }
+        for index in ["credentials_board", "principals_board"] {
+            assert_eq!(found("index", index), 1, "index {index}");
+        }
+        let second_row = conn.execute("INSERT INTO instance (id, mode) VALUES (2, 'local')", []);
+        assert!(second_row.is_err(), "instance holds a single row");
+        let short_hash = conn.execute(
+            "INSERT INTO credentials (id, secret_hash, principal, created_at_ms, expires_at_ms)
+             VALUES ('0123456789abcdef', x'00', 'root', 1, 2)",
+            [],
+        );
+        assert!(short_hash.is_err(), "a secret hash is exactly 32 bytes");
+        let insert_invite = |hash: Vec<u8>| {
+            conn.execute(
+                "INSERT INTO invites
+                     (id, secret_hash, board_id, role, kind, created_by, created_at_ms,
+                      expires_at_ms)
+                 VALUES ('0123456789abcdef', ?1, 'main', 'member', 'agent', 'root', 1, 2)",
+                [hash],
+            )
+        };
+        assert!(
+            insert_invite(vec![7; 31]).is_err(),
+            "an invite hash is exactly 32 bytes"
+        );
+        assert_eq!(insert_invite(vec![7; 32]).unwrap(), 1, "32 bytes fit");
+
+        let old_kind: String = conn
+            .query_row(
+                "SELECT author_kind FROM messages WHERE text = 'old message'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(old_kind, "local");
+        let report = store.verify_chain(&BoardId::main()).await.unwrap();
+        assert!(report.valid);
+        assert_eq!(report.checked, 1);
     }
 }

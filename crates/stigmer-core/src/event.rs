@@ -82,10 +82,14 @@ pub enum EventKind {
     ThreadCreated,
     #[serde(rename = "message.replied")]
     MessageReplied,
+    /// A kind this version does not know. Only ever produced by deserializing a newer
+    /// server's event; never stored, hashed or listed in `ALL`.
+    #[serde(rename = "unknown", other)]
+    Unknown,
 }
 
 impl EventKind {
-    /// Every kind, for parsing and exhaustive checks.
+    /// Every kind a server produces, for parsing and exhaustive checks. Excludes `Unknown`.
     pub const ALL: &'static [EventKind] = &[EventKind::ThreadCreated, EventKind::MessageReplied];
 
     /// The kind whose wire name is `name`, if any.
@@ -98,6 +102,7 @@ impl EventKind {
         match self {
             EventKind::ThreadCreated => "thread.created",
             EventKind::MessageReplied => "message.replied",
+            EventKind::Unknown => "unknown",
         }
     }
 }
@@ -116,23 +121,41 @@ pub struct Event {
     pub hash: String,
 }
 
+/// Everything an event's hash covers: the previous hash and the event's metadata.
+#[derive(Debug, Clone, Copy)]
+pub struct HashInput<'a> {
+    /// The previous event's hash, or `GENESIS_HASH` for the first event.
+    pub prev: &'a str,
+    pub seq: u64,
+    pub kind: EventKind,
+    pub actor: &'a Principal,
+    pub message_id: &'a MessageId,
+    pub thread_id: &'a MessageId,
+    pub channel: &'a ChannelPath,
+    pub at_ms: i64,
+}
+
 /// Lowercase hex sha256 of
 /// `{prev}:{seq}:{kind}:{actor}:{message_id}:{thread_id}:{channel}:{at_ms}`.
 ///
 /// The chain covers event metadata, including the thread an event belongs to. It does not
 /// cover labels or message bodies: it proves the order and identity of events, not the
 /// historical content of messages.
-#[allow(clippy::too_many_arguments)]
-pub fn event_hash(
-    prev: &str,
-    seq: u64,
-    kind: EventKind,
-    actor: &Principal,
-    message_id: &MessageId,
-    thread_id: &MessageId,
-    channel: &ChannelPath,
-    at_ms: i64,
-) -> String {
+pub fn event_hash(input: &HashInput<'_>) -> String {
+    let HashInput {
+        prev,
+        seq,
+        kind,
+        actor,
+        message_id,
+        thread_id,
+        channel,
+        at_ms,
+    } = *input;
+    debug_assert!(
+        kind != EventKind::Unknown,
+        "EventKind::Unknown is deserialization-only and must never be hashed"
+    );
     let input = format!(
         "{prev}:{seq}:{}:{actor}:{message_id}:{thread_id}:{channel}:{at_ms}",
         kind.as_str()
@@ -154,13 +177,39 @@ mod tests {
         // Exhaustive match: adding a variant stops compiling here until ALL is revisited.
         for kind in EventKind::ALL {
             match kind {
-                EventKind::ThreadCreated | EventKind::MessageReplied => {}
+                EventKind::ThreadCreated | EventKind::MessageReplied | EventKind::Unknown => {}
             }
             assert_eq!(EventKind::from_name(kind.as_str()), Some(*kind));
         }
         assert_eq!(EventKind::ALL.len(), 2);
         assert_eq!(EventKind::from_name("thread.deleted"), None);
         assert_eq!(EventKind::from_name(""), None);
+    }
+
+    #[test]
+    fn event_kind_all_excludes_unknown() {
+        assert!(!EventKind::ALL.contains(&EventKind::Unknown));
+        assert_eq!(EventKind::Unknown.as_str(), "unknown");
+        assert_eq!(EventKind::from_name("unknown"), None);
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "never be hashed")]
+    fn event_hash_rejects_unknown_kind_in_debug_builds() {
+        hash_with(Fields {
+            kind: EventKind::Unknown,
+            at_ms: 1,
+            ..BASE
+        });
+    }
+
+    #[test]
+    fn event_kind_unknown_deserializes_from_a_future_value() {
+        let kind: EventKind = serde_json::from_str(r#""thread.archived""#).unwrap();
+        assert_eq!(kind, EventKind::Unknown);
+        let known: EventKind = serde_json::from_str(r#""thread.created""#).unwrap();
+        assert_eq!(known, EventKind::ThreadCreated);
     }
 
     #[test]
@@ -214,40 +263,45 @@ mod tests {
 
     const MSG: &str = "msg_0123456789abcdef01234567";
 
-    #[allow(clippy::too_many_arguments)]
-    fn hash_with(
-        prev: &str,
+    /// The hashed fields as plain strings, so a test can vary one with struct update syntax.
+    #[derive(Clone, Copy)]
+    struct Fields<'a> {
+        prev: &'a str,
         seq: u64,
         kind: EventKind,
-        actor: &str,
-        msg: &str,
-        thread: &str,
-        channel: &str,
+        actor: &'a str,
+        msg: &'a str,
+        thread: &'a str,
+        channel: &'a str,
         at_ms: i64,
-    ) -> String {
-        event_hash(
-            prev,
-            seq,
-            kind,
-            &Principal::new(actor).unwrap(),
-            &MessageId::new(msg).unwrap(),
-            &MessageId::new(thread).unwrap(),
-            &ChannelPath::new(channel).unwrap(),
-            at_ms,
-        )
+    }
+
+    const BASE: Fields<'static> = Fields {
+        prev: GENESIS_HASH,
+        seq: 1,
+        kind: EventKind::ThreadCreated,
+        actor: "alice",
+        msg: MSG,
+        thread: MSG,
+        channel: "eng/ops",
+        at_ms: 1_700_000_000_000,
+    };
+
+    fn hash_with(f: Fields<'_>) -> String {
+        event_hash(&HashInput {
+            prev: f.prev,
+            seq: f.seq,
+            kind: f.kind,
+            actor: &Principal::new(f.actor).unwrap(),
+            message_id: &MessageId::new(f.msg).unwrap(),
+            thread_id: &MessageId::new(f.thread).unwrap(),
+            channel: &ChannelPath::new(f.channel).unwrap(),
+            at_ms: f.at_ms,
+        })
     }
 
     fn base() -> String {
-        hash_with(
-            GENESIS_HASH,
-            1,
-            EventKind::ThreadCreated,
-            "alice",
-            MSG,
-            MSG,
-            "eng/ops",
-            1_700_000_000_000,
-        )
+        hash_with(BASE)
     }
 
     #[test]
@@ -257,86 +311,35 @@ mod tests {
         assert!(h.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')));
         let other_msg = "msg_ffffffffffffffffffffffff";
         let variants = [
-            hash_with(
-                "1".repeat(64).as_str(),
-                1,
-                EventKind::ThreadCreated,
-                "alice",
-                MSG,
-                MSG,
-                "eng/ops",
-                1_700_000_000_000,
-            ),
-            hash_with(
-                GENESIS_HASH,
-                2,
-                EventKind::ThreadCreated,
-                "alice",
-                MSG,
-                MSG,
-                "eng/ops",
-                1_700_000_000_000,
-            ),
-            hash_with(
-                GENESIS_HASH,
-                1,
-                EventKind::MessageReplied,
-                "alice",
-                MSG,
-                MSG,
-                "eng/ops",
-                1_700_000_000_000,
-            ),
-            hash_with(
-                GENESIS_HASH,
-                1,
-                EventKind::ThreadCreated,
-                "bob",
-                MSG,
-                MSG,
-                "eng/ops",
-                1_700_000_000_000,
-            ),
-            hash_with(
-                GENESIS_HASH,
-                1,
-                EventKind::ThreadCreated,
-                "alice",
-                other_msg,
-                MSG,
-                "eng/ops",
-                1_700_000_000_000,
-            ),
-            hash_with(
-                GENESIS_HASH,
-                1,
-                EventKind::ThreadCreated,
-                "alice",
-                MSG,
-                other_msg,
-                "eng/ops",
-                1_700_000_000_000,
-            ),
-            hash_with(
-                GENESIS_HASH,
-                1,
-                EventKind::ThreadCreated,
-                "alice",
-                MSG,
-                MSG,
-                "eng/dev",
-                1_700_000_000_000,
-            ),
-            hash_with(
-                GENESIS_HASH,
-                1,
-                EventKind::ThreadCreated,
-                "alice",
-                MSG,
-                MSG,
-                "eng/ops",
-                1_700_000_000_001,
-            ),
+            hash_with(Fields {
+                prev: "1".repeat(64).as_str(),
+                ..BASE
+            }),
+            hash_with(Fields { seq: 2, ..BASE }),
+            hash_with(Fields {
+                kind: EventKind::MessageReplied,
+                ..BASE
+            }),
+            hash_with(Fields {
+                actor: "bob",
+                ..BASE
+            }),
+            hash_with(Fields {
+                msg: other_msg,
+                ..BASE
+            }),
+            hash_with(Fields {
+                thread: other_msg,
+                ..BASE
+            }),
+            hash_with(Fields {
+                channel: "eng/dev",
+                ..BASE
+            }),
+            hash_with(Fields {
+                at_ms: 1_700_000_000_001,
+                ..BASE
+            }),
         ];
         for v in variants {
             assert_ne!(v, h);
@@ -349,27 +352,22 @@ mod tests {
         assert_eq!(GENESIS_HASH.len(), 64);
         assert!(GENESIS_HASH.bytes().all(|b| b == b'0'));
         let first = base();
-        let second = hash_with(
-            &first,
-            2,
-            EventKind::MessageReplied,
-            "bob",
-            MSG,
-            MSG,
-            "eng/ops",
-            1_700_000_000_500,
-        );
+        let second = hash_with(Fields {
+            prev: &first,
+            seq: 2,
+            kind: EventKind::MessageReplied,
+            actor: "bob",
+            at_ms: 1_700_000_000_500,
+            ..BASE
+        });
         assert_ne!(second, first);
-        let tampered = hash_with(
-            GENESIS_HASH,
-            2,
-            EventKind::MessageReplied,
-            "bob",
-            MSG,
-            MSG,
-            "eng/ops",
-            1_700_000_000_500,
-        );
+        let tampered = hash_with(Fields {
+            seq: 2,
+            kind: EventKind::MessageReplied,
+            actor: "bob",
+            at_ms: 1_700_000_000_500,
+            ..BASE
+        });
         assert_ne!(second, tampered, "the previous hash feeds the next");
     }
 

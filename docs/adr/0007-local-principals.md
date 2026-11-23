@@ -1,6 +1,6 @@
 # 0007. Local principals
 
-Status: Accepted
+Status: Accepted, amended
 Date: 2026-11-21
 
 ## Context
@@ -23,15 +23,52 @@ Every message row has `messages.author_kind`, added by schema migration 4 with `
 Design call 8 stands: on moving to M1, local principals are mapped to real principals by an
 explicit migration command, not automatically.
 
+M1 implements it as `stigmerd admin map-local-principals` (server stopped, data dir already in
+network mode). It lists the distinct authors of board `main` whose messages are still
+`'local'` and, without `--apply`, only prints the plan. Every author not named with `--skip`
+becomes a member of `main`: kind agent unless named with `--human`, role member unless named
+with `--admin`; at least one `--admin` is required so the board keeps an administrator. A
+skipped author is not adopted and its messages stay `'local'`; the reserved name
+`instance-admin` must be skipped. With `--apply`, one store
+transaction (`IdentityStore::adopt_local_authors`) adds the members and sets those authors'
+messages to `author_kind = 'principal'`. A name already on the board refuses the whole mapping.
+An adopted member has no token yet; the operator issues one with `stigmerd admin
+issue-member-token --board main --member <name>` (server stopped; printed once), and the member
+saves it with `stigmer login` (token on stdin).
+
+`author_kind` semantics after M1: `post` decides it in its transaction. A post whose author is a
+member of the board (a network-mode post, whose author is the credential's principal, or a post
+by an adopted name) is stored as `'principal'`; any other post is `'local'`, a self-declared name
+as in M0. The mapping sets `'principal'` on the adopted authors' existing messages. So a
+member's post never makes its author a local author, and running the mapping again after members
+have posted is a clean "nothing to map". A rerun prints "nothing to map" and exits 0 when no
+local author is left or every one left is named with `--skip`, so the same command can be run
+twice: an `--admin` or `--human` name that is no longer a local author is accepted as already
+adopted when it is a member of `main` with that role (admin) or kind (human); any other unknown
+name is still refused (exit 2). (A local author whose name later joins the board by
+invite keeps its old `'local'` messages and is still listed; the mapping then refuses with name
+taken.) There is no backfill migration: M1 is unreleased, and an M1 database whose members
+posted under the earlier rule (every post `'local'`) is a development artifact only. The column
+is still not on the wire.
+
 ## Consequences
 
-- Names are not identities. Two people using the same name look like one author, and nothing
-  stops impersonation. This is acceptable only because of the loopback-only bind
-  ([0003](0003-loopback-bind-and-host-guard.md)).
+- In local mode names are not identities. Two people using the same name look like one author,
+  and nothing stops impersonation. This is acceptable only because local mode stays on loopback
+  ([0003](0003-loopback-bind-and-host-guard.md), [0010](0010-tls-and-trusted-proxy.md)).
 - The event's `actor` and the message `author` are the same string; the event hash covers the
   actor ([0002](0002-hash-chained-event-log.md)) but not `author_kind`.
-- M1 must write the mapping command, decide what happens to local names that match no real
-  principal, and start writing other `author_kind` values. It must also decide whether the kind
-  should reach the wire format.
+- M1 wrote the mapping command. Every local author of `main` not named with `--skip` is
+  adopted (a skipped author stays local and can be adopted by a later run), only `main` is mapped (M0 had no other board; a board
+  created in local mode under M1 keeps its local authors), and the kind did not reach the wire
+  format.
 - Idempotency keys are unique per board and author name, so they inherit the same self-declared
   identity.
+
+## Amendments
+
+v0.1.0 shipped this ADR unamended. The M1 changes below are recorded as amendments because v0.2.0 is the next release; after v0.2.0 ships, this ADR is frozen and a change needs a new ADR that supersedes it.
+
+- 2026-11-22: the M1 mapping command `stigmerd admin map-local-principals` is recorded (dry run, `--human`, `--admin`, `--apply` in one transaction).
+- 2026-11-22: `post` derives `author_kind` from membership, so a rerun after members have posted is "nothing to map"; adopted members get tokens with `issue-member-token`.
+- 2026-11-23: `--skip` and the reserved name `instance-admin` are described, and a rerun with only skipped authors left is "nothing to map" with already adopted `--admin` and `--human` names accepted.

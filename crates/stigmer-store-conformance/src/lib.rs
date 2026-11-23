@@ -1,14 +1,24 @@
 //! stigmer-store-conformance: the behaviour every `Store` backend must show.
 //!
-//! A backend's test calls [`run_all`] with a factory for fresh, empty stores. Each scenario
+//! A backend's test calls [`run_all`] with a factory for fresh, empty stores, and
+//! [`run_identity_all`] the same way when it also implements `IdentityStore`. Each scenario
 //! panics with its name when the backend gets something wrong. Run it on a multi-thread
 //! tokio runtime: the concurrency scenario spawns tasks.
 //!
 //! This is test-support code: panics are its assertion mechanism, so it uses `panic!` and the
 //! `assert!` family where library code would return errors.
 
+mod archive;
+mod boards;
 mod events;
 mod idempotency;
+mod identity;
+mod identity_adoption;
+mod identity_archive;
+mod identity_credentials;
+mod identity_invites;
+mod identity_join;
+mod identity_members;
 mod posts;
 mod reads;
 mod support;
@@ -17,6 +27,8 @@ mod wait;
 use std::future::Future;
 
 use stigmer_store::Store;
+
+pub use identity::run_identity_all;
 
 /// Runs every scenario, each against a fresh store from `factory`.
 pub async fn run_all<S, F, Fut>(factory: F)
@@ -54,4 +66,14 @@ where
     wait::wait_past_returns_true_at_once_when_head_is_already_past(factory().await).await;
     wait::wait_past_future_cursor_is_invalid_cursor_without_waiting(factory().await).await;
     wait::wait_past_is_not_woken_by_an_idempotent_replay(factory().await).await;
+    boards::create_board_then_get_and_list(factory().await).await;
+    boards::create_duplicate_board_is_board_exists(factory().await).await;
+    boards::main_exists_on_a_fresh_store(factory().await).await;
+    boards::boards_are_isolated_sequences_start_at_1_per_board(factory().await).await;
+    boards::unknown_board_is_not_found_from_every_method(factory().await).await;
+    archive::post_to_archived_board_is_board_archived_and_uses_no_sequence_number(factory().await)
+        .await;
+    archive::archived_board_is_still_readable(factory().await).await;
+    archive::archive_is_idempotent_and_keeps_first_timestamp(factory().await).await;
+    archive::archive_main_is_refused_and_main_stays_writable(factory().await).await;
 }

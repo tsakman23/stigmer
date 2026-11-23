@@ -2,7 +2,9 @@
 
 use std::sync::Arc;
 
-use stigmer_core::{event_hash, BoardId, Cursor, EventKind, MessageId, Target, GENESIS_HASH};
+use stigmer_core::{
+    event_hash, BoardId, Cursor, EventKind, HashInput, MessageId, Target, GENESIS_HASH,
+};
 use stigmer_store::{Entity, Posted, Store, StoreError};
 
 use crate::support::{
@@ -12,16 +14,16 @@ use crate::support::{
 /// The hash this event must carry when `prev` is the hash before it.
 fn expected_hash(prev: &str, posted: &Posted) -> String {
     let e = &posted.event;
-    event_hash(
+    event_hash(&HashInput {
         prev,
-        e.seq,
-        e.kind,
-        &e.actor,
-        &e.message_id,
-        &e.thread_id,
-        &e.channel,
-        e.at_ms,
-    )
+        seq: e.seq,
+        kind: e.kind,
+        actor: &e.actor,
+        message_id: &e.message_id,
+        thread_id: &e.thread_id,
+        channel: &e.channel,
+        at_ms: e.at_ms,
+    })
 }
 
 pub(crate) async fn first_post_creates_thread_with_event_seq_1<S: Store>(store: S) {

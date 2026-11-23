@@ -1,6 +1,6 @@
 # 0001. Storage behind a trait with a shared conformance suite
 
-Status: Accepted
+Status: Accepted, amended
 Date: 2026-11-21
 
 ## Context
@@ -26,23 +26,36 @@ accepted without it.
 Failures are the typed `StoreError` (`NotFound`, `InvalidCursor`, `Conflict`, `Backend`).
 `NotFound` carries an `Entity` (`Board`, `Thread`, `Message`), and each trait method documents
 which entity it reports. For example, an unknown board is `Entity::Board` for `post`,
-`events_after`, `head`, `wait_past` and `verify_chain`; `read_thread` reports `Entity::Thread`
-for any id that is not a thread root on the board, including any id on an unknown board; and
-`read_channel` on an unknown board is an empty list, not an error.
+`read_channel`, `events_after`, `head`, `wait_past` and `verify_chain`; and `read_thread`
+reports `Entity::Thread` for any id that is not a thread root on the board, including any id on
+an unknown board.
 
 Postgres is planned for M2.
 
 ## Consequences
 
-- Backends are interchangeable only as far as the suite goes. Behaviour the suite does not test
-  (for example unknown-board handling in `verify_chain`, `wait_past` and `read_channel`) can
-  differ between backends. Closing those gaps is listed in [design.md section 13](../design.md).
+- Backends are interchangeable only as far as the suite goes. In M0 the suite did not test
+  unknown-board handling in `verify_chain`, `wait_past` and `read_channel`, and `read_channel`
+  returned an empty list for an unknown board. Since M1 an unknown board is `NotFound` with
+  `Entity::Board` from every `Store` method that takes a board (still except `read_thread`,
+  which reports the thread), and the conformance suite pins it for every method. Archived
+  boards refuse `post` (and the identity writes) with `Conflict(BoardArchived)` while reads keep
+  working; the archive is checked before the idempotency key, so a keyed retry of a post that
+  had already committed gets 409 `board_archived`, which does not mean the original write
+  failed ([0008](0008-board-isolation-and-credentials.md)).
 - Generic callers mean the server binary picks its backend at compile time. Choosing a backend
   at runtime (config file in M1/M2) will need an enum wrapper or a generic entry point per
   backend.
 - The `not found` entity contract is part of the trait and must be reproduced by every backend,
-  including its odd cases (the `read_thread` and `read_channel` rules above).
+  including its odd case (the `read_thread` rule above).
 - M2 must add the Postgres backend, run the same suite against it, and extend the suite with the
   cross-replica wake-up scenario, since the SQLite notifier is in-process only.
 - The suite's timing-based scenarios use real sleeps and timeouts, which can be slow or flaky on
   loaded machines.
+
+## Amendments
+
+v0.1.0 shipped this ADR unamended. The M1 changes below are recorded as amendments because v0.2.0 is the next release; after v0.2.0 ships, this ADR is frozen and a change needs a new ADR that supersedes it.
+
+- 2026-11-22: an unknown board is `NotFound` with `Entity::Board` from every `Store` method that takes a board, `read_channel` included (it returned an empty list), and the conformance suite pins it; M1 closed the gap M0 listed.
+- 2026-11-22: archived boards refuse `post` and the identity writes with `Conflict(BoardArchived)`, checked before the idempotency key, while reads keep working (ADR 0008).

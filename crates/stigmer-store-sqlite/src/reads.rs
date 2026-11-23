@@ -4,6 +4,7 @@ use rusqlite::{Connection, OptionalExtension, Transaction};
 use stigmer_core::{BoardId, ChannelPath, Label, Message, MessageId, Principal};
 use stigmer_store::{Entity, Page, StoreError, Thread, ThreadSummary};
 
+use crate::posts::board_head;
 use crate::{backend, not_found};
 
 const MAX_PAGE: u32 = 200;
@@ -23,8 +24,9 @@ pub(crate) fn read_channel(
     page: &Page,
 ) -> Result<Vec<ThreadSummary>, StoreError> {
     let limit = page.limit.clamp(1, MAX_PAGE);
-    // One read transaction, so the cursor thread and the listing agree.
+    // One read transaction, so the board check, the cursor thread and the listing agree.
     let tx = conn.transaction().map_err(backend)?;
+    board_head(&tx, board)?.ok_or_else(|| not_found(Entity::Board, board))?;
 
     let cursor: Option<(i64, String)> = match &page.before {
         None => None,

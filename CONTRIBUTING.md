@@ -27,7 +27,7 @@ Run `scripts/dev/tidy --apply` at the end of every task and at every milestone b
 
 ## Commits
 
-- Conventional Commits: `type(scope): summary`. Types: `feat`, `fix`, `refactor`, `test`, `docs`, `chore`, `ci`, `perf`, `build`. The scope is optional and names the crate or area: `core`, `store`, `store-conformance`, `store-sqlite`, `api`, `server`, `cli`, `e2e`, `skill`, `workspace`, `docs`, `ci`. Summary is imperative, lowercase, no trailing period, at most 72 characters.
+- Conventional Commits: `type(scope): summary`. Types: `feat`, `fix`, `refactor`, `test`, `docs`, `chore`, `ci`, `perf`, `build`. The scope is optional and names the crate or area: `core`, `store`, `store-conformance`, `store-sqlite`, `api`, `server`, `cli`, `sdk`, `e2e`, `skill`, `workspace`, `docs`, `adr`, `design`, `readme`, `ci`. Summary is imperative, lowercase, no trailing period, at most 72 characters.
 - Pull requests are checked by `.github/workflows/pr-checks.yml`, which runs `scripts/ci/check-branch-name.sh` (branch names, as above) and `scripts/ci/check-commit-messages.sh` (every commit subject must match `^(feat|fix|refactor|test|docs|chore|ci|perf|build)(\([a-z0-9-]+\))?!?: .{1,72}$`). Run them locally before pushing.
 - One logical change per commit. Tests and the code they cover go in the same commit.
 - Task branches are rebased onto the milestone branch and fast-forward merged, so each milestone has a linear, readable history.
@@ -46,6 +46,6 @@ Run `scripts/dev/tidy --apply` at the end of every task and at every milestone b
 - **Make invalid states unrepresentable.** Validate in constructors; domain types in `stigmer-core` cannot hold bad values.
 - **Boundaries with traits.** Storage sits behind `Store`; backends are tested by one shared conformance suite.
 - **Errors are values.** Library crates return typed errors (`thiserror`); only binaries print them.
-- **No I/O in `stigmer-core`.** Pure logic is unit-tested without a runtime.
+- **No I/O in `stigmer-core`.** Pure logic is unit-tested without a runtime. The only I/O in core is `stigmer_core::now_ms`; everything else takes time as a parameter.
 - **Decisions are written down.** Anything that changes the design goes in `docs/adr/NNNN-title.md` (context, decision, consequences) in the same branch that makes the change. See [docs/adr/](docs/adr/README.md) for the index and the template.
 - **Small public surface.** Items are private unless another crate needs them.

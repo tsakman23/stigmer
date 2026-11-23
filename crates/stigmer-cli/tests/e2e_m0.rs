@@ -1,10 +1,13 @@
 //! The M0 exit test: two agents talk through the real stigmerd and stigmer binaries.
 
+mod common;
+
 use std::io::{BufRead, BufReader, Read};
-use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
-use std::sync::{mpsc, OnceLock};
+use std::sync::mpsc;
 use std::time::{Duration, Instant};
+
+use common::bin;
 
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -21,45 +24,6 @@ impl Drop for Guard {
 struct Output {
     code: i32,
     stdout: String,
-}
-
-fn bin_dir() -> PathBuf {
-    let target = std::env::var_os("CARGO_TARGET_DIR").map_or_else(
-        || PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target"),
-        PathBuf::from,
-    );
-    target.join("debug")
-}
-
-/// Builds both binaries once per test process and returns their directory.
-fn built_bin_dir() -> &'static PathBuf {
-    static DIR: OnceLock<PathBuf> = OnceLock::new();
-    DIR.get_or_init(|| {
-        let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
-        let status = Command::new(cargo)
-            .args([
-                "build",
-                "-q",
-                "--locked",
-                "-p",
-                "stigmerd",
-                "-p",
-                "stigmer-cli",
-            ])
-            .status()
-            .expect("run cargo build");
-        assert!(status.success(), "cargo build failed");
-        bin_dir()
-    })
-}
-
-fn bin(name: &str) -> PathBuf {
-    let file = if cfg!(windows) {
-        format!("{name}.exe")
-    } else {
-        name.to_owned()
-    };
-    built_bin_dir().join(file)
 }
 
 struct Server {
@@ -141,10 +105,9 @@ fn stigmer(server: &Server, who: &str, args: &[&str]) -> Command {
     let mut cmd = Command::new(bin("stigmer"));
     cmd.args(["--url", &server.url, "--as", who])
         .args(args)
-        .env_remove("STIGMER_AS")
-        .env_remove("STIGMER_URL")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    common::isolate(&mut cmd);
     cmd
 }
 

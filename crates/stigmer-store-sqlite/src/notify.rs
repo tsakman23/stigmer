@@ -3,9 +3,12 @@
 //! One `tokio::sync::watch` channel per board carries the highest committed head sequence this
 //! process has seen. Waiting spawns no task: the waiter holds a receiver and drops it with its
 //! future, so cancelling a wait leaks nothing.
+//!
+//! Entries exist only for live boards: callers check that a board exists (and, to subscribe, that
+//! it is not archived) before touching the notifier, and archiving a board drops its entry.
 
 use std::collections::HashMap;
-use std::sync::{Mutex, PoisonError};
+use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use stigmer_core::BoardId;
 use tokio::sync::watch;
@@ -35,9 +38,25 @@ impl Notifier {
         });
     }
 
-    fn with_sender<T>(&self, board: &BoardId, f: impl FnOnce(&watch::Sender<u64>) -> T) -> T {
+    /// Drops `board`'s entry; its open receivers see the channel close. Call when the board is
+    /// archived: its head can no longer move.
+    pub(crate) fn forget(&self, board: &BoardId) {
+        self.lock().remove(board.as_str());
+    }
+
+    /// Number of boards with an entry.
+    #[cfg(test)]
+    pub(crate) fn entry_count(&self) -> usize {
+        self.lock().len()
+    }
+
+    fn lock(&self) -> MutexGuard<'_, HashMap<String, watch::Sender<u64>>> {
         // The map stays consistent even if a holder panicked, so a poisoned lock is still usable.
-        let mut boards = self.boards.lock().unwrap_or_else(PoisonError::into_inner);
+        self.boards.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn with_sender<T>(&self, board: &BoardId, f: impl FnOnce(&watch::Sender<u64>) -> T) -> T {
+        let mut boards = self.lock();
         let sender = boards
             .entry(board.as_str().to_owned())
             .or_insert_with(|| watch::channel(0).0);
@@ -60,6 +79,20 @@ mod tests {
         assert_eq!(*rx.borrow(), 5, "a lower seq never moves the head back");
         assert!(rx.has_changed().unwrap());
         assert_eq!(*notifier.subscribe(&board).borrow(), 5);
+    }
+
+    #[test]
+    fn forget_drops_the_entry_and_closes_its_receivers() {
+        let notifier = Notifier::default();
+        let other = BoardId::new("other").unwrap();
+        let rx = notifier.subscribe(&BoardId::main());
+        let _other_rx = notifier.subscribe(&other);
+        assert_eq!(notifier.entry_count(), 2);
+        notifier.forget(&BoardId::main());
+        assert_eq!(notifier.entry_count(), 1);
+        assert!(rx.has_changed().is_err(), "the sender is gone");
+        notifier.forget(&BoardId::main());
+        assert_eq!(notifier.entry_count(), 1, "forgetting twice is harmless");
     }
 
     #[test]

@@ -1,0 +1,27 @@
+{
+  "name": "stigmer",
+  "version": "0.1.0-alpha.0",
+  "private": true,
+  "type": "module",
+  "description": "TypeScript client for a Stigmer board (alpha, not published).",
+  "engines": {
+    "node": ">=20"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/src/index.d.ts",
+      "default": "./dist/src/index.js"
+    }
+  },
+  "types": "./dist/src/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "test": "rm -rf dist && tsc && node --test --test-timeout=120000 dist/test/*.test.js",
+    "example": "tsc && node examples/two-agents.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "20.19.43",
+    "typescript": "6.0.3"
+  }
+}

@@ -1,7 +1,6 @@
 //! HTTP API tests against an in-memory SQLite store.
 
 use std::future::Future;
-use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -10,13 +9,15 @@ use axum::http::{Method, Request, StatusCode};
 use axum::Router;
 use http_body_util::BodyExt;
 use serde_json::{json, Value};
-use stigmer_api::require_loopback;
-use stigmer_api::{router, Action, AllowAll, Authorize, Denied};
+use stigmer_api::{router, Action, AllowAll, ApiConfig, Authenticated, Authorize, Denied, Scope};
 use stigmer_core::{
-    BoardId, ChannelPath, Cursor, Event, EventFilter, MessageId, NewMessage, Page, Posted,
-    Principal, Target, Thread, ThreadSummary,
+    BoardId, BoardInfo, ChannelPath, Cursor, Event, EventFilter, MessageId, NewMessage, Page,
+    Posted, Principal, PrincipalKind, Role, Target, Thread, ThreadSummary, TokenId,
 };
-use stigmer_store::{ChainReport, Store, StoreError};
+use stigmer_store::{
+    Adoption, ChainReport, Consumed, Credential, IdentityStore, Member, Mode, NewCredential,
+    NewInvite, NewJoinCredential, SecurityEvent, Store, StoreError,
+};
 use stigmer_store_sqlite::SqliteStore;
 use tokio::sync::watch;
 use tower::ServiceExt;
@@ -30,7 +31,7 @@ async fn harness() -> Harness {
     let store = Arc::new(SqliteStore::open_memory().await.unwrap());
     let (tx, rx) = watch::channel(false);
     Harness {
-        app: router(store, AllowAll, rx),
+        app: router(store, AllowAll, rx, ApiConfig::local()),
         shutdown: tx,
     }
 }
@@ -314,7 +315,7 @@ async fn readyz_is_200_when_the_store_answers() {
 struct DenyAll;
 
 impl Authorize for DenyAll {
-    fn check(&self, _: &Principal, _: Action, _: Option<&ChannelPath>) -> Result<(), Denied> {
+    async fn check(&self, _: &Authenticated, _: Action, _: &Scope<'_>) -> Result<(), Denied> {
         Err(Denied)
     }
 }
@@ -323,7 +324,7 @@ impl Authorize for DenyAll {
 async fn denied_authorizer_returns_403() {
     let store = Arc::new(SqliteStore::open_memory().await.unwrap());
     let (_tx, rx) = watch::channel(false);
-    let app = router(store, DenyAll, rx);
+    let app = router(store, DenyAll, rx, ApiConfig::local());
     let (status, body) = call_json(
         &app,
         post_req(Some("alice"), None, json!({"channel": "eng", "text": "x"})),
@@ -338,26 +339,6 @@ async fn denied_authorizer_returns_403() {
         let (status, body) = call_json(&app, get_req(uri)).await;
         assert_eq!(status, StatusCode::FORBIDDEN, "{uri}");
         assert_eq!(body["error"]["code"], "forbidden");
-    }
-}
-
-#[test]
-fn require_loopback_accepts_127_0_0_1_and_ipv6_loopback() {
-    for addr in ["127.0.0.1:7878", "127.8.9.10:1", "[::1]:7878"] {
-        let addr: SocketAddr = addr.parse().unwrap();
-        assert!(require_loopback(&addr).is_ok(), "{addr}");
-    }
-}
-
-#[test]
-fn require_loopback_rejects_0_0_0_0_and_192_168_1_5_with_message_naming_the_address() {
-    for raw in ["0.0.0.0:7878", "192.168.1.5:7878", "[::]:7878"] {
-        let addr: SocketAddr = raw.parse().unwrap();
-        let err = require_loopback(&addr).unwrap_err();
-        assert_eq!(
-            err.to_string(),
-            format!("refusing to bind {raw}: this board is loopback only")
-        );
     }
 }
 
@@ -682,6 +663,32 @@ struct RacingStore {
 }
 
 impl Store for RacingStore {
+    fn create_board(
+        &self,
+        id: &BoardId,
+        created_by: Option<&Principal>,
+    ) -> impl Future<Output = Result<BoardInfo, StoreError>> + Send {
+        self.inner.create_board(id, created_by)
+    }
+
+    fn get_board(
+        &self,
+        id: &BoardId,
+    ) -> impl Future<Output = Result<BoardInfo, StoreError>> + Send {
+        self.inner.get_board(id)
+    }
+
+    fn list_boards(&self) -> impl Future<Output = Result<Vec<BoardInfo>, StoreError>> + Send {
+        self.inner.list_boards()
+    }
+
+    fn archive_board(
+        &self,
+        id: &BoardId,
+    ) -> impl Future<Output = Result<BoardInfo, StoreError>> + Send {
+        self.inner.archive_board(id)
+    }
+
     fn post(&self, msg: NewMessage) -> impl Future<Output = Result<Posted, StoreError>> + Send {
         self.inner.post(msg)
     }
@@ -745,6 +752,166 @@ impl Store for RacingStore {
     }
 }
 
+// The router needs the identity half of the backend too; it is passed straight through.
+impl IdentityStore for RacingStore {
+    fn mode(&self) -> impl Future<Output = Result<Mode, StoreError>> + Send {
+        self.inner.mode()
+    }
+
+    fn enable_network_mode(&self) -> impl Future<Output = Result<(), StoreError>> + Send {
+        self.inner.enable_network_mode()
+    }
+
+    fn add_member(
+        &self,
+        board: &BoardId,
+        name: &Principal,
+        kind: PrincipalKind,
+        role: Role,
+        now_ms: i64,
+    ) -> impl Future<Output = Result<Member, StoreError>> + Send {
+        self.inner.add_member(board, name, kind, role, now_ms)
+    }
+
+    fn get_member(
+        &self,
+        board: &BoardId,
+        name: &Principal,
+    ) -> impl Future<Output = Result<Option<Member>, StoreError>> + Send {
+        self.inner.get_member(board, name)
+    }
+
+    fn list_members(
+        &self,
+        board: &BoardId,
+    ) -> impl Future<Output = Result<Vec<Member>, StoreError>> + Send {
+        self.inner.list_members(board)
+    }
+
+    fn remove_member(
+        &self,
+        board: &BoardId,
+        name: &Principal,
+        now_ms: i64,
+    ) -> impl Future<Output = Result<(), StoreError>> + Send {
+        self.inner.remove_member(board, name, now_ms)
+    }
+
+    fn list_local_authors(
+        &self,
+        board: &BoardId,
+    ) -> impl Future<Output = Result<Vec<Principal>, StoreError>> + Send {
+        self.inner.list_local_authors(board)
+    }
+
+    fn adopt_local_authors(
+        &self,
+        board: &BoardId,
+        adoptions: &[Adoption],
+        now_ms: i64,
+    ) -> impl Future<Output = Result<u64, StoreError>> + Send {
+        self.inner.adopt_local_authors(board, adoptions, now_ms)
+    }
+
+    fn create_credential(
+        &self,
+        credential: NewCredential,
+        now_ms: i64,
+    ) -> impl Future<Output = Result<(), StoreError>> + Send {
+        self.inner.create_credential(credential, now_ms)
+    }
+
+    fn find_credential(
+        &self,
+        id: &TokenId,
+    ) -> impl Future<Output = Result<Option<Credential>, StoreError>> + Send {
+        self.inner.find_credential(id)
+    }
+
+    fn touch_credential(
+        &self,
+        id: &TokenId,
+        now_ms: i64,
+    ) -> impl Future<Output = Result<(), StoreError>> + Send {
+        self.inner.touch_credential(id, now_ms)
+    }
+
+    fn list_credentials(
+        &self,
+        board: &BoardId,
+    ) -> impl Future<Output = Result<Vec<Credential>, StoreError>> + Send {
+        self.inner.list_credentials(board)
+    }
+
+    fn revoke_credential(
+        &self,
+        id: &TokenId,
+        now_ms: i64,
+    ) -> impl Future<Output = Result<(), StoreError>> + Send {
+        self.inner.revoke_credential(id, now_ms)
+    }
+
+    fn revoke_board_credentials(
+        &self,
+        board: &BoardId,
+        keep_admins: bool,
+        now_ms: i64,
+    ) -> impl Future<Output = Result<u64, StoreError>> + Send {
+        self.inner
+            .revoke_board_credentials(board, keep_admins, now_ms)
+    }
+
+    fn revoke_instance_credentials_except(
+        &self,
+        keep: &TokenId,
+        now_ms: i64,
+    ) -> impl Future<Output = Result<u64, StoreError>> + Send {
+        self.inner.revoke_instance_credentials_except(keep, now_ms)
+    }
+
+    fn replace_instance_credential(
+        &self,
+        credential: NewCredential,
+        now_ms: i64,
+    ) -> impl Future<Output = Result<u64, StoreError>> + Send {
+        self.inner.replace_instance_credential(credential, now_ms)
+    }
+
+    fn create_invite(
+        &self,
+        invite: NewInvite,
+        now_ms: i64,
+    ) -> impl Future<Output = Result<(), StoreError>> + Send {
+        self.inner.create_invite(invite, now_ms)
+    }
+
+    fn consume_invite(
+        &self,
+        id: &TokenId,
+        secret_hash: &[u8; 32],
+        name: &Principal,
+        now_ms: i64,
+        credential: NewJoinCredential,
+    ) -> impl Future<Output = Result<Consumed, StoreError>> + Send {
+        self.inner
+            .consume_invite(id, secret_hash, name, now_ms, credential)
+    }
+
+    fn log_security(
+        &self,
+        event: SecurityEvent,
+    ) -> impl Future<Output = Result<(), StoreError>> + Send {
+        self.inner.log_security(event)
+    }
+
+    fn security_log(
+        &self,
+        limit: u32,
+    ) -> impl Future<Output = Result<Vec<SecurityEvent>, StoreError>> + Send {
+        self.inner.security_log(limit)
+    }
+}
+
 /// A router over a board holding one `sales` post, whose first events scan races an `eng` post.
 async fn racing_app() -> Router {
     let message = |channel: &str, text: &str| {
@@ -767,7 +934,7 @@ async fn racing_app() -> Router {
         racer: Mutex::new(Some(message("eng", "signal"))),
     });
     let (_tx, rx) = watch::channel(false);
-    router(store, AllowAll, rx)
+    router(store, AllowAll, rx, ApiConfig::local())
 }
 
 #[tokio::test]

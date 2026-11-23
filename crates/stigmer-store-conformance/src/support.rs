@@ -9,7 +9,7 @@ use std::future::Future;
 use std::panic::Location;
 use std::time::Duration;
 
-use stigmer_core::{BoardId, ChannelPath, Label, MessageId, NewMessage, Principal, Target};
+use stigmer_core::{BoardId, ChannelPath, Label, MessageId, NewMessage, Page, Principal, Target};
 use stigmer_store::{ChainReport, Posted, Store};
 
 /// Panics with `message`, reported at the caller's line.
@@ -37,6 +37,11 @@ pub(crate) fn ok_from<T, E: Display>(
         Ok(value) => value,
         Err(e) => fail(format_args!("{context}: {e} (called at {caller})")),
     }
+}
+
+#[track_caller]
+pub(crate) fn board(raw: &str) -> BoardId {
+    ok(BoardId::new(raw), format_args!("test board {raw:?}"))
 }
 
 #[track_caller]
@@ -92,6 +97,52 @@ pub(crate) fn new_thread(channel_path: &str, author: &str, text: &str) -> NewMes
 pub(crate) fn reply(thread: &MessageId, author: &str, text: &str) -> NewMessage {
     message(
         BoardId::main(),
+        Target::Reply {
+            thread: thread.clone(),
+        },
+        author,
+        text,
+        vec![],
+    )
+}
+
+/// A first page of up to 50 threads.
+pub(crate) fn all_channels() -> Page {
+    Page {
+        limit: 50,
+        before: None,
+    }
+}
+
+/// A new thread on `board`.
+#[track_caller]
+pub(crate) fn new_thread_on(
+    board: &BoardId,
+    channel_path: &str,
+    author: &str,
+    text: &str,
+) -> NewMessage {
+    message(
+        board.clone(),
+        Target::NewThread {
+            channel: channel(channel_path),
+        },
+        author,
+        text,
+        vec![],
+    )
+}
+
+/// A reply on `board`.
+#[track_caller]
+pub(crate) fn reply_on(
+    board: &BoardId,
+    thread: &MessageId,
+    author: &str,
+    text: &str,
+) -> NewMessage {
+    message(
+        board.clone(),
         Target::Reply {
             thread: thread.clone(),
         },

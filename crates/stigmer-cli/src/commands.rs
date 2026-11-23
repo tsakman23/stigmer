@@ -9,61 +9,12 @@ use stigmer_core::{
 };
 
 use crate::client::Client;
+use crate::ctx::Ctx;
 use crate::exit::{too_long_hint, CliError, Exit};
-use crate::render::render_message;
+use crate::render::{render_message, render_preview};
 
 /// Characters of a thread's root text shown by `read`.
 const PREVIEW_CHARS: usize = 80;
-
-const AS_HINT: &str = "export STIGMER_AS=<name> or pass --as <name>";
-
-/// Global options every command sees.
-pub(crate) struct Ctx {
-    pub(crate) url: String,
-    pub(crate) who: Option<String>,
-    pub(crate) json: bool,
-}
-
-impl Ctx {
-    /// The identity a write needs: required, and validated before any request.
-    fn author(&self, verb: &str) -> Result<Principal, CliError> {
-        let raw = self
-            .who
-            .as_deref()
-            .ok_or_else(|| CliError::usage(format!("--as is required to {verb}"), AS_HINT))?;
-        principal(raw)
-    }
-
-    /// A client acting as `who`, or as the optional `--as` identity when `who` is None.
-    pub(crate) fn client(&self, who: Option<Principal>) -> Result<Client, CliError> {
-        let who = match who {
-            Some(who) => Some(who),
-            None => self.who.as_deref().map(principal).transpose()?,
-        };
-        Ok(Client::new(&self.url, who))
-    }
-
-    /// Prints `value` as one JSON object with every message marked untrusted, or
-    /// `text` otherwise.
-    pub(crate) fn emit<T: serde::Serialize>(&self, value: &T, text: &str) -> Result<(), CliError> {
-        if self.json {
-            let encode_failed = |e: serde_json::Error| {
-                CliError::new(
-                    Exit::Failure,
-                    "internal",
-                    format!("cannot encode output: {e}"),
-                    "report this as a bug",
-                )
-            };
-            let mut value = serde_json::to_value(value).map_err(encode_failed)?;
-            mark_untrusted(&mut value);
-            let json = serde_json::to_string(&value).map_err(encode_failed)?;
-            print_out(&format!("{json}\n"))
-        } else {
-            print_out(text)
-        }
-    }
-}
 
 /// Fields of the JSON outputs that hold one message (or thread summary) written by
 /// another party.
@@ -74,7 +25,7 @@ const MESSAGE_LIST_FIELDS: [&str; 3] = ["messages", "replies", "threads"];
 /// Adds `"untrusted": true` to every message object in a top-level JSON output
 /// (`Posted`, `Thread`, `ChannelsResponse`, and the wait and tail outputs), so a
 /// program reading `--json` sees that the text is data from another party.
-fn mark_untrusted(output: &mut serde_json::Value) {
+pub(crate) fn mark_untrusted(output: &mut serde_json::Value) {
     let Some(fields) = output.as_object_mut() else {
         return;
     };
@@ -121,7 +72,16 @@ pub(crate) fn parse_arg<T>(
     parse(raw).map_err(|e| CliError::invalid(&e, hint))
 }
 
-fn principal(raw: &str) -> Result<Principal, CliError> {
+/// Parses a board name.
+pub(crate) fn board_id(raw: &str) -> Result<BoardId, CliError> {
+    parse_arg(
+        raw,
+        BoardId::new,
+        "board names are 1 to 64 characters of [a-z0-9._-], not only dots",
+    )
+}
+
+pub(crate) fn principal(raw: &str) -> Result<Principal, CliError> {
     parse_arg(
         raw,
         Principal::new,
@@ -163,14 +123,19 @@ pub(crate) struct WriteArgs {
     pub(crate) key: Option<String>,
 }
 
-fn validate(target: Target, author: Principal, args: WriteArgs) -> Result<NewMessage, CliError> {
+fn validate(
+    board: BoardId,
+    target: Target,
+    author: Principal,
+    args: WriteArgs,
+) -> Result<NewMessage, CliError> {
     let labels = stigmer_core::parse_labels(&args.labels)
         .map_err(|e| CliError::invalid(&e, core_hint(&e)))?;
-    NewMessage::new(BoardId::main(), target, author, args.text, labels, args.key)
+    NewMessage::new(board, target, author, args.text, labels, args.key)
         .map_err(|e| CliError::invalid(&e, core_hint(&e)))
 }
 
-fn send(ctx: &Ctx, msg: NewMessage) -> Result<Posted, CliError> {
+fn send(client: &Client, msg: NewMessage) -> Result<Posted, CliError> {
     let (channel, thread) = match msg.target {
         Target::NewThread { channel } => (Some(channel), None),
         Target::Reply { thread } => (None, Some(thread)),
@@ -181,8 +146,13 @@ fn send(ctx: &Ctx, msg: NewMessage) -> Result<Posted, CliError> {
         text: msg.text,
         labels: msg.labels,
     };
-    ctx.client(Some(msg.author))?
+    client
         .post(&body, msg.idempotency_key.as_deref())
+        .map_err(|err| match err.code {
+            // A post conflicts only on its idempotency key.
+            "conflict" => err.with_next("retry with a different --key"),
+            _ => err,
+        })
 }
 
 fn report_posted(ctx: &Ctx, posted: &Posted, first: String) -> Result<Exit, CliError> {
@@ -196,11 +166,11 @@ fn report_posted(ctx: &Ctx, posted: &Posted, first: String) -> Result<Exit, CliE
 
 /// `post <channel> <text>`: starts a thread.
 pub(crate) fn post(ctx: &Ctx, channel_arg: &str, args: WriteArgs) -> Result<Exit, CliError> {
-    let author = ctx.author("post")?;
+    let (client, author) = ctx.writer("post")?;
     let target = Target::NewThread {
         channel: channel(channel_arg)?,
     };
-    let posted = send(ctx, validate(target, author, args)?)?;
+    let posted = send(&client, validate(ctx.board.clone(), target, author, args)?)?;
     let m = &posted.message;
     let first = format!("posted {} in {} as {}", m.id, m.channel, m.author);
     report_posted(ctx, &posted, first)
@@ -216,11 +186,11 @@ pub(crate) fn message_id(raw: &str) -> Result<MessageId, CliError> {
 
 /// `reply <thread> <text>`: answers in a thread.
 pub(crate) fn reply(ctx: &Ctx, thread_arg: &str, args: WriteArgs) -> Result<Exit, CliError> {
-    let author = ctx.author("reply")?;
+    let (client, author) = ctx.writer("reply")?;
     let target = Target::Reply {
         thread: message_id(thread_arg)?,
     };
-    let posted = send(ctx, validate(target, author, args)?)?;
+    let posted = send(&client, validate(ctx.board.clone(), target, author, args)?)?;
     let m = &posted.message;
     let first = format!(
         "replied {} in thread {} ({}) as {}",
@@ -229,14 +199,14 @@ pub(crate) fn reply(ctx: &Ctx, thread_arg: &str, args: WriteArgs) -> Result<Exit
     report_posted(ctx, &posted, first)
 }
 
-/// `read <channel-prefix>`: one line per thread.
+/// `read <channel-prefix>`: a summary line and a framed preview per thread.
 pub(crate) fn read(ctx: &Ctx, prefix_arg: &str) -> Result<Exit, CliError> {
     let prefix = channel(prefix_arg)?;
-    let listing = ctx.client(None)?.channels(&prefix)?;
+    let listing = ctx.client()?.channels(&prefix)?;
     let text = if listing.threads.is_empty() {
         format!("no threads in {prefix}\n")
     } else {
-        listing.threads.iter().map(summary_line).collect()
+        listing.threads.iter().map(summary_lines).collect()
     };
     ctx.emit(&listing, &text)?;
     Ok(Exit::Ok)
@@ -251,9 +221,9 @@ fn reply_count(n: u64) -> String {
     }
 }
 
-/// `<id>  <channel>  <n> replies  "<preview>"`; the preview is quoted and escaped so
-/// it stays on one line.
-fn summary_line(summary: &ThreadSummary) -> String {
+/// `<id>  <channel>  <n> replies`, then the preview (cut to `PREVIEW_CHARS`) framed as
+/// untrusted data.
+fn summary_lines(summary: &ThreadSummary) -> String {
     let replies = reply_count(u64::from(summary.reply_count));
     let mut preview: String = summary
         .root_text_preview
@@ -269,15 +239,17 @@ fn summary_line(summary: &ThreadSummary) -> String {
         preview.push('…');
     }
     format!(
-        "{}  {}  {replies}  {preview:?}\n",
-        summary.thread_id, summary.channel
+        "{}  {}  {replies}\n{}\n",
+        summary.thread_id,
+        summary.channel,
+        render_preview(&summary.thread_id, &preview)
     )
 }
 
 /// `thread <id>`: every message framed, oldest first.
 pub(crate) fn thread(ctx: &Ctx, id_arg: &str) -> Result<Exit, CliError> {
     let id = message_id(id_arg)?;
-    let thread = ctx.client(None)?.thread(&id)?;
+    let thread = ctx.client()?.thread(&id)?;
     let replies = u64::try_from(thread.replies.len()).unwrap_or(u64::MAX);
     let mut text = format!(
         "thread {} in {} ({})\n",

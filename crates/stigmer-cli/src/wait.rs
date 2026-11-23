@@ -5,13 +5,15 @@ use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use stigmer_core::{
-    parse_labels, Cursor, Event, EventFilter, Message, MessageId, Thread, MAX_WAIT_SECS,
+    parse_labels, BoardId, Cursor, Event, EventFilter, Message, MessageId, Thread, MAX_WAIT_SECS,
 };
 
 use crate::client::Client;
-use crate::commands::{channel, message_id, parse_arg, print_out, Ctx};
+use crate::commands::{channel, message_id, parse_arg, print_out};
+use crate::ctx::Ctx;
 use crate::exit::{CliError, Exit};
 use crate::render::render_message;
+use crate::retry::retrying;
 
 /// Filters and start position shared by `wait` and `tail`, as typed.
 pub(crate) struct FeedArgs {
@@ -128,7 +130,12 @@ pub(crate) fn parse_timeout(raw: &str) -> Result<Duration, String> {
 }
 
 /// The command that continues a wait from `after` with the same filters.
-fn resume_line(who: Option<&str>, after: Option<&Cursor>, filter: &EventFilter) -> String {
+fn resume_line(
+    who: Option<&str>,
+    board: &BoardId,
+    after: Option<&Cursor>,
+    filter: &EventFilter,
+) -> String {
     let mut flags: Vec<(&str, String)> = Vec::new();
     if let Some(after) = after {
         flags.push(("--after", after.to_string()));
@@ -145,6 +152,9 @@ fn resume_line(who: Option<&str>, after: Option<&Cursor>, filter: &EventFilter) 
     let mut line = String::from("stigmer");
     if let Some(who) = who {
         line.push_str(&format!(" --as {}", shell_word(who)));
+    }
+    if *board != BoardId::main() {
+        line.push_str(&format!(" --board {}", shell_word(board.as_str())));
     }
     line.push_str(" wait");
     for (name, value) in flags {
@@ -243,21 +253,26 @@ struct WaitOutput<'a> {
     cursor: Option<&'a Cursor>,
 }
 
-/// The error of a wait that saw no matching event within `timeout` (exit 3).
-pub(crate) fn timed_out(timeout: Duration, resume: String) -> CliError {
+/// The error of a wait that saw no matching event within `timeout` (exit 3); its JSON form
+/// carries the resume `cursor` (null when there is none).
+pub(crate) fn timed_out(timeout: Duration, resume: String, cursor: Option<&Cursor>) -> CliError {
+    let cursor = cursor.map_or(serde_json::Value::Null, |c| {
+        serde_json::Value::String(c.to_string())
+    });
     CliError::new(
         Exit::Timeout,
         "timeout",
         format!("no matching events within {}s", timeout.as_secs()),
         resume,
     )
+    .with_field("cursor", cursor)
 }
 
 /// `wait`: blocks until matching events arrive (exit 0) or `timeout` passes (exit 3).
 pub(crate) fn wait(ctx: &Ctx, args: FeedArgs, timeout: Duration) -> Result<Exit, CliError> {
     let (filter, start) = args.parse()?;
     let mut feed = Feed {
-        client: ctx.client(None)?,
+        client: ctx.client()?,
         filter,
         start,
         threads: HashMap::new(),
@@ -265,7 +280,12 @@ pub(crate) fn wait(ctx: &Ctx, args: FeedArgs, timeout: Duration) -> Result<Exit,
     // A timeout too large to add to the clock waits until killed.
     let deadline = Instant::now().checked_add(timeout);
     let events = feed.next_batch(deadline)?;
-    let resume = resume_line(ctx.who.as_deref(), feed.start.after(), &feed.filter);
+    let resume = resume_line(
+        ctx.who.as_deref(),
+        &ctx.board,
+        feed.start.after(),
+        &feed.filter,
+    );
     let mut tail = String::new();
     if let Some(cursor) = feed.start.after() {
         tail.push_str(&format!("cursor: {cursor}\n"));
@@ -276,7 +296,7 @@ pub(crate) fn wait(ctx: &Ctx, args: FeedArgs, timeout: Duration) -> Result<Exit,
         if !ctx.json {
             print_out(&tail)?;
         }
-        return Err(timed_out(timeout, resume));
+        return Err(timed_out(timeout, resume, feed.start.after()));
     }
     let messages = events
         .iter()
@@ -308,16 +328,17 @@ struct TailItem<'a> {
 pub(crate) fn tail(ctx: &Ctx, args: FeedArgs, timeout: Option<Duration>) -> Result<Exit, CliError> {
     let (filter, start) = args.parse()?;
     let mut feed = Feed {
-        client: ctx.client(None)?,
+        client: ctx.client()?,
         filter,
         start,
         threads: HashMap::new(),
     };
     let deadline = timeout.and_then(|timeout| Instant::now().checked_add(timeout));
-    loop {
-        let events = feed.next_batch(deadline)?;
+    'feed: while let Some(events) = retrying(deadline, || feed.next_batch(deadline))? {
         for event in &events {
-            let message = feed.message(event)?;
+            let Some(message) = retrying(deadline, || feed.message(event))? else {
+                break 'feed;
+            };
             let item = TailItem {
                 event,
                 message: &message,
@@ -421,14 +442,19 @@ mod tests {
         };
         let cursor = Cursor::from_seq(7);
         assert_eq!(
-            resume_line(Some("bob"), Some(&cursor), &filter),
+            resume_line(Some("bob"), &BoardId::main(), Some(&cursor), &filter),
             format!(
                 "stigmer --as bob wait --after {cursor} --channel eng --label 'note=it'\\''s on'"
             )
         );
         assert_eq!(
-            resume_line(None, None, &EventFilter::default()),
+            resume_line(None, &BoardId::main(), None, &EventFilter::default()),
             "stigmer wait"
+        );
+        let ops = BoardId::new("ops").unwrap();
+        assert_eq!(
+            resume_line(None, &ops, None, &EventFilter::default()),
+            "stigmer --board ops wait"
         );
     }
 }

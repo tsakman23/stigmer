@@ -1,10 +1,11 @@
 //! The error type every handler returns, rendered as the shared `ErrorBody` JSON.
 
-use axum::http::StatusCode;
+use axum::http::header::{RETRY_AFTER, WWW_AUTHENTICATE};
+use axum::http::{HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use stigmer_core::{CoreError, ErrorBody, ErrorCode, ErrorDetail};
-use stigmer_store::StoreError;
+use stigmer_store::{ConflictKind, StoreError};
 
 use crate::authz::Denied;
 
@@ -12,6 +13,8 @@ use crate::authz::Denied;
 pub(crate) struct ApiError {
     code: ErrorCode,
     message: String,
+    /// Seconds for the `Retry-After` header of a 429.
+    retry_after: Option<u64>,
 }
 
 impl ApiError {
@@ -19,6 +22,7 @@ impl ApiError {
         Self {
             code,
             message: message.into(),
+            retry_after: None,
         }
     }
 
@@ -30,6 +34,32 @@ impl ApiError {
         Self::new(ErrorCode::NotFound, message)
     }
 
+    /// A failure of ours that the client cannot act on.
+    pub(crate) fn internal() -> Self {
+        Self::new(ErrorCode::Internal, "internal error")
+    }
+
+    /// The one answer to every failed authentication, whatever the reason.
+    pub(crate) fn unauthorized() -> Self {
+        Self::new(ErrorCode::Unauthorized, "invalid or expired credentials")
+    }
+
+    /// The request body stalled past the body read timeout.
+    pub(crate) fn request_timeout() -> Self {
+        Self::new(
+            ErrorCode::RequestTimeout,
+            "request body not received in time",
+        )
+    }
+
+    /// Too many requests from this client; it may retry after `retry_after` seconds.
+    pub(crate) fn rate_limited(retry_after: u64) -> Self {
+        Self {
+            retry_after: Some(retry_after),
+            ..Self::new(ErrorCode::RateLimited, "too many requests; retry later")
+        }
+    }
+
     fn status(&self) -> StatusCode {
         match self.code {
             ErrorCode::InvalidInput | ErrorCode::InvalidCursor => StatusCode::BAD_REQUEST,
@@ -38,7 +68,12 @@ impl ApiError {
             ErrorCode::MethodNotAllowed => StatusCode::METHOD_NOT_ALLOWED,
             ErrorCode::Conflict => StatusCode::CONFLICT,
             ErrorCode::Forbidden => StatusCode::FORBIDDEN,
-            ErrorCode::Internal => StatusCode::INTERNAL_SERVER_ERROR,
+            ErrorCode::Unauthorized => StatusCode::UNAUTHORIZED,
+            ErrorCode::RateLimited => StatusCode::TOO_MANY_REQUESTS,
+            ErrorCode::BoardArchived => StatusCode::CONFLICT,
+            ErrorCode::RequestTimeout => StatusCode::REQUEST_TIMEOUT,
+            // Servers never send Unknown; if one ever reaches here it is a bug.
+            ErrorCode::Internal | ErrorCode::Unknown => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
 }
@@ -57,6 +92,12 @@ impl From<StoreError> for ApiError {
         match err {
             StoreError::NotFound { .. } => Self::not_found(err.to_string()),
             StoreError::InvalidCursor => Self::new(ErrorCode::InvalidCursor, err.to_string()),
+            StoreError::Conflict(ConflictKind::BoardArchived) => {
+                Self::new(ErrorCode::BoardArchived, err.to_string())
+            }
+            StoreError::Conflict(kind @ ConflictKind::BoardProtected) => {
+                Self::new(ErrorCode::Conflict, kind.to_string())
+            }
             StoreError::Conflict(_) => Self::new(ErrorCode::Conflict, err.to_string()),
             // Backend text may carry SQL or file paths; never send it to a client.
             StoreError::Backend(_) => Self::new(ErrorCode::Internal, "internal error"),
@@ -75,10 +116,19 @@ impl IntoResponse for ApiError {
         let status = self.status();
         let body = ErrorBody {
             error: ErrorDetail {
+                raw_code: None,
                 code: self.code,
                 message: self.message,
             },
         };
-        (status, Json(body)).into_response()
+        let mut response = (status, Json(body)).into_response();
+        let headers = response.headers_mut();
+        if let Some(secs) = self.retry_after {
+            headers.insert(RETRY_AFTER, HeaderValue::from(secs));
+        }
+        if status == StatusCode::UNAUTHORIZED {
+            headers.insert(WWW_AUTHENTICATE, HeaderValue::from_static("Bearer"));
+        }
+        response
     }
 }

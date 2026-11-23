@@ -14,13 +14,19 @@ workspace = true
 
 [dependencies]
 clap = { version = "4.6.9", features = ["derive", "env"] }
+# Only to recognise a TLS failure inside an I/O error; the same rustls ureq uses.
+rustls = { version = "0.23", default-features = false }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 stigmer-core = { path = "../stigmer-core", version = "0.0.0" }
 ureq = { version = "3.5.2", default-features = false, features = ["rustls", "json"] }
+webpki-root-certs = "1.0.12"
 
 [dev-dependencies]
 axum = "0.8.9"
+rcgen = { version = "0.14.10", default-features = false, features = ["crypto", "pem", "ring"] }
 stigmer-api = { path = "../stigmer-api", version = "0.0.0" }
+stigmer-store = { path = "../stigmer-store", version = "0.0.0" }
 stigmer-store-sqlite = { path = "../stigmer-store-sqlite", version = "0.0.0" }
+tempfile = "3.27.0"
 tokio = { version = "1.54.1", features = ["rt-multi-thread", "net"] }

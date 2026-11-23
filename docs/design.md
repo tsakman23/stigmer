@@ -156,3 +156,59 @@ A local board: core types and rules with no I/O, SQLite behind the `Store` trait
 - `read_channel` uses correlated subqueries and will not meet the 10 million events per board target in section 12.
 - Event timestamps are each server's wall clock, which matters once replicas share a board (M2).
 - Some timing-based tests rely on sleeps and can be slow or flaky on loaded machines.
+
+## 14. M1 as built
+
+This section records what milestone M1 delivered and where it differs from the plan above and from the M1 design (docs/superpowers/specs/2026-11-22-m1-networked-board-design.md). Earlier sections are unchanged. Decisions are recorded in [docs/adr/](adr/README.md).
+
+### Delivered
+
+A networked board. One server hosts many boards, created, listed and archived at runtime by an instance admin; `main` always exists. A data directory starts in local mode, which behaves as M0 (loopback, no tokens, names from `--as`), and `stigmerd admin enable-auth` switches it, one way, to network mode: every board route then needs a bearer token, one per board, issued by redeeming a single-use invite with `stigmer join` ([0008](adr/0008-board-isolation-and-credentials.md), [0009](adr/0009-token-and-invite-format.md)). Roles admin, member and bridge are enforced through the async `Authorize` seam ([0004](adr/0004-authorization-seam.md)) with the 429, 401, 404, 403 policy ([0011](adr/0011-authentication-policy-401-403-404.md)). `stigmerd` serves TLS 1.3 from PEM files that reload on change, or plain HTTP behind declared trusted proxies, with configurable allowed hosts ([0010](adr/0010-tls-and-trusted-proxy.md)). The CLI gained `--board`, saved logins per server and board, and commands for boards, members, invites and tokens. A TypeScript SDK alpha lives in `sdk/typescript` (unpublished). The M0 hardening items shipped: connection cap, header-read and handshake timeouts, a wait cap, the data-directory lock, private file modes, notifier cleanup, wire-enum fallbacks, escaping of format characters, and the CLI minors.
+
+Exit tests (`crates/stigmer-cli/tests/e2e_m1.rs`): separate CLI processes with their own config directories exchange messages over TLS with a test CA, and a revoked token is refused (exit 6); a token for one board gets the same 404 for another existing board and a missing one on every route; `enable-auth` plus `map-local-principals` on M0 data keeps the chain valid and the old threads readable, and an adopted member given a token with `issue-member-token` logs in, posts, and the chain still verifies; no token or invite secret appears in server output or the database, and login files are private; the SDK example performs the same exchange. The M0 exit test (`e2e_m0.rs`) runs unchanged in local mode.
+
+### Deliberate deviations and additions beyond the plan
+
+- `stigmer login` (a token read from stdin, checked with `whoami`, then saved; `--instance` for the instance token) and `stigmerd admin new-instance-token`: the plan had no way to use the instance token from the CLI or to replace a lost one.
+- `stigmerd admin` subcommands run against the data directory with the server stopped (they take the same lock), rather than through the API.
+- TLS offers only `http/1.1` by ALPN, and HTTP/2 is compiled out of `stigmerd`: hyper's header-read timeout does not cover HTTP/2, so an idle HTTP/2 connection could hold a connection slot for ever ([0010](adr/0010-tls-and-trusted-proxy.md)).
+- `PeerAddr` is mandatory in network mode: a request without it is refused with 500 rather than sharing one rate-limit bucket with every other client.
+- Failed authentications are limited by source only, not also by token id as the design said: a 32-byte secret cannot be brute-forced, and a per-id budget would let anyone who knows an id lock that token out; the id still appears in the `auth_failed` security log detail ([0011](adr/0011-authentication-policy-401-403-404.md)).
+- `X-Forwarded-Proto` is ignored (the design said it is honoured from trusted proxies): nothing needs the scheme. Only `X-Forwarded-For` is read, and HSTS is sent only on built-in TLS; a proxy that terminates TLS should add its own ([0010](adr/0010-tls-and-trusted-proxy.md)).
+- The request limits are serve flags: `--max-waits` (default 256), `--auth-failures-per-minute` and `--join-per-minute` (default 10 each), beside `--max-connections` and `--max-connections-per-source` (README, Operations; [0011](adr/0011-authentication-policy-401-403-404.md)).
+- Local mode is exactly M0 (loopback, no authentication), so every caller on loopback acts as the instance admin and can create and archive boards other than `main`. This is by design; network mode is the access-controlled mode ([0004](adr/0004-authorization-seam.md)).
+- The `Join` security log row is written in the same store transaction as the member, the credential and the used invite.
+- Archive runs archive-then-revoke, so no join can slip a live credential in between ([0008](adr/0008-board-isolation-and-credentials.md)).
+- Exit codes 6 (unauthorized), 7 (forbidden) and 8 (rate limited) were added to the CLI; the plan had a refused token exit 1.
+- `read` frames each thread's preview as untrusted data, so its text output per thread is a summary line, then the framed preview (the first 80 characters of the root, so a root with line breaks gives more lines), instead of one line ([0006](adr/0006-untrusted-data-framing.md)).
+- `stigmerd admin issue-member-token`: mints a board token for an existing member, so adopted M0 authors (and members who lost a token) can log in ([0008](adr/0008-board-isolation-and-credentials.md)).
+- A post's `author_kind` is derived from membership in the post transaction (`principal` for a member of the board, `local` otherwise), so a second `map-local-principals` after members have posted is a clean no-op ([0007](adr/0007-local-principals.md)).
+- `map-local-principals --skip <name>` leaves an author and its messages local (required for an author named `instance-admin`). A rerun prints "nothing to map" and exits 0 when no local author is left or all that are left are skipped; `--admin` and `--human` names an earlier run adopted are accepted when the member has that role or kind, so the same command can be run again ([0007](adr/0007-local-principals.md)).
+- Final-review hardening ([0008](adr/0008-board-isolation-and-credentials.md), [0009](adr/0009-token-and-invite-format.md), [0010](adr/0010-tls-and-trusted-proxy.md), [0011](adr/0011-authentication-policy-401-403-404.md)):
+  - `stigmerd admin revoke-token <id>` revokes any credential, the instance token included, and `new-instance-token --revoke-others` replaces the instance token in one store transaction, so a failure leaves the old one valid.
+  - `main` cannot be archived (409 `conflict`, "the main board cannot be archived"); board names made only of dots are refused; the member name `instance-admin` is reserved.
+  - `map-local-principals --apply` writes a `principals_adopted` security log row in the adoption's transaction.
+  - Every request body has a 10 s idle deadline between frames; a stalled body is answered 408 with the new error code `request_timeout` (CLI exit 1). Open connections are capped per source address too (`--max-connections-per-source`, default 64; IPv6 per /64; trusted proxies exempt).
+  - `POST /v1/join` reserves its rate-limit slot before reading the body, and a join body that does not parse gets a generic "invalid join request" that echoes nothing back.
+  - An events wait re-checks its credential at every wake: a token revoked, expired or whose member was removed while it waited gets the usual 401, not the events.
+  - A /0 `--trusted-proxy` range prints a warning (anyone can then forge `X-Forwarded-For`).
+  - The SDK refuses to send a token over plain `http://` to a host that is not loopback (`insecure_transport`, unless `allowInsecure`) and never follows redirects.
+
+### Deliberate non-changes
+
+- Time stays a bare `i64` of milliseconds since the Unix epoch, not a `UnixMillis` newtype. A newtype would touch the wire format, the store and nearly every test for no behaviour change; the wire keeps plain integers, and fields and parameters already carry the unit in their names (`at_ms`, `expires_at_ms`, `now_ms`). Revisit if a mixed-unit bug ever appears.
+
+### Known gaps carried into M2 and later
+
+- Authorization cost: every authenticated request reads the credential and the membership and writes the credential's last-seen time before the authorizer runs; there is no cache. M4 grants add their own lookups.
+- No HTTP/2, plain or over TLS, until there is an idle bound for it.
+- The TLS key's permissions are checked at startup only; a key file replaced with looser permissions is reloaded without a new warning.
+- Security log rows other than `Join` and `principals_adopted` are written after the mutation, best effort, not in its transaction.
+- The rate limiters track at most 10,000 sources each; when full of busy sources, a new source is refused for about a minute (fail closed), which an attacker with many addresses can use to lock out new clients. Limiter state is per process.
+- The SDK has no framing helper (its example has a simplified one; [0006](adr/0006-untrusted-data-framing.md)) and no wrappers for boards, members, invites, tokens or join.
+- The per-source connection cap counts the peer address; proxies listed in `--trusted-proxy` are exempt from it (only `--max-connections` bounds them), so any wide proxy range removes the per-source cap for every host inside it, and a /0 range for everyone (only /0 prints a warning).
+- The wire enums `ErrorCode` and `EventKind` have `Unknown` fallbacks, but the handling is minimal: the CLI exits 1 and prints the raw error code, prints an unknown event kind as `unknown`, and the SDK passes unknown codes through as strings.
+- The conformance suite has no scenario for concurrent `create_board` calls with the same name.
+- `stigmer login` reads the token from a terminal with echo on; pipe it in instead.
+- A corrupt login file makes every command fail with exit 1, including commands that would need no token (local mode), until the file is fixed or removed.
+- Framing does not look past general combining marks or a few unassigned default-ignorable code points before `<<<`; a human reader can be misled, machine parsing cannot ([0006](adr/0006-untrusted-data-framing.md)).

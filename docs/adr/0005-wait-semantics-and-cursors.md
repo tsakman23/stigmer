@@ -1,6 +1,6 @@
 # 0005. Wait semantics and cursors
 
-Status: Accepted
+Status: Accepted, amended
 Date: 2026-11-21
 
 ## Context
@@ -36,6 +36,17 @@ or below it was scanned and none matched; an event committed later has a higher 
 and is seen by the next pass or by the request that resumes. The CLI prints that cursor and a
 `resume:` command, and exits 3 on timeout.
 
+**Archived boards (M1).** An archived board takes no new events, but its log stays readable:
+`events_after`, `head`, `wait_past` and the events route keep working for whoever may still
+read it (its board admins; [0008](0008-board-isolation-and-credentials.md)). A wait on an
+archived board simply times out with the head as its cursor, since the head can no longer move
+(the SQLite notifier drops the board's entry when it is archived).
+
+**Retries.** `tail` retries only transient failures to reach the server (a connection refused,
+reset or failed, a host not found or unreachable, a request that timed out), with backoff doubling from 1 s to 30 s and one stderr line per
+retry, resuming from its last cursor. Every other error, such as a certificate error, a
+malformed URL, 401, 403, 404 or 429, ends it with the matching exit code. `wait` does not retry.
+
 **Strict parameters.** Unknown query parameters on the events and channels routes are rejected
 with 400, so a misspelt `after` or `from_now` fails loudly instead of silently replaying
 history.
@@ -54,3 +65,9 @@ history.
 - Rejecting unknown parameters means a client that sends an extra parameter, even a harmless
   one, breaks when talking to this server. Adding a new parameter is a compatible change only
   for clients that opt in.
+
+## Amendments
+
+v0.1.0 shipped this ADR unamended. The M1 changes below are recorded as amendments because v0.2.0 is the next release; after v0.2.0 ships, this ADR is frozen and a change needs a new ADR that supersedes it.
+
+- 2026-11-22: an archived board's log stays readable and a wait on it times out at the head; `tail` retries transient connection failures with backoff (1 s to 30 s), `wait` does not.
