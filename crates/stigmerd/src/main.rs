@@ -87,6 +87,7 @@ struct ServeArgs {
 }
 
 /// Why the server stopped without a clean shutdown; carries the process exit code.
+/// Stringly typed on purpose: a binary only prints these, so a typed error per cause adds nothing.
 pub enum Failure {
     /// The requested configuration is invalid.
     Config(String),
