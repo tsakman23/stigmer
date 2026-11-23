@@ -1,6 +1,6 @@
 # 0010. TLS and trusted proxies
 
-Status: Accepted; amended 2026-11-22 for M1 (HTTP/2 compiled out, PeerAddr, proxies, connection and body limits)
+Status: Accepted, amended
 Date: 2026-11-22
 
 ## Context
@@ -89,8 +89,12 @@ rate limiting needs the real peer address of every connection.
   every address in a listed range, so any wide range (not only /0) removes the per-source cap for
   every host inside it: list the proxies' own addresses or the narrowest range that holds them.
 
-Amended 2026-11-22 (M1, Task 10): HTTP/2 compiled out; `PeerAddr`, accept-error, hidden-flag
-and `X-Forwarded-For` rules recorded.
+## Amendments
 
-Amended 2026-11-22 (M1 final review): per-source connection cap, request body idle deadline
-(408 `request_timeout`), and the warning for a /0 trusted proxy range.
+First ships in v0.2.0, so it was amended in place during M1; after v0.2.0 ships it is frozen.
+
+- 2026-11-22: numbered 0010 (written as 0008); the `PeerAddr` rule spelled out (outermost layer, warned once), accept-error warnings, HTTP/2 compiled out, the hidden test flags, the key-permission warning and the `X-Forwarded-For` walk recorded.
+- 2026-11-22: HSTS is on every response the router produces over TLS, not on the 400 and 431 hyper writes itself.
+- 2026-11-22 (M1 final review): per-source connection cap, request body idle deadline (408 `request_timeout`) and the /0 trusted-proxy warning.
+- 2026-11-22: peers in `--trusted-proxy` ranges are exempt from the per-source connection cap.
+- 2026-11-23: `X-Forwarded-Proto` is intentionally ignored and HSTS is sent only on built-in TLS; any wide trusted-proxy range, not only /0, removes the per-source cap for the hosts inside it.

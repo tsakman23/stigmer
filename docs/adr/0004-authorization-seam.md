@@ -1,6 +1,6 @@
 # 0004. Authorization seam
 
-Status: Accepted; amended 2026-11-22 for M1 (async check, roles)
+Status: Accepted, amended
 Date: 2026-11-21
 
 ## Context
@@ -63,5 +63,9 @@ events through a thread filter.
 - The API tests use a deny-all test double to check that routes refuse, and a matrix test pins
   `RoleAuthorize`. M4 must replace the matrix with grant scenarios.
 
-Amended 2026-11-22 (M1): the M0 trait was synchronous, `check(&self, who: &Principal, action,
-channel: Option<&ChannelPath>)` with `Action` `Read` or `Post` and only `AllowAll`.
+## Amendments
+
+v0.1.0 shipped this ADR unamended. The M1 changes below are recorded as amendments because v0.2.0 is the next release; after v0.2.0 ships, this ADR is frozen and a change needs a new ADR that supersedes it.
+
+- 2026-11-22: `check` became async and takes `Authenticated` and a `Scope`; `Action` gained `ManageMembers` and `ManageBoards`; `RoleAuthorize` and its matrix were added for network mode, and M0's thread-lookup ordering question was settled. M0 had a synchronous `check(&self, who: &Principal, action, channel: Option<&ChannelPath>)`, `Action` `Read` or `Post`, and only `AllowAll`.
+- 2026-11-23: a consequence states that every local-mode caller acts as the instance admin, by design.

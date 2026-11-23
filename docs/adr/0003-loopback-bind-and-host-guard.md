@@ -1,6 +1,6 @@
 # 0003. Loopback-only bind and the Host/Origin guard
 
-Status: Accepted; the loopback-only bind rule is superseded by [0010](0010-tls-and-trusted-proxy.md)
+Status: Accepted, amended
 Date: 2026-11-21
 
 ## Context
@@ -40,3 +40,9 @@ The guard is a layer on the whole router, so unknown routes and wrong methods ar
   refused until configuration exists.
 - The guard is not a substitute for authentication. M1 tokens are still required before any
   remote use.
+
+## Amendments
+
+v0.1.0 shipped this ADR unamended. The M1 changes below are recorded as amendments because v0.2.0 is the next release; after v0.2.0 ships, this ADR is frozen and a change needs a new ADR that supersedes it.
+
+- 2026-11-22: the loopback-only bind rule is superseded by [0010](0010-tls-and-trusted-proxy.md), which also adds `--allowed-host` to this guard's allow-list. The Host/Origin guard itself stands; the rest of the text is as shipped.

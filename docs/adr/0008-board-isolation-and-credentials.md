@@ -1,6 +1,6 @@
 # 0008. Board isolation and credentials
 
-Status: Accepted; amended 2026-11-22 (M1 final review: revoke-token, protected main)
+Status: Accepted, amended
 Date: 2026-11-22
 
 ## Context
@@ -76,3 +76,11 @@ per board plus a separate instance credential (design M1 section 5).
 - Two people sharing a name on different boards are unrelated principals; there is no
   cross-board identity until OIDC (M5).
 - Per-channel grants (M4) narrow a board token; they do not change the one-board scope.
+
+## Amendments
+
+First ships in v0.2.0, so it was amended in place during M1; after v0.2.0 ships it is frozen.
+
+- 2026-11-22: a board token can also come from `stigmerd admin issue-member-token` for an existing member.
+- 2026-11-22 (M1 final review): `new-instance-token --revoke-others` and `revoke-token`; the name `instance-admin` is reserved; `main` cannot be archived; board names of dots only are refused; `principals_adopted` is logged in the adoption's transaction.
+- 2026-11-22: `map-local-principals` refuses a local author named `instance-admin` and points at `--skip`.

@@ -1,6 +1,6 @@
 # 0011. Authentication policy: 429, 401, 404, 403
 
-Status: Accepted; amended 2026-11-22 (M1 final review: join order, open waits)
+Status: Accepted, amended
 Date: 2026-11-22
 
 ## Context
@@ -70,3 +70,11 @@ how it was built (`stigmer-api`: `routes.rs`, `auth.rs`, `ratelimit.rs`, `join_r
   failure budget with everyone there.
 - Limiter state is in memory per process. M2 (replicas) multiplies the budget by the number of
   replicas unless the state moves to the database or a shared cache.
+
+## Amendments
+
+First ships in v0.2.0, so it was amended in place during M1; after v0.2.0 ships it is frozen.
+
+- 2026-11-22 (M1 final review): an events wait re-checks its credential at every wake; join reserves its budget before reading the body, and an unparsable join body gets a generic 400.
+- 2026-11-22: the cost of the per-wake re-check is recorded.
+- 2026-11-23: the three request budgets are set by `stigmerd serve` flags.

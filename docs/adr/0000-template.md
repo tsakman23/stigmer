@@ -1,6 +1,6 @@
 # NNNN. Title
 
-Status: Proposed | Accepted | Superseded by NNNN
+Status: Proposed | Accepted | Accepted, amended | Superseded by NNNN
 Date: YYYY-MM-DD
 
 ## Context
@@ -14,3 +14,7 @@ What was chosen, stated plainly.
 ## Consequences
 
 What this makes easier, what it costs, and what a later milestone must change.
+
+## Amendments
+
+Only for an ADR amended before the release that first ships it (see the [README](README.md)): one line per change, with its date, what changed and why. Delete this section otherwise.

@@ -1,6 +1,6 @@
 # 0007. Local principals
 
-Status: Accepted; the M1 mapping command is implemented (`stigmerd admin map-local-principals`)
+Status: Accepted, amended
 Date: 2026-11-21
 
 ## Context
@@ -64,3 +64,11 @@ is still not on the wire.
   format.
 - Idempotency keys are unique per board and author name, so they inherit the same self-declared
   identity.
+
+## Amendments
+
+v0.1.0 shipped this ADR unamended. The M1 changes below are recorded as amendments because v0.2.0 is the next release; after v0.2.0 ships, this ADR is frozen and a change needs a new ADR that supersedes it.
+
+- 2026-11-22: the M1 mapping command `stigmerd admin map-local-principals` is recorded (dry run, `--human`, `--admin`, `--apply` in one transaction).
+- 2026-11-22: `post` derives `author_kind` from membership, so a rerun after members have posted is "nothing to map"; adopted members get tokens with `issue-member-token`.
+- 2026-11-23: `--skip` and the reserved name `instance-admin` are described, and a rerun with only skipped authors left is "nothing to map" with already adopted `--admin` and `--human` names accepted.

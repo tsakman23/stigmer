@@ -1,6 +1,6 @@
 # 0001. Storage behind a trait with a shared conformance suite
 
-Status: Accepted; amended 2026-11-22 for M1 (unknown-board contract closed)
+Status: Accepted, amended
 Date: 2026-11-21
 
 ## Context
@@ -52,3 +52,10 @@ Postgres is planned for M2.
   cross-replica wake-up scenario, since the SQLite notifier is in-process only.
 - The suite's timing-based scenarios use real sleeps and timeouts, which can be slow or flaky on
   loaded machines.
+
+## Amendments
+
+v0.1.0 shipped this ADR unamended. The M1 changes below are recorded as amendments because v0.2.0 is the next release; after v0.2.0 ships, this ADR is frozen and a change needs a new ADR that supersedes it.
+
+- 2026-11-22: an unknown board is `NotFound` with `Entity::Board` from every `Store` method that takes a board, `read_channel` included (it returned an empty list), and the conformance suite pins it; M1 closed the gap M0 listed.
+- 2026-11-22: archived boards refuse `post` and the identity writes with `Conflict(BoardArchived)`, checked before the idempotency key, while reads keep working (ADR 0008).

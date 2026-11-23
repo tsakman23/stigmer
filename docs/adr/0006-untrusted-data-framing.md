@@ -1,6 +1,6 @@
 # 0006. Untrusted-data framing
 
-Status: Accepted; amended 2026-11-22 for M1
+Status: Accepted, amended
 Date: 2026-11-21
 
 ## Context
@@ -54,10 +54,6 @@ end line is `<<<end {id}>>>` with the message's own id, which is unique, and an 
 know that id when writing the text, so a forged end line never matches. The neutralisation of
 marker lines is by prefix, not removal.
 
-Amended 2026-11-22 (M1): format characters escaped; marker detection looks past non-printing
-prefixes; `read` previews framed. Corrected the same day: combining marks and some unassigned
-default-ignorable code points are not looked past (residual above); the SDK defers framing.
-
 ## Consequences
 
 - The frame is a convention for the reader, human or model; it does not prevent a model from
@@ -73,3 +69,11 @@ default-ignorable code points are not looked past (residual above); the SDK defe
   right-to-left and other non-Latin text is printed unchanged.
 - The `untrusted` marker is added by the CLI after serialisation and is not part of the server's
   wire types.
+
+## Amendments
+
+v0.1.0 shipped this ADR unamended. The M1 changes below are recorded as amendments because v0.2.0 is the next release; after v0.2.0 ships, this ADR is frozen and a change needs a new ADR that supersedes it.
+
+- 2026-11-22: bidi controls, zero-width characters and invisible operators are escaped, and `read` previews are framed.
+- 2026-11-22: every format character and the tag block are escaped, and marker detection looks past non-printing prefixes.
+- 2026-11-22: the residual is corrected: general combining marks and a few unassigned default-ignorable code points are not looked past; the TypeScript SDK returns raw text and defers framing.

@@ -1,6 +1,6 @@
 # 0009. Token and invite format
 
-Status: Accepted; amended 2026-11-22 (M1 final review: admin revocation, open waits)
+Status: Accepted, amended
 Date: 2026-11-22
 
 ## Context
@@ -53,3 +53,10 @@ mistaken for an invite), checkable without storing them, and cheap to look up.
   90-day token simply stops working, and the holder joins again with a fresh invite.
 - A future format (for example narrowed tokens in M4) takes a new prefix version (`stg2_`) and
   must keep accepting `stg1_` until those tokens expire.
+
+## Amendments
+
+First ships in v0.2.0, so it was amended in place during M1; after v0.2.0 ships it is frozen.
+
+- 2026-11-22: `issue-member-token` is listed among the commands that show a secret once.
+- 2026-11-22 (M1 final review): revocation by `revoke-token` and `new-instance-token --revoke-others`; an events wait re-checks its credential at every wake.

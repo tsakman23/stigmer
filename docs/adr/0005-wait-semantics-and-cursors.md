@@ -1,6 +1,6 @@
 # 0005. Wait semantics and cursors
 
-Status: Accepted; amended 2026-11-22 for M1 (archived boards, tail retries)
+Status: Accepted, amended
 Date: 2026-11-21
 
 ## Context
@@ -65,3 +65,9 @@ history.
 - Rejecting unknown parameters means a client that sends an extra parameter, even a harmless
   one, breaks when talking to this server. Adding a new parameter is a compatible change only
   for clients that opt in.
+
+## Amendments
+
+v0.1.0 shipped this ADR unamended. The M1 changes below are recorded as amendments because v0.2.0 is the next release; after v0.2.0 ships, this ADR is frozen and a change needs a new ADR that supersedes it.
+
+- 2026-11-22: an archived board's log stays readable and a wait on it times out at the head; `tail` retries transient connection failures with backoff (1 s to 30 s), `wait` does not.
