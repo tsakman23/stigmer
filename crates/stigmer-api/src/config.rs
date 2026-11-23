@@ -2,7 +2,6 @@
 
 use std::fmt;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use stigmer_store::Mode;
 
@@ -53,7 +52,7 @@ impl ApiConfig {
             allowed_hosts: Vec::new(),
             trusted_proxies: Vec::new(),
             limits: Limits::default(),
-            clock: Arc::new(system_time_ms),
+            clock: Arc::new(stigmer_core::now_ms),
             warn: Arc::new(|line| eprintln!("stigmer: warning: {line}")),
         }
     }
@@ -68,12 +67,4 @@ impl fmt::Debug for ApiConfig {
             .field("limits", &self.limits)
             .finish_non_exhaustive()
     }
-}
-
-/// Milliseconds since the Unix epoch; 0 for a clock set before 1970, `i64::MAX` past year 292
-/// million.
-fn system_time_ms() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
 }

@@ -1,10 +1,10 @@
 //! Transport security: the roots https is verified against, and when a credential may go over
 //! plain HTTP.
 
-use std::net::IpAddr;
 use std::path::Path;
 use std::sync::Arc;
 
+use stigmer_core::is_loopback_host;
 use ureq::http::Uri;
 use ureq::tls::{parse_pem, Certificate, PemItem, RootCerts, TlsConfig};
 
@@ -78,16 +78,6 @@ pub(crate) fn check_credential_transport(url: &str, insecure: bool) -> Result<()
         format!("refusing to send a credential over plain http to {host}"),
         "use an https:// URL (or --insecure for a trusted network)",
     ))
-}
-
-/// `localhost`, 127.0.0.0/8 or ::1 (brackets allowed).
-fn is_loopback_host(host: &str) -> bool {
-    if host.eq_ignore_ascii_case("localhost") {
-        return true;
-    }
-    let bare = host.trim_start_matches('[').trim_end_matches(']');
-    bare.parse::<IpAddr>()
-        .is_ok_and(|ip| ip.to_canonical().is_loopback())
 }
 
 #[cfg(test)]

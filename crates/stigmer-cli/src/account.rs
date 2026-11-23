@@ -5,7 +5,8 @@ use std::io::{BufRead, IsTerminal};
 
 use serde::Serialize;
 use stigmer_core::{
-    parse_secret, BoardId, JoinRequest, JoinResponse, PrincipalKind, Role, SecretKind, WhoAmI,
+    now_ms, parse_secret, BoardId, JoinRequest, JoinResponse, PrincipalKind, Role, SecretKind,
+    WhoAmI, INVITE_PREFIX,
 };
 
 use crate::client::{Auth, Token};
@@ -26,14 +27,6 @@ fn logins(ctx: &Ctx) -> Result<Logins, CliError> {
         )
     })?;
     Logins::load(path)
-}
-
-/// Milliseconds since the Unix epoch.
-fn now_ms() -> i64 {
-    let since = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default();
-    i64::try_from(since.as_millis()).unwrap_or(i64::MAX)
 }
 
 #[derive(Serialize)]
@@ -60,7 +53,7 @@ pub(crate) fn join(ctx: &Ctx, invite: &str) -> Result<Exit, CliError> {
             Exit::Invalid,
             "invalid_input",
             "that is not a stigmer invite",
-            "pass the whole invite, which starts with stgi1_",
+            format!("pass the whole invite, which starts with {INVITE_PREFIX}"),
         ));
     }
     check_credential_transport(&ctx.url, ctx.insecure)?;

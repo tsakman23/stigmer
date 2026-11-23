@@ -46,6 +46,6 @@ Run `scripts/dev/tidy --apply` at the end of every task and at every milestone b
 - **Make invalid states unrepresentable.** Validate in constructors; domain types in `stigmer-core` cannot hold bad values.
 - **Boundaries with traits.** Storage sits behind `Store`; backends are tested by one shared conformance suite.
 - **Errors are values.** Library crates return typed errors (`thiserror`); only binaries print them.
-- **No I/O in `stigmer-core`.** Pure logic is unit-tested without a runtime.
+- **No I/O in `stigmer-core`.** Pure logic is unit-tested without a runtime. The only I/O in core is `stigmer_core::now_ms`; everything else takes time as a parameter.
 - **Decisions are written down.** Anything that changes the design goes in `docs/adr/NNNN-title.md` (context, decision, consequences) in the same branch that makes the change. See [docs/adr/](docs/adr/README.md) for the index and the template.
 - **Small public surface.** Items are private unless another crate needs them.

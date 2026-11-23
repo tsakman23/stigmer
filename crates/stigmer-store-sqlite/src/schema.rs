@@ -7,7 +7,7 @@ use rusqlite::{Connection, TransactionBehavior};
 use stigmer_core::{BoardId, GENESIS_HASH};
 use stigmer_store::StoreError;
 
-use crate::{backend, now_ms};
+use crate::backend;
 
 /// Ordered migration scripts, each applied in its own transaction.
 pub(crate) const MIGRATIONS: &[&str] = &[
@@ -142,7 +142,11 @@ pub(crate) fn migrate(conn: &mut Connection) -> Result<(), StoreError> {
     conn.execute(
         "INSERT OR IGNORE INTO boards (id, head_seq, head_hash, created_at_ms)
          VALUES (?1, 0, ?2, ?3)",
-        (BoardId::main().as_str(), GENESIS_HASH, now_ms()?),
+        (
+            BoardId::main().as_str(),
+            GENESIS_HASH,
+            stigmer_core::now_ms(),
+        ),
     )
     .map_err(backend)?;
     Ok(())

@@ -10,6 +10,7 @@ use std::path::PathBuf;
 use clap::{Args, Subcommand};
 use stigmer_core::{
     generate_secret, BoardId, NewSecret, Principal, PrincipalKind, Role, SecretKind, TokenId,
+    TOKEN_PREFIX,
 };
 use stigmer_store::{
     Adoption, ConflictKind, CredentialScope, IdentityStore, Mode, NewCredential, NewInvite,
@@ -18,7 +19,7 @@ use stigmer_store::{
 use stigmer_store_sqlite::SqliteStore;
 
 use crate::lock::DataDir;
-use crate::{now_ms, Failure};
+use crate::Failure;
 
 const DAY_MS: i64 = 86_400_000;
 const INSTANCE_ADMIN: &str = "instance-admin";
@@ -129,7 +130,7 @@ pub async fn run(command: AdminCommand) -> Result<(), Failure> {
     let store = SqliteStore::open(&db_path).await.map_err(|e| {
         Failure::Runtime(format!("cannot open database {}: {e}", db_path.display()))
     })?;
-    let now = now_ms();
+    let now = stigmer_core::now_ms();
     match command {
         AdminCommand::EnableAuth { no_main_invite, .. } => {
             let issued = enable_auth(&store, now, !no_main_invite).await?;
@@ -367,10 +368,9 @@ async fn revoke_token<S: IdentityStore>(
     raw_id: &str,
 ) -> Result<String, Failure> {
     let id = TokenId::new(raw_id).map_err(|_| {
-        Failure::Config(
-            "not a token id: pass the 16 hex characters after stg1_ (the value is not shown)"
-                .into(),
-        )
+        Failure::Config(format!(
+            "not a token id: pass the 16 hex characters after {TOKEN_PREFIX} (the value is not shown)"
+        ))
     })?;
     let unknown = || Failure::Config(format!("no token with id {id}"));
     let credential = store

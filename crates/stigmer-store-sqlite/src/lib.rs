@@ -16,7 +16,7 @@ use std::fmt::Display;
 use std::future::Future;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use rusqlite::Connection;
 use stigmer_core::{BoardId, ChannelPath, Cursor, Event, MessageId, NewMessage, Principal};
@@ -246,14 +246,6 @@ pub(crate) fn not_found(entity: Entity, id: impl Display) -> StoreError {
         entity,
         id: id.to_string(),
     }
-}
-
-/// Wall-clock time in milliseconds since the Unix epoch: the one clock for post and board times.
-pub(crate) fn now_ms() -> Result<i64, StoreError> {
-    let since_epoch = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(backend)?;
-    i64::try_from(since_epoch.as_millis()).map_err(backend)
 }
 
 /// Wraps a database or runtime failure as a backend error.

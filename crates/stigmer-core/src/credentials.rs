@@ -13,6 +13,11 @@ use sha2::{Digest, Sha256};
 
 use crate::CoreError;
 
+/// What every token starts with.
+pub const TOKEN_PREFIX: &str = "stg1_";
+/// What every invite starts with.
+pub const INVITE_PREFIX: &str = "stgi1_";
+
 const ID_BYTES: usize = 8;
 const SECRET_BYTES: usize = 32;
 const ID_CHARS: usize = ID_BYTES * 2;
@@ -64,8 +69,8 @@ pub enum SecretKind {
 impl SecretKind {
     fn prefix(self) -> &'static str {
         match self {
-            SecretKind::Token => "stg1_",
-            SecretKind::Invite => "stgi1_",
+            SecretKind::Token => TOKEN_PREFIX,
+            SecretKind::Invite => INVITE_PREFIX,
         }
     }
 }

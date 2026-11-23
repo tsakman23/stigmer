@@ -8,7 +8,7 @@ use stigmer_core::{
 use stigmer_store::{ChainReport, ConflictKind, Entity, Posted, StoreError};
 
 use crate::boards::writable_head;
-use crate::{backend, not_found, now_ms};
+use crate::{backend, not_found};
 
 /// `messages.author_kind` of a post whose author is not a member of the board: a self-declared
 /// local name, as every M0 post was (docs/design.md section 12, call 8; ADR 0007).
@@ -70,7 +70,7 @@ pub(crate) fn post(conn: &mut Connection, msg: NewMessage) -> Result<Posted, Sto
     let seq = head_seq
         .checked_add(1)
         .ok_or_else(|| StoreError::Backend("event sequence overflow".into()))?;
-    let at_ms = now_ms()?;
+    let at_ms = stigmer_core::now_ms();
     let hash = event_hash(
         &head_hash,
         seq,

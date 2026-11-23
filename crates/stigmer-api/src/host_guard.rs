@@ -27,10 +27,7 @@ impl AllowedHosts {
 
     /// Loopback, or exactly one of the allowed names in any case.
     fn admits(&self, host: &str) -> bool {
-        host == "127.0.0.1"
-            || host == "[::1]"
-            || host.eq_ignore_ascii_case("localhost")
-            || self.0.iter().any(|name| host.eq_ignore_ascii_case(name))
+        admits_loopback(host) || self.0.iter().any(|name| host.eq_ignore_ascii_case(name))
     }
 
     /// True when `authority` is an admitted host, optionally followed by `:port`. Anything
@@ -72,6 +69,15 @@ fn headers_name_allowed_hosts(allowed: &AllowedHosts, headers: &HeaderMap) -> bo
         Some(value) => value.to_str().is_ok_and(|v| allowed.admits_origin(v)),
     };
     host_ok && origin_ok
+}
+
+/// The loopback spellings the guard admits. `stigmer_core::is_loopback_host` decides what is
+/// loopback; the guard is narrower on purpose and admits only `localhost` and the two addresses
+/// a loopback-bound server listens on, so other 127.0.0.0/8 literals and IPv4-mapped forms such
+/// as `[::ffff:127.0.0.1]` stay refused, as they were in M0.
+fn admits_loopback(host: &str) -> bool {
+    stigmer_core::is_loopback_host(host)
+        && (host.eq_ignore_ascii_case("localhost") || host == "127.0.0.1" || host == "[::1]")
 }
 
 /// The host of `host[:port]` or `[v6][:port]`, or `None` when the port is malformed.

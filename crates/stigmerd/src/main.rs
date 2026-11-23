@@ -86,14 +86,6 @@ struct ServeArgs {
     tls_reload_interval_ms: u64,
 }
 
-/// Milliseconds since the Unix epoch; the only place this binary reads the clock.
-fn now_ms() -> i64 {
-    let since = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default();
-    i64::try_from(since.as_millis()).unwrap_or(i64::MAX)
-}
-
 /// Why the server stopped without a clean shutdown; carries the process exit code.
 pub enum Failure {
     /// The requested configuration is invalid.

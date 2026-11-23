@@ -4,7 +4,9 @@ use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior};
 use stigmer_core::{BoardId, BoardInfo, Principal, GENESIS_HASH};
 use stigmer_store::{ConflictKind, Entity, StoreError};
 
-use crate::{backend, not_found, now_ms};
+use stigmer_core::now_ms;
+
+use crate::{backend, not_found};
 
 const BOARD_COLUMNS: &str = "SELECT id, created_at_ms, created_by, archived_at_ms FROM boards";
 
@@ -22,7 +24,7 @@ pub(crate) fn create(
     }
     let info = BoardInfo {
         id: id.clone(),
-        created_at_ms: now_ms()?,
+        created_at_ms: now_ms(),
         created_by: created_by.cloned(),
         archived_at_ms: None,
     };
@@ -71,7 +73,7 @@ pub(crate) fn archive(conn: &mut Connection, id: &BoardId) -> Result<BoardInfo, 
         .map_err(backend)?;
     let mut info = require(&tx, id)?;
     if info.archived_at_ms.is_none() {
-        let at_ms = now_ms()?;
+        let at_ms = now_ms();
         tx.execute(
             "UPDATE boards SET archived_at_ms = ?1 WHERE id = ?2",
             (at_ms, id.as_str()),

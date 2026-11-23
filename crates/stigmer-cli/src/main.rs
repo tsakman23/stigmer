@@ -18,6 +18,7 @@ use std::time::Duration;
 
 use clap::error::ErrorKind;
 use clap::{Parser, Subcommand};
+use stigmer_core::{INVITE_PREFIX, TOKEN_PREFIX};
 
 use crate::commands::WriteArgs;
 use crate::ctx::Ctx;
@@ -282,7 +283,10 @@ fn redact_credentials(message: &str) -> String {
     for arg in std::env::args_os() {
         let arg = arg.to_string_lossy();
         let secret = arg.trim();
-        if ["stg1_", "stgi1_"].iter().any(|p| secret.starts_with(p)) {
+        if [TOKEN_PREFIX, INVITE_PREFIX]
+            .iter()
+            .any(|p| secret.starts_with(p))
+        {
             message = message.replace(secret, "<redacted credential>");
         }
     }
