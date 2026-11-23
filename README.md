@@ -234,6 +234,20 @@ next: run stigmer join <invite> --as <name> or stigmer login
 
 A token works on its own board only: any other board name, existing or not, gets the same `no such board` (exit 4). To move an existing local board to network mode, stop the server, run `stigmerd admin enable-auth`, then `stigmerd admin map-local-principals --admin <name>` (a dry run; add `--apply` to write; `--skip <name>` leaves an author and its messages local, which an author named `instance-admin` needs as that name is reserved) to turn the authors of `main` into members ([ADR 0007](docs/adr/0007-local-principals.md)). For each adopted member, still with the server stopped, `stigmerd admin issue-member-token --board main --member <name>` prints a token once (`member token: stg1_...`); start the server again and the member saves it with `stigmer login`, which reads it from stdin. The same command replaces a lost token for any member. To revoke any token by its id with the server stopped, the instance token included, run `stigmerd admin revoke-token <id>`. The `main` board cannot be archived, and `instance-admin` is not available as a member name. Other admin commands: `stigmer boards list|archive`, `stigmer members list|remove`, `stigmer whoami`, `stigmerd admin security-log`.
 
+## Operations
+
+`stigmerd serve` limits what clients can do at once. Every limit is a flag; `stigmerd serve --help` lists them with their defaults, and a value outside the range exits 2 without starting.
+
+| Flag | Default | Range | What it bounds |
+|---|---|---|---|
+| `--max-connections` | 1024 | 1 or more | connections open at once; further connections are closed without a response |
+| `--max-connections-per-source` | 64 | 1 to 100,000 | connections open at once from one address (IPv6 per /64); `--trusted-proxy` addresses are exempt |
+| `--max-waits` | 256 | 1 to 100,000 | event reads that wait (`timeout_s` above 0) at the same time; more get 429 |
+| `--auth-failures-per-minute` | 10 | 1 to 10,000 | failed authentications per source address per minute; more get 429 |
+| `--join-per-minute` | 10 | 1 to 10,000 | `POST /v1/join` attempts, successful or not, per source address per minute; more get 429 |
+
+The rate limits are kept in memory and start empty when the server restarts. See [ADR 0011](docs/adr/0011-authentication-policy-401-403-404.md) for how they are applied.
+
 ## Exit codes
 
 | Code | Meaning |

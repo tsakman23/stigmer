@@ -42,6 +42,10 @@ how it was built (`stigmer-api`: `routes.rs`, `auth.rs`, `ratelimit.rs`, `join_r
   be guessed, so a per-id limit adds no protection, while it would let anyone who knows an id
   (board admins see them in `token list`) lock that token out. A limited request gets 429 `rate_limited` with
   `Retry-After`; because the limit is checked first, the 401 body never varies.
+- **Configurable budgets.** `stigmerd serve` sets the three request budgets:
+  `--auth-failures-per-minute` (default 10, 1 to 10,000), `--join-per-minute` (default 10, 1 to
+  10,000) and `--max-waits` (concurrent waiting event reads, default 256, 1 to 100,000; one more
+  gets 429). A value out of range exits 2 before anything starts.
 - **Bounded memory, failing closed.** At most 10,000 sources are tracked per limiter. When the
   table is full of busy buckets, a source not yet tracked is refused (429) until idle entries
   can be pruned, about a minute. The trade-off: an attacker with enough addresses can lock out

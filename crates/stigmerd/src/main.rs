@@ -59,6 +59,18 @@ struct ServeArgs {
     /// exempt (only --max-connections bounds them).
     #[arg(long, default_value_t = 64, value_parser = clap::value_parser!(u32).range(1..=100_000))]
     max_connections_per_source: u32,
+    /// Most event reads that may wait (timeout_s > 0) at the same time; further waiting reads get
+    /// 429. Reads that do not wait are not counted.
+    #[arg(long, default_value_t = 256, value_parser = clap::value_parser!(u32).range(1..=100_000))]
+    max_waits: u32,
+    /// Failed authentications allowed per source address per minute; further requests from that
+    /// source get 429 until the budget refills.
+    #[arg(long, default_value_t = 10, value_parser = clap::value_parser!(u32).range(1..=10_000))]
+    auth_failures_per_minute: u32,
+    /// Join attempts (POST /v1/join, successful or not) allowed per source address per minute;
+    /// further attempts get 429.
+    #[arg(long, default_value_t = 10, value_parser = clap::value_parser!(u32).range(1..=10_000))]
+    join_per_minute: u32,
     /// How long a client may take to send its request headers, in ms (for tests).
     #[arg(long, default_value_t = 10_000, hide = true, value_parser = clap::value_parser!(u64).range(1..=60_000))]
     header_read_timeout_ms: u64,
@@ -120,6 +132,9 @@ async fn serve(args: ServeArgs) -> Result<(), Failure> {
         bind,
         max_connections,
         max_connections_per_source,
+        max_waits,
+        auth_failures_per_minute,
+        join_per_minute,
         header_read_timeout_ms,
         body_read_timeout_ms,
         tls_cert,
@@ -180,6 +195,10 @@ async fn serve(args: ServeArgs) -> Result<(), Failure> {
     };
     config.allowed_hosts = allowed_hosts;
     config.limits.body_read_timeout = Duration::from_millis(body_read_timeout_ms);
+    // u32 always fits a usize on the platforms Rust supports for this server.
+    config.limits.max_waits = usize::try_from(max_waits).unwrap_or(usize::MAX);
+    config.limits.auth_failures_per_minute = auth_failures_per_minute;
+    config.limits.join_per_minute = join_per_minute;
     config.trusted_proxies.clone_from(&trusted_proxies);
     let app = match mode {
         Mode::Local => router(store, AllowAll, shutdown_rx.clone(), config),
