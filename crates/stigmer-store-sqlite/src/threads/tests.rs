@@ -45,7 +45,7 @@ fn reply(board: &'static str, to: usize, text: &str, at_ms: i64) -> Post {
     }
 }
 
-/// Two boards, tied and backwards clocks, a long multi-byte root and a thread with no replies.
+/// Three boards (one archived once its messages are in), tied and backwards clocks, a long multi-byte root and a thread with no replies.
 fn history() -> Vec<Post> {
     vec![
         post("main", "eng", &"\u{e9}".repeat(250), 1_000),
@@ -57,6 +57,8 @@ fn history() -> Vec<Post> {
         reply("other", 3, "answer on other", 1_300),
         reply("main", 0, "latest", 1_500),
         reply("main", 0, "earlier than the one before", 1_400),
+        post("old", "eng", "on a board archived later", 1_600),
+        reply("old", 9, "last word before the archive", 1_700),
     ]
 }
 
@@ -144,13 +146,22 @@ fn write_history(conn: &Connection, posts: &[Post], ids: &[MessageId], summaries
 }
 
 fn add_boards(conn: &Connection) {
-    for board in ["main", "other"] {
+    for board in ["main", "other", "old"] {
         conn.execute(
             "INSERT INTO boards (id, head_seq, head_hash) VALUES (?1, 0, ?2)",
             (board, GENESIS_HASH),
         )
         .unwrap();
     }
+}
+
+/// Archives board `old`, after its messages were written (a post cannot reach it once archived).
+fn archive_old(conn: &Connection) {
+    conn.execute(
+        "UPDATE boards SET archived_at_ms = 2000 WHERE id = 'old'",
+        [],
+    )
+    .unwrap();
 }
 
 fn summaries(conn: &Connection) -> Vec<Row> {
@@ -197,6 +208,7 @@ async fn v7_database_backfills_threads_and_matches_the_new_write_path() {
         conn.pragma_update(None, "user_version", 7).unwrap();
         add_boards(&conn);
         write_history(&conn, &posts, &ids, false);
+        archive_old(&conn);
     }
     let store = SqliteStore::open(&path).await.unwrap();
     let upgraded = summaries(&Connection::open(&path).unwrap());
@@ -208,10 +220,26 @@ async fn v7_database_backfills_threads_and_matches_the_new_write_path() {
     }
     add_boards(&fresh);
     write_history(&fresh, &posts, &ids, true);
+    archive_old(&fresh);
     let replayed = summaries(&fresh);
 
     assert_eq!(upgraded, replayed);
-    assert_eq!(upgraded.len(), 4, "one row per thread root");
+    assert_eq!(upgraded.len(), 5, "one row per thread root");
+    let archived = upgraded
+        .iter()
+        .find(|row| row.1 == ids[9].as_str())
+        .unwrap();
+    assert_eq!(
+        (
+            archived.0.as_str(),
+            archived.4,
+            archived.5,
+            archived.6,
+            archived.7
+        ),
+        ("old", 1, 1, 2, 1_700),
+        "an archived board's threads are backfilled too"
+    );
     let first = upgraded
         .iter()
         .find(|row| row.1 == ids[0].as_str())
