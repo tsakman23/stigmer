@@ -6,6 +6,7 @@ mod boards;
 mod credentials;
 mod events;
 mod identity;
+mod invites;
 mod members;
 mod notify;
 mod posts;

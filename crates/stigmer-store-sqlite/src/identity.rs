@@ -11,7 +11,7 @@ use stigmer_store::{
     NewInvite, NewJoinCredential, SecurityEvent, StoreError,
 };
 
-use crate::{boards, credentials, members, SqliteStore};
+use crate::{boards, credentials, invites, members, SqliteStore};
 
 impl IdentityStore for SqliteStore {
     fn mode(&self) -> impl Future<Output = Result<Mode, StoreError>> + Send {
@@ -180,7 +180,7 @@ impl IdentityStore for SqliteStore {
         invite: NewInvite,
         audit: SecurityEvent,
     ) -> impl Future<Output = Result<(), StoreError>> + Send {
-        self.run(move |conn| credentials::create_invite(conn, invite, &audit))
+        self.run(move |conn| invites::create_invite(conn, invite, &audit))
     }
 
     fn consume_invite(
@@ -193,7 +193,7 @@ impl IdentityStore for SqliteStore {
     ) -> impl Future<Output = Result<Consumed, StoreError>> + Send {
         let (id, secret_hash, name) = (id.clone(), *secret_hash, name.clone());
         self.run(move |conn| {
-            credentials::consume_invite(conn, &id, &secret_hash, &name, now_ms, credential)
+            invites::consume_invite(conn, &id, &secret_hash, &name, now_ms, credential)
         })
     }
 

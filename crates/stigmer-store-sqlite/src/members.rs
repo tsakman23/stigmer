@@ -8,7 +8,8 @@ use stigmer_store::{
 };
 
 use crate::boards::{require, require_writable};
-use crate::credentials::{insert_credential, insert_invite, log_in_tx, require_instance_scope};
+use crate::credentials::{insert_credential, log_in_tx, require_instance_scope};
+use crate::invites::insert_invite;
 use crate::posts::{LOCAL_AUTHOR_KIND, PRINCIPAL_AUTHOR_KIND};
 use crate::{backend, not_found};
 
