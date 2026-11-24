@@ -9,14 +9,15 @@ use std::future::Future;
 use stigmer_core::{hash_secret, BoardId, PrincipalKind, Role, TokenId};
 use stigmer_store::{
     ConflictKind, CredentialScope, Entity, IdentityStore, Member, Mode, NewCredential, NewInvite,
-    NewJoinCredential, SecurityEvent, SecurityEventKind, Store, StoreError,
+    NewJoinCredential, Store, StoreError,
 };
 
 use crate::support::{board, ok, principal};
 use crate::support::{invite_created, member_removed, mode_enabled, token_issued};
 use crate::{
-    identity_adoption, identity_archive, identity_audit, identity_credentials, identity_invites,
-    identity_join, identity_members,
+    identity_adoption, identity_archive, identity_audit, identity_audit_failures,
+    identity_credentials, identity_enable, identity_invites, identity_join, identity_log,
+    identity_members,
 };
 
 pub(crate) use crate::support::NOW;
@@ -79,13 +80,13 @@ where
     identity_archive::consume_invite_for_archived_board_is_the_generic_not_found(factory().await)
         .await;
     identity_archive::remove_member_and_revoke_still_work_on_archived_board(factory().await).await;
-    security_log_newest_first_and_limited(factory().await).await;
-    no_secret_material_in_security_log_rows(factory().await).await;
+    identity_log::security_log_newest_first_and_limited(factory().await).await;
+    identity_log::no_secret_material_in_security_log_rows(factory().await).await;
     identity_audit::create_board_writes_exactly_one_board_created_row(factory().await).await;
     identity_audit::duplicate_create_board_writes_no_row(factory().await).await;
     identity_audit::archive_board_writes_one_row_and_a_second_archive_writes_none(factory().await)
         .await;
-    identity_audit::archive_board_revoking_archives_revokes_non_admin_credentials_and_keeps_admins_in_one_transaction(
+    identity_archive::archive_board_revoking_archives_revokes_non_admin_credentials_and_keeps_admins_in_one_transaction(
         factory().await,
     )
     .await;
@@ -98,12 +99,12 @@ where
     .await;
     identity_audit::enable_network_mode_writes_one_row_and_a_second_call_none(factory().await)
         .await;
-    identity_audit::failed_mutations_write_no_rows(factory().await).await;
-    identity_audit::enable_network_writes_its_rows_in_order(factory().await).await;
-    identity_audit::enable_network_without_invite_writes_two_rows(factory().await).await;
-    identity_audit::enable_network_twice_is_already_network_and_writes_nothing(factory().await)
+    identity_audit_failures::failed_mutations_write_no_rows(factory().await).await;
+    identity_enable::enable_network_writes_its_rows_in_order(factory().await).await;
+    identity_enable::enable_network_without_invite_writes_two_rows(factory().await).await;
+    identity_enable::enable_network_twice_is_already_network_and_writes_nothing(factory().await)
         .await;
-    identity_audit::enable_network_is_atomic_all_or_nothing(factory().await).await;
+    identity_enable::enable_network_is_atomic_all_or_nothing(factory().await).await;
 }
 
 /// The token id `n` as 16 hex chars.
@@ -252,172 +253,5 @@ async fn identity_methods_on_unknown_board_are_not_found<S: Store + IdentityStor
         store.find_credential(&token_id(1)).await,
         Ok(None),
         "{SCENARIO}: nothing was stored"
-    );
-}
-
-fn event(
-    at_ms: i64,
-    kind: SecurityEventKind,
-    on: Option<BoardId>,
-    who: Option<&str>,
-) -> SecurityEvent {
-    SecurityEvent {
-        at_ms,
-        kind,
-        board: on,
-        principal: who.map(str::to_owned),
-        detail: format!("{kind} at {at_ms}"),
-    }
-}
-
-async fn security_log_newest_first_and_limited<S: IdentityStore>(store: S) {
-    const SCENARIO: &str = "security_log_newest_first_and_limited";
-    let events = vec![
-        event(NOW, SecurityEventKind::ModeEnabled, None, None),
-        event(
-            NOW + 1,
-            SecurityEventKind::BoardCreated,
-            Some(board("research")),
-            Some("root"),
-        ),
-        event(
-            NOW + 2,
-            SecurityEventKind::Join,
-            Some(BoardId::main()),
-            Some("alice"),
-        ),
-        event(
-            NOW + 3,
-            SecurityEventKind::InviteCreated,
-            Some(BoardId::main()),
-            Some("root"),
-        ),
-        event(NOW + 3, SecurityEventKind::AuthFailed, None, None),
-        event(
-            NOW + 4,
-            SecurityEventKind::InstanceTokenIssued,
-            None,
-            Some("instance-admin"),
-        ),
-        event(
-            NOW + 4,
-            SecurityEventKind::MemberTokenIssued,
-            Some(BoardId::main()),
-            Some("instance-admin"),
-        ),
-        // Logged later but stamped earlier: the log keeps insertion order.
-        event(
-            NOW - 5,
-            SecurityEventKind::RateLimited,
-            None,
-            Some("unknown"),
-        ),
-    ];
-    for e in &events {
-        ok(
-            store.log_security(e.clone()).await,
-            format_args!("{SCENARIO}: log {}", e.kind),
-        );
-    }
-    let newest_first: Vec<_> = events.iter().rev().cloned().collect();
-    assert_eq!(
-        store.security_log(3).await,
-        Ok(newest_first[..3].to_vec()),
-        "{SCENARIO}: limit 3"
-    );
-    assert_eq!(
-        store.security_log(50).await,
-        Ok(newest_first),
-        "{SCENARIO}: all"
-    );
-    assert_eq!(
-        store.security_log(0).await,
-        Ok(vec![]),
-        "{SCENARIO}: limit 0"
-    );
-}
-
-async fn no_secret_material_in_security_log_rows<S: Store + IdentityStore>(store: S) {
-    const SCENARIO: &str = "no_secret_material_in_security_log_rows";
-    let main = BoardId::main();
-    let token = credential(1, CredentialScope::Board(main.clone()), "alice");
-    let into = invite(2, &main, Role::Member, PrincipalKind::Agent);
-    let (token_hash, invite_hash, wrong_hash, join_hash) = (
-        token.secret_hash,
-        into.secret_hash,
-        hash_of("wrong"),
-        join_credential(100).secret_hash,
-    );
-    ok(
-        store.create_credential(token, NOW, token_issued(NOW)).await,
-        SCENARIO,
-    );
-    ok(
-        store.create_invite(into, NOW, invite_created(NOW)).await,
-        SCENARIO,
-    );
-
-    let refused = store
-        .consume_invite(
-            &token_id(2),
-            &wrong_hash,
-            &principal("dave"),
-            NOW,
-            join_credential(100),
-        )
-        .await;
-    let joined = ok(
-        store
-            .consume_invite(
-                &token_id(2),
-                &invite_hash,
-                &principal("dave"),
-                NOW,
-                join_credential(100),
-            )
-            .await,
-        format_args!("{SCENARIO}: join"),
-    );
-    // What an API would log for these: ids and names, never secrets.
-    for e in [
-        event(NOW, SecurityEventKind::AuthFailed, Some(main.clone()), None),
-        SecurityEvent {
-            detail: format!("joined with invite {}", token_id(2)),
-            ..event(
-                NOW,
-                SecurityEventKind::Join,
-                Some(main.clone()),
-                Some("dave"),
-            )
-        },
-    ] {
-        ok(store.log_security(e).await, SCENARIO);
-    }
-    let found = ok(store.find_credential(&token_id(1)).await, SCENARIO);
-    let log = ok(store.security_log(50).await, SCENARIO);
-
-    let mut shown = vec![
-        format!("{refused:?}"),
-        format!("{joined:?}"),
-        format!("{found:?}"),
-    ];
-    if let Err(e) = &refused {
-        shown.push(e.to_string());
-    }
-    shown.extend(log.iter().map(|e| format!("{e:?}")));
-    for text in &shown {
-        for hash in [&token_hash, &invite_hash, &wrong_hash, &join_hash] {
-            assert!(
-                !text.contains(&hex(hash)) && !text.contains(&format!("{hash:?}")),
-                "{SCENARIO}: a secret hash leaked into {text}"
-            );
-        }
-    }
-    // The credential's and the invite's audit rows, the two rows given above, plus the join's
-    // own row from `consume_invite`.
-    assert_eq!(
-        log.len(),
-        5,
-        "{SCENARIO}: the store logs only what it is given and the join"
     );
 }

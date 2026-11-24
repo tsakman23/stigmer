@@ -10,7 +10,7 @@ use std::panic::Location;
 use std::time::Duration;
 
 use stigmer_core::{BoardId, ChannelPath, Label, MessageId, NewMessage, Page, Principal, Target};
-use stigmer_store::{ChainReport, Posted, SecurityEvent, SecurityEventKind, Store};
+use stigmer_store::{ChainReport, IdentityStore, Posted, SecurityEvent, SecurityEventKind, Store};
 
 /// The scenarios' fixed "now", in milliseconds since the Unix epoch.
 pub(crate) const NOW: i64 = 1_700_000_000_000;
@@ -248,4 +248,14 @@ pub(crate) fn valid_chain(checked: u64) -> ChainReport {
 /// Waits long enough that the next post gets a later millisecond timestamp.
 pub(crate) async fn tick() {
     tokio::time::sleep(Duration::from_millis(3)).await;
+}
+
+/// The whole security log, oldest first.
+pub(crate) async fn log_of<S: IdentityStore>(store: &S, scenario: &str) -> Vec<SecurityEvent> {
+    let mut rows = ok(
+        store.security_log(1_000).await,
+        format_args!("{scenario}: log"),
+    );
+    rows.reverse();
+    rows
 }
