@@ -7,6 +7,7 @@ use stigmer_core::{
 };
 use stigmer_store::{Entity, Posted, Store, StoreError};
 
+use crate::reads_threads::{list_all, model};
 use crate::support::{
     channel, label, message, new_thread, ok, post_ok, principal, reply, valid_chain, verify_main,
 };
@@ -228,4 +229,48 @@ pub(crate) async fn post_to_unknown_board_is_not_found<S: Store>(store: S) {
         valid_chain(0),
         "{SCENARIO}"
     );
+}
+
+pub(crate) async fn concurrent_posts_keep_summaries_equal_to_messages<S: Store>(store: S) {
+    const SCENARIO: &str = "concurrent_posts_keep_summaries_equal_to_messages";
+    const TASKS: usize = 20;
+    let mut roots = Vec::new();
+    for i in 0..5 {
+        let posted = post_ok(
+            &store,
+            new_thread("busy", "alice", &format!("root {i}")),
+            SCENARIO,
+        )
+        .await;
+        roots.push(posted.message.id);
+    }
+    let store = Arc::new(store);
+    let handles: Vec<_> = (0..TASKS)
+        .map(|i| {
+            let store = Arc::clone(&store);
+            let msg = if i % 4 == 0 {
+                new_thread("busy/new", "agent", &format!("thread {i}"))
+            } else {
+                reply(&roots[i % roots.len()], "agent", &format!("reply {i}"))
+            };
+            tokio::spawn(async move { store.post(msg).await })
+        })
+        .collect();
+    for handle in handles {
+        let joined = ok(handle.await, format_args!("{SCENARIO}: task failed"));
+        let posted = ok(joined, format_args!("{SCENARIO}: post failed"));
+        if posted.message.thread_id == posted.message.id {
+            roots.push(posted.message.id);
+        }
+    }
+
+    let listed = list_all(store.as_ref(), "busy", 50, SCENARIO).await;
+    assert_eq!(listed.len(), 10, "{SCENARIO}: 5 roots and 5 new threads");
+    assert_eq!(
+        listed,
+        model(store.as_ref(), &roots, SCENARIO).await,
+        "{SCENARIO}: every summary matches its thread"
+    );
+    let replies: u32 = listed.iter().map(|t| t.reply_count).sum();
+    assert_eq!(replies, 15, "{SCENARIO}: every reply counted once");
 }

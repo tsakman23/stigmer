@@ -153,7 +153,7 @@ A local board: core types and rules with no I/O, SQLite behind the `Store` trait
 - There is no lock file on the data directory, so two servers can open the same database.
 - The SQLite notifier keeps a map entry for every board name a wait asks about, including unknown boards.
 - The conformance suite has no unknown-board scenarios for `verify_chain`, `wait_past` and `read_channel`. `read_channel` on an unknown board returns an empty list rather than an error.
-- `read_channel` uses correlated subqueries and will not meet the 10 million events per board target in section 12.
+- `read_channel` uses correlated subqueries and will not meet the 10 million events per board target in section 12 (resolved in M2: maintained thread summaries, ADR 0015).
 - Event timestamps are each server's wall clock, which matters once replicas share a board (M2).
 - Some timing-based tests rely on sleeps and can be slow or flaky on loaded machines.
 

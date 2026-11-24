@@ -160,8 +160,10 @@ pub trait Store: Send + Sync + 'static {
         board: &BoardId,
     ) -> impl Future<Output = Result<ChainReport, StoreError>> + Send;
 
-    /// Lists the threads of every channel under `prefix` (whole path segments), newest activity
-    /// first. `page.before` is the thread id of the last item of the previous page.
+    /// Lists the threads of every channel under `prefix` (whole path segments), most recent
+    /// activity first: ordered by the sequence number of each thread's latest event, descending,
+    /// then by thread id, descending; never by wall-clock time (ADR 0015). `page.before` is the
+    /// thread id of the last item of the previous page. `limit` is clamped to 1..=200.
     ///
     /// An unknown board is `NotFound` with `Entity::Board`. A `page.before` that is not a thread
     /// root on the board is `NotFound` with `Entity::Thread`. Works on archived boards.

@@ -34,3 +34,4 @@ ADRs 0001 and 0003 to 0007 shipped in v0.1.0, before this rule existed, and were
 | [0010](0010-tls-and-trusted-proxy.md) | TLS and trusted proxies | Accepted, amended |
 | [0011](0011-authentication-policy-401-403-404.md) | Authentication policy: 429, 401, 404, 403 | Accepted, amended |
 | [0014](0014-audit-rows-in-the-mutation-transaction.md) | Audit rows in the mutation transaction | Accepted |
+| [0015](0015-thread-summaries-and-sequence-ordering.md) | Thread summaries and sequence ordering | Accepted |

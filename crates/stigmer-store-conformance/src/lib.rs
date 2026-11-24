@@ -25,6 +25,7 @@ mod identity_log;
 mod identity_members;
 mod posts;
 mod reads;
+mod reads_threads;
 mod support;
 mod wait;
 
@@ -47,6 +48,7 @@ where
     posts::reply_to_unknown_thread_is_not_found(factory().await).await;
     posts::reply_to_a_reply_is_not_found(factory().await).await;
     posts::post_to_unknown_board_is_not_found(factory().await).await;
+    posts::concurrent_posts_keep_summaries_equal_to_messages(factory().await).await;
     idempotency::same_key_same_author_returns_original_and_replayed_true(factory().await).await;
     idempotency::same_key_writes_exactly_one_event(factory().await).await;
     idempotency::same_key_different_author_is_a_new_message(factory().await).await;
@@ -57,6 +59,16 @@ where
     reads::read_channel_preview_is_200_chars_not_bytes(factory().await).await;
     reads::read_thread_returns_root_and_replies_in_order(factory().await).await;
     reads::read_thread_of_unknown_id_reply_or_other_board_is_not_found(factory().await).await;
+    reads_threads::read_channel_orders_by_last_event_sequence_not_wall_clock(factory().await).await;
+    reads_threads::reply_moves_its_thread_to_the_top_and_updates_count_and_preview_stays_the_root(
+        factory().await,
+    )
+    .await;
+    reads_threads::pagination_returns_every_thread_exactly_once_across_pages_with_tied_times(
+        factory().await,
+    )
+    .await;
+    reads_threads::summaries_are_consistent_after_random_operations(factory().await).await;
     events::head_is_none_on_an_empty_board_then_the_latest_cursor(factory().await).await;
     events::events_after_none_returns_from_start(factory().await).await;
     events::events_after_resumes_after_a_cursor_and_clamps_limit(factory().await).await;
