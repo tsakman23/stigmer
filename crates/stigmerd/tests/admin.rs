@@ -659,17 +659,20 @@ fn new_instance_token_revoke_others_leaves_only_the_new_token_valid() {
         "stderr: {}",
         stderr(&out)
     );
-    let newest_id = token_id_of(&newest);
     with_store(&data, |store| async move {
-        // One row, written in the replacing transaction, says what happened.
-        let log = store.security_log(1).await.expect("log");
-        assert_eq!(log[0].kind, SecurityEventKind::InstanceTokenIssued);
+        // Both rows come from the one replacing transaction: the store's count row after the
+        // command's own row for the new token.
+        let log = store.security_log(2).await.expect("log");
+        let kinds: Vec<_> = log.iter().map(|e| e.kind).collect();
         assert_eq!(
-            log[0].detail,
-            format!(
-                "credential {newest_id} expires in 90 days, every other instance credential revoked"
-            )
+            kinds,
+            [
+                SecurityEventKind::TokenRevoked,
+                SecurityEventKind::InstanceTokenIssued
+            ]
         );
+        assert_eq!(log[0].detail, "revoked 2 other instance credentials");
+        assert_eq!(log[0].principal.as_deref(), Some("instance-admin"));
     });
 
     let server = common::start(&data);

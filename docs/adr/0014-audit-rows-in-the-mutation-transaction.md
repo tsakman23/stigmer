@@ -55,8 +55,12 @@ logging of failed authentications and rate-limited requests stands as written.
   [0011](0011-authentication-policy-401-403-404.md) fixes and would let a log outage turn
   refusals into errors.
 - `SecurityEvent` details keep coming only from the typed constructors in `stigmer-api`
-  (`audit.rs`) and `stigmerd` (`admin`); the store never composes a detail except for the two
-  rows it already wrote itself (`Join`, `principals_adopted`).
+  (`audit.rs`) and `stigmerd` (`admin`). The store composes a detail of its own in three places
+  only: the two rows it already wrote itself (`Join`, `principals_adopted`) and one exception
+  added here: when `replace_instance_credential` revokes other instance credentials, it writes,
+  after the caller's row and in the same transaction, a `TokenRevoked` row (no board, the
+  caller's principal and time, detail "revoked N other instance credentials"). N is only known
+  inside the transaction, so the caller cannot build that row; when N is 0 there is no such row.
 
 ## Consequences
 
@@ -64,10 +68,8 @@ logging of failed authentications and rate-limited requests stands as written.
   which an archived board still had live member credentials is gone.
 - A security log that cannot be written now makes admin mutations fail (500) instead of
   succeeding silently; authentication and rate limiting are unaffected.
-- `new-instance-token --revoke-others` writes one `InstanceTokenIssued` row whose detail says the
-  other instance credentials were revoked, instead of a second `TokenRevoked` row with their
-  count: the count is only known inside the transaction, and the store does not write details of
-  its own. The command still prints the count.
+- `new-instance-token --revoke-others` keeps M1's two rows, `InstanceTokenIssued` for the new
+  token and `TokenRevoked` with the count, now both in the replacing transaction.
 - Every backend (the Postgres store of M2 included) must write these rows in its mutation
   transactions; the conformance suite checks one row per change, none for a repeat or a
   failure, and the all-or-nothing `enable_network`. SQLite's rollback on a failed row is

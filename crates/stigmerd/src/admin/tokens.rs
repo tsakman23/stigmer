@@ -84,8 +84,9 @@ pub(super) struct IssuedInstanceToken {
 }
 
 /// Stores a new instance credential and its security log row and, with `revoke_others`,
-/// revokes every other instance credential in the same store transaction, so a failure leaves
-/// the old tokens valid rather than no token at all.
+/// revokes every other instance credential in the same store transaction (the store then also
+/// records the count in a `TokenRevoked` row), so a failure leaves the old tokens valid rather
+/// than no token at all.
 pub(super) async fn issue_instance_token<S: IdentityStore>(
     store: &S,
     now: i64,
@@ -94,10 +95,8 @@ pub(super) async fn issue_instance_token<S: IdentityStore>(
 ) -> Result<IssuedInstanceToken, Failure> {
     let secret = new_secret(SecretKind::Token)?;
     let credential = instance_credential(&secret, now, days)?;
-    let mut row = token_issued(now, &secret.id, days);
+    let row = token_issued(now, &secret.id, days);
     let revoked = if revoke_others {
-        row.detail
-            .push_str(", every other instance credential revoked");
         let revoked = store
             .replace_instance_credential(credential, now, row)
             .await

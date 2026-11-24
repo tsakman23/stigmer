@@ -97,6 +97,14 @@ where
         factory().await,
     )
     .await;
+    identity_audit::replace_instance_credential_writes_a_token_revoked_row_with_the_count_when_it_revokes_others(
+        factory().await,
+    )
+    .await;
+    identity_audit::replace_instance_credential_writes_no_extra_row_when_nothing_is_revoked(
+        factory().await,
+    )
+    .await;
     identity_audit::enable_network_mode_writes_one_row_and_a_second_call_none(factory().await)
         .await;
     identity_audit_failures::failed_mutations_write_no_rows(factory().await).await;

@@ -183,8 +183,8 @@ pub(crate) fn revoke_instance_except(
     Ok(revoked)
 }
 
-/// Stores a new instance credential, revokes every other live one and writes the audit row, in
-/// one transaction.
+/// Stores a new instance credential, revokes every other live one and writes the audit row,
+/// plus a `TokenRevoked` row with the count when it revoked any, in one transaction.
 pub(crate) fn replace_instance(
     conn: &mut Connection,
     credential: NewCredential,
@@ -196,6 +196,18 @@ pub(crate) fn replace_instance(
     insert_credential(&tx, &credential, None, now_ms)?;
     let revoked = revoke_other_instance(&tx, &credential.id, now_ms)?;
     log_in_tx(&tx, audit)?;
+    if revoked > 0 {
+        log_in_tx(
+            &tx,
+            &SecurityEvent {
+                at_ms: audit.at_ms,
+                kind: SecurityEventKind::TokenRevoked,
+                board: None,
+                principal: audit.principal.clone(),
+                detail: format!("revoked {revoked} other instance credentials"),
+            },
+        )?;
+    }
     tx.commit().map_err(backend)?;
     Ok(revoked)
 }

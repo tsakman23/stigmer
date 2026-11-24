@@ -239,3 +239,39 @@ async fn a_failing_audit_write_rolls_back_every_audited_mutation() {
     assert!(!revoked(&store, 1).await, "the admin keeps hers");
     assert_eq!(count(&path, "security_log"), rows + 1);
 }
+
+/// `replace_instance_credential` writes two rows when it revokes others: the caller's and the
+/// store's count row. Refusing only the second still rolls back the first and the whole change.
+#[tokio::test]
+async fn a_failing_count_row_rolls_back_the_replacement_and_its_first_row() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("board.db");
+    let store = SqliteStore::open(&path).await.unwrap();
+    let old = credential(1, CredentialScope::Instance, "instance-admin");
+    let issued = audit(SecurityEventKind::InstanceTokenIssued);
+    store.create_credential(old, NOW, issued).await.unwrap();
+    let rows = count(&path, "security_log");
+    Connection::open(&path)
+        .unwrap()
+        .execute_batch(
+            "CREATE TRIGGER refuse_count_row BEFORE INSERT ON security_log
+             WHEN NEW.kind = 'token_revoked'
+             BEGIN SELECT RAISE(ABORT, 'injected audit failure'); END;",
+        )
+        .unwrap();
+
+    let replacement = credential(2, CredentialScope::Instance, "instance-admin");
+    is_backend(
+        store
+            .replace_instance_credential(
+                replacement,
+                NOW,
+                audit(SecurityEventKind::InstanceTokenIssued),
+            )
+            .await,
+        "replace_instance_credential",
+    );
+    assert_eq!(store.find_credential(&id(2)).await, Ok(None), "not stored");
+    assert!(!revoked(&store, 1).await, "old instance credential kept");
+    assert_eq!(count(&path, "security_log"), rows, "neither row written");
+}

@@ -417,8 +417,10 @@ pub trait IdentityStore: Send + Sync + 'static {
     ) -> impl Future<Output = Result<u64, StoreError>> + Send;
 
     /// In one transaction: stores `credential`, which must have the instance scope, revokes at
-    /// `now_ms` every other live instance credential and writes `audit`. Returns the number
-    /// revoked. Either all of it happens or none, so a failure leaves the old instance
+    /// `now_ms` every other live instance credential and writes `audit`. When it revoked any, it
+    /// also writes, after `audit`, a `SecurityEventKind::TokenRevoked` row of its own (no board,
+    /// `audit`'s principal and time, detail "revoked N other instance credentials"). Returns the
+    /// number revoked. Either all of it happens or none, so a failure leaves the old instance
     /// credentials valid. A board scope is refused with `StoreError::Backend` and stores
     /// nothing.
     fn replace_instance_credential(

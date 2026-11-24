@@ -2,7 +2,10 @@
 //! change, none for an idempotent repeat, none for a failure.
 
 use stigmer_core::{BoardId, PrincipalKind, Role};
-use stigmer_store::{ConflictKind, CredentialScope, Entity, IdentityStore, Store, StoreError};
+use stigmer_store::{
+    ConflictKind, CredentialScope, Entity, IdentityStore, SecurityEvent, SecurityEventKind, Store,
+    StoreError,
+};
 
 use crate::identity::{credential, invite, not_found, token_id, NOW};
 use crate::support::{
@@ -183,9 +186,13 @@ pub(crate) async fn create_invite_and_create_credential_and_replace_instance_cre
         store.create_credential(c, NOW + 1, rows[1].clone()).await,
         SCENARIO,
     );
-    let old = credential(3, CredentialScope::Instance, "instance-admin");
+    // A board credential: the replacement below has no other instance credential to revoke,
+    // so it writes only its own row (revoking ones are the next two scenarios).
+    let other = credential(3, CredentialScope::Board(main.clone()), "bob");
     ok(
-        store.create_credential(old, NOW + 2, rows[2].clone()).await,
+        store
+            .create_credential(other, NOW + 2, rows[2].clone())
+            .await,
         SCENARIO,
     );
     let new = credential(4, CredentialScope::Instance, "instance-admin");
@@ -193,10 +200,74 @@ pub(crate) async fn create_invite_and_create_credential_and_replace_instance_cre
         store
             .replace_instance_credential(new, NOW + 3, rows[3].clone())
             .await,
-        Ok(1),
+        Ok(0),
         "{SCENARIO}: replace"
     );
     assert_eq!(log_of(&store, SCENARIO).await, rows.to_vec(), "{SCENARIO}");
+}
+
+pub(crate) async fn replace_instance_credential_writes_a_token_revoked_row_with_the_count_when_it_revokes_others<
+    S: Store + IdentityStore,
+>(
+    store: S,
+) {
+    const SCENARIO: &str = "replace_instance_credential_writes_a_token_revoked_row_with_the_count_when_it_revokes_others";
+    for n in [1, 2] {
+        let old = credential(n, CredentialScope::Instance, "instance-admin");
+        ok(
+            store
+                .create_credential(old, NOW, instance_token_issued(NOW))
+                .await,
+            SCENARIO,
+        );
+    }
+    let before = log_of(&store, SCENARIO).await;
+    let issued = instance_token_issued(NOW + 1);
+    let new = credential(3, CredentialScope::Instance, "instance-admin");
+    assert_eq!(
+        store
+            .replace_instance_credential(new, NOW + 1, issued.clone())
+            .await,
+        Ok(2),
+        "{SCENARIO}: replace"
+    );
+    let revoked = SecurityEvent {
+        at_ms: issued.at_ms,
+        kind: SecurityEventKind::TokenRevoked,
+        board: None,
+        principal: issued.principal.clone(),
+        detail: "revoked 2 other instance credentials".to_owned(),
+    };
+    let mut expected = before;
+    expected.extend([issued, revoked]);
+    assert_eq!(
+        log_of(&store, SCENARIO).await,
+        expected,
+        "{SCENARIO}: the caller's row, then the store's count row"
+    );
+}
+
+pub(crate) async fn replace_instance_credential_writes_no_extra_row_when_nothing_is_revoked<
+    S: Store + IdentityStore,
+>(
+    store: S,
+) {
+    const SCENARIO: &str =
+        "replace_instance_credential_writes_no_extra_row_when_nothing_is_revoked";
+    let issued = instance_token_issued(NOW);
+    let new = credential(1, CredentialScope::Instance, "instance-admin");
+    assert_eq!(
+        store
+            .replace_instance_credential(new, NOW, issued.clone())
+            .await,
+        Ok(0),
+        "{SCENARIO}: replace"
+    );
+    assert_eq!(
+        log_of(&store, SCENARIO).await,
+        vec![issued],
+        "{SCENARIO}: only the caller's row"
+    );
 }
 
 pub(crate) async fn enable_network_mode_writes_one_row_and_a_second_call_none<
