@@ -3,8 +3,8 @@
 
 use stigmer_core::{BoardId, PrincipalKind, Role};
 use stigmer_store::{
-    ConflictKind, CredentialScope, EnableAudits, Entity, IdentityStore, Mode, SecurityEventKind,
-    Store, StoreError,
+    ConflictKind, CredentialScope, EnableAudits, Entity, IdentityStore, Mode, NewInvite,
+    SecurityEvent, SecurityEventKind, Store, StoreError,
 };
 
 use crate::identity::{credential, hash_of, invite, join_credential, not_found, token_id, NOW};
@@ -13,31 +13,31 @@ use crate::support::{
     principal,
 };
 
-/// The three rows `enable_network` is given, at `at_ms`, the invite's when `with_invite`.
-fn enable_audits(at_ms: i64, with_invite: bool) -> EnableAudits {
+/// The mode and token rows `enable_network` is given, at `at_ms`.
+fn enable_audits(at_ms: i64) -> EnableAudits {
     EnableAudits {
         mode: mode_enabled(at_ms),
         token: instance_token_issued(at_ms),
-        invite: with_invite.then(|| {
-            audit(
-                SecurityEventKind::InviteCreated,
-                Some(&BoardId::main()),
-                at_ms,
-            )
-        }),
     }
+}
+
+/// `into` with the `InviteCreated` row that comes with it, at `at_ms`.
+fn with_row(into: NewInvite, at_ms: i64) -> (NewInvite, SecurityEvent) {
+    let row = audit(SecurityEventKind::InviteCreated, Some(&into.board), at_ms);
+    (into, row)
 }
 
 pub(crate) async fn enable_network_writes_its_rows_in_order<S: Store + IdentityStore>(store: S) {
     const SCENARIO: &str = "enable_network_writes_its_rows_in_order";
-    let audits = enable_audits(NOW, true);
+    let audits = enable_audits(NOW);
     let main_invite = invite(2, &BoardId::main(), Role::Admin, PrincipalKind::Human);
     let main_hash = main_invite.secret_hash;
+    let (main_invite, invite_row) = with_row(main_invite, NOW);
     ok(
         store
             .enable_network(
                 credential(1, CredentialScope::Instance, "instance-admin"),
-                Some(main_invite),
+                Some((main_invite, invite_row.clone())),
                 audits.clone(),
             )
             .await,
@@ -50,8 +50,7 @@ pub(crate) async fn enable_network_writes_its_rows_in_order<S: Store + IdentityS
         Some(CredentialScope::Instance),
         "{SCENARIO}: the instance credential"
     );
-    let mut expected = vec![audits.mode, audits.token];
-    expected.extend(audits.invite);
+    let expected: Vec<_> = audits.rows(Some(&invite_row)).cloned().collect();
     assert_eq!(log_of(&store, SCENARIO).await, expected, "{SCENARIO}");
     // The invite was stored: it can be used.
     let joined = store
@@ -70,7 +69,7 @@ pub(crate) async fn enable_network_without_invite_writes_two_rows<S: Store + Ide
     store: S,
 ) {
     const SCENARIO: &str = "enable_network_without_invite_writes_two_rows";
-    let audits = enable_audits(NOW, false);
+    let audits = enable_audits(NOW);
     ok(
         store
             .enable_network(
@@ -100,7 +99,7 @@ pub(crate) async fn enable_network_twice_is_already_network_and_writes_nothing<
             .enable_network(
                 credential(1, CredentialScope::Instance, "instance-admin"),
                 None,
-                enable_audits(NOW, false),
+                enable_audits(NOW),
             )
             .await,
         SCENARIO,
@@ -110,13 +109,11 @@ pub(crate) async fn enable_network_twice_is_already_network_and_writes_nothing<
         store
             .enable_network(
                 credential(2, CredentialScope::Instance, "instance-admin"),
-                Some(invite(
-                    3,
-                    &BoardId::main(),
-                    Role::Admin,
-                    PrincipalKind::Human
+                Some(with_row(
+                    invite(3, &BoardId::main(), Role::Admin, PrincipalKind::Human),
+                    NOW + 1
                 )),
-                enable_audits(NOW + 1, true)
+                enable_audits(NOW + 1)
             )
             .await,
         Err(StoreError::Conflict(ConflictKind::AlreadyNetwork)),
@@ -178,10 +175,8 @@ pub(crate) async fn enable_network_is_atomic_all_or_nothing<S: Store + IdentityS
         ),
     ];
     for (what, c, into) in attempts {
-        let with_invite = into.is_some();
-        let result = store
-            .enable_network(c, into, enable_audits(NOW + 1, with_invite))
-            .await;
+        let into = into.map(|i| with_row(i, NOW + 1));
+        let result = store.enable_network(c, into, enable_audits(NOW + 1)).await;
         assert!(result.is_err(), "{SCENARIO}: {what} must fail");
         assert_eq!(
             store.mode().await,
@@ -206,58 +201,11 @@ pub(crate) async fn enable_network_is_atomic_all_or_nothing<S: Store + IdentityS
             .enable_network(
                 credential(1, CredentialScope::Instance, "instance-admin"),
                 None,
-                enable_audits(NOW + 2, false),
+                enable_audits(NOW + 2),
             )
             .await,
         format_args!("{SCENARIO}: retry"),
     );
-}
-
-pub(crate) async fn enable_network_rejects_an_invite_without_its_audit_row_and_the_reverse<
-    S: Store + IdentityStore,
->(
-    store: S,
-) {
-    const SCENARIO: &str = "enable_network_rejects_an_invite_without_its_audit_row_and_the_reverse";
-    let before = log_of(&store, SCENARIO).await;
-    let main_invite = || invite(2, &BoardId::main(), Role::Admin, PrincipalKind::Human);
-    let attempts = [
-        (
-            "an invite without its row",
-            Some(main_invite()),
-            enable_audits(NOW, false),
-        ),
-        ("a row without its invite", None, enable_audits(NOW, true)),
-    ];
-    for (what, into, audits) in attempts {
-        let result = store
-            .enable_network(
-                credential(1, CredentialScope::Instance, "instance-admin"),
-                into,
-                audits,
-            )
-            .await;
-        assert!(
-            matches!(result, Err(StoreError::Backend(_))),
-            "{SCENARIO}: {what}: {result:?}"
-        );
-        assert_eq!(
-            store.mode().await,
-            Ok(Mode::Local),
-            "{SCENARIO}: {what}: still local"
-        );
-        assert_eq!(
-            store.find_credential(&token_id(1)).await,
-            Ok(None),
-            "{SCENARIO}: {what}: no credential"
-        );
-        assert_no_invite(&store, 2, SCENARIO).await;
-        assert_eq!(
-            log_of(&store, SCENARIO).await,
-            before,
-            "{SCENARIO}: {what}: no row"
-        );
-    }
 }
 
 /// Checks that invite `n` (as built by `invite`, so its secret is known) was never stored: using

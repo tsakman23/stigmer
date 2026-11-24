@@ -770,7 +770,7 @@ impl IdentityStore for RacingStore {
     fn enable_network(
         &self,
         credential: NewCredential,
-        invite: Option<NewInvite>,
+        invite: Option<(NewInvite, SecurityEvent)>,
         audits: EnableAudits,
     ) -> impl Future<Output = Result<(), StoreError>> + Send {
         self.inner.enable_network(credential, invite, audits)

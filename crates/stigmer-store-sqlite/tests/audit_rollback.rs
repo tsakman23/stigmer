@@ -194,13 +194,12 @@ async fn a_failing_audit_write_rolls_back_every_audited_mutation() {
     let audits = EnableAudits {
         mode: audit(SecurityEventKind::ModeEnabled),
         token: audit(SecurityEventKind::InstanceTokenIssued),
-        invite: Some(audit(SecurityEventKind::InviteCreated)),
     };
     is_backend(
         store
             .enable_network(
                 credential(7, CredentialScope::Instance, "instance-admin"),
-                Some(invite(8, &main)),
+                Some((invite(8, &main), audit(SecurityEventKind::InviteCreated))),
                 audits,
             )
             .await,

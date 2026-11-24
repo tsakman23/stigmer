@@ -51,33 +51,17 @@ pub(crate) fn enable_network_mode(
 pub(crate) fn enable_network(
     conn: &mut Connection,
     credential: &NewCredential,
-    invite: Option<&NewInvite>,
+    invite: Option<&(NewInvite, SecurityEvent)>,
     audits: &EnableAudits,
 ) -> Result<(), StoreError> {
     require_instance_scope(credential)?;
-    let invite = match (invite, &audits.invite) {
-        (Some(invite), Some(row)) => Some((invite, row.at_ms)),
-        (None, None) => None,
-        _ => {
-            return Err(StoreError::Backend(
-                "an invite and its audit row go together".into(),
-            ))
-        }
-    };
     let tx = immediate(conn)?;
     switch_to_network(&tx)?;
     insert_credential(&tx, credential, None, audits.token.at_ms)?;
-    if let Some((invite, at_ms)) = invite {
-        insert_invite(&tx, invite, at_ms)?;
+    if let Some((invite, row)) = invite {
+        insert_invite(&tx, invite, row.at_ms)?;
     }
-    for row in [
-        Some(&audits.mode),
-        Some(&audits.token),
-        audits.invite.as_ref(),
-    ]
-    .into_iter()
-    .flatten()
-    {
+    for row in audits.rows(invite.map(|(_, row)| row)) {
         log_in_tx(&tx, row)?;
     }
     tx.commit().map_err(backend)

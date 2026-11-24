@@ -226,15 +226,25 @@ pub struct SecurityEvent {
     pub detail: String,
 }
 
-/// The security log rows `IdentityStore::enable_network` writes, in this order.
+/// The security log rows `IdentityStore::enable_network` always writes; an invite brings its
+/// own row with it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EnableAudits {
     /// The `ModeEnabled` row.
     pub mode: SecurityEvent,
     /// The `InstanceTokenIssued` row for the instance credential.
     pub token: SecurityEvent,
-    /// The `InviteCreated` row, given exactly when an invite is.
-    pub invite: Option<SecurityEvent>,
+}
+
+impl EnableAudits {
+    /// Every row `enable_network` writes, in order: mode, token, then the invite's when there is
+    /// one.
+    pub fn rows<'a>(
+        &'a self,
+        invite_audit: Option<&'a SecurityEvent>,
+    ) -> impl Iterator<Item = &'a SecurityEvent> {
+        [&self.mode, &self.token].into_iter().chain(invite_audit)
+    }
 }
 
 const REDACTED: &str = "<redacted>";
@@ -274,16 +284,16 @@ pub trait IdentityStore: Send + Sync + 'static {
     ) -> impl Future<Output = Result<(), StoreError>> + Send;
 
     /// In one transaction: stores `credential`, which must have the instance scope, created at
-    /// `audits.token.at_ms`; stores `invite` when given, created at its row's `at_ms`; switches
-    /// the instance to `Mode::Network`; and
-    /// writes the rows of `audits` (mode, token, then the invite's). Either all of it happens or
+    /// `audits.token.at_ms`; stores `invite` when given, created at the `at_ms` of the audit event
+    /// that comes with it; switches the instance to `Mode::Network`; and writes the rows (mode,
+    /// token, then the invite's: `EnableAudits::rows`). Either all of it happens or
     /// none. An instance already in network mode is `Conflict(ConflictKind::AlreadyNetwork)`; a
     /// board-scoped credential is `StoreError::Backend`; an invite into an unknown or archived
     /// board fails as `create_invite` would. Each of these writes nothing.
     fn enable_network(
         &self,
         credential: NewCredential,
-        invite: Option<NewInvite>,
+        invite: Option<(NewInvite, SecurityEvent)>,
         audits: EnableAudits,
     ) -> impl Future<Output = Result<(), StoreError>> + Send;
 

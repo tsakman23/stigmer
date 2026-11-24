@@ -37,7 +37,12 @@ pub(super) async fn enable_auth<S: IdentityStore>(
     };
     let new_invite = invite
         .as_ref()
-        .map(|secret| main_admin_invite(secret, now))
+        .map(|secret| {
+            Ok((
+                main_admin_invite(secret, now)?,
+                invite_created(now, &secret.id),
+            ))
+        })
         .transpose()?;
     let audits = EnableAudits {
         mode: event(
@@ -47,14 +52,6 @@ pub(super) async fn enable_auth<S: IdentityStore>(
             "network mode enabled",
         ),
         token: token_issued(now, &token.id, INSTANCE_TOKEN_DAYS),
-        invite: invite.as_ref().map(|secret| {
-            event(
-                now,
-                SecurityEventKind::InviteCreated,
-                Some(BoardId::main()),
-                &format!("invite {} role admin kind human", secret.id),
-            )
-        }),
     };
     match store.enable_network(credential, new_invite, audits).await {
         Ok(()) => Ok(Issued {
@@ -130,6 +127,16 @@ fn token_issued(now: i64, id: &TokenId, days: u32) -> SecurityEvent {
         SecurityEventKind::InstanceTokenIssued,
         None,
         &format!("credential {id} expires in {days} days"),
+    )
+}
+
+/// The `InviteCreated` row for the main admin invite `id`.
+fn invite_created(now: i64, id: &TokenId) -> SecurityEvent {
+    event(
+        now,
+        SecurityEventKind::InviteCreated,
+        Some(BoardId::main()),
+        &format!("invite {id} role admin kind human"),
     )
 }
 

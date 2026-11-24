@@ -352,11 +352,10 @@ mod tests {
         let audits = EnableAudits {
             mode: e(),
             token: e(),
-            invite: Some(e()),
         };
         assert_send(store.mode());
         assert_send(store.enable_network_mode(e()));
-        assert_send(store.enable_network(credential.clone(), Some(invite.clone()), audits));
+        assert_send(store.enable_network(credential.clone(), Some((invite.clone(), e())), audits));
         assert_send(store.add_member(board, name, PrincipalKind::Human, Role::Admin, 0));
         assert_send(store.get_member(board, name));
         assert_send(store.list_members(board));

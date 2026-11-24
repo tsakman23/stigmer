@@ -162,7 +162,7 @@ impl IdentityStore for LogFailingStore {
     async fn enable_network(
         &self,
         credential: NewCredential,
-        invite: Option<NewInvite>,
+        invite: Option<(NewInvite, SecurityEvent)>,
         audits: EnableAudits,
     ) -> Result<(), StoreError> {
         self.mutate(self.inner.enable_network(credential, invite, audits))
