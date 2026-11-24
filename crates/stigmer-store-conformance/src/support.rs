@@ -265,6 +265,21 @@ impl Rng {
     }
 }
 
+/// Generous upper bound for waits that must end early; scenarios assert on the outcome, not
+/// the time.
+pub(crate) const LONG: Duration = Duration::from_secs(10);
+
+/// The most yields an interleaving-exhaustive scenario tries between starting a waiter and
+/// posting: it repeats for every count in `0..=YIELDS`.
+pub(crate) const YIELDS: usize = 20;
+
+/// Yields to the runtime `n` times: one interleaving of a spawned task with this one.
+pub(crate) async fn yield_times(n: usize) {
+    for _ in 0..n {
+        tokio::task::yield_now().await;
+    }
+}
+
 /// Waits long enough that the next post gets a later millisecond timestamp.
 pub(crate) async fn tick() {
     tokio::time::sleep(Duration::from_millis(3)).await;

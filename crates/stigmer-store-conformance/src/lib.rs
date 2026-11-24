@@ -10,6 +10,8 @@
 
 mod archive;
 mod boards;
+mod cross_instance;
+mod cross_instance_identity;
 mod events;
 mod fixture;
 mod idempotency;
@@ -42,6 +44,7 @@ pub async fn run_all<X: Fixture>(fixture: &X) {
     let factory = || fixture.fresh();
     run_store_suite(factory).await;
     identity::run_identity_suite(factory).await;
+    cross_instance::run_cross_instance_suite(fixture).await;
     support::ok(
         fixture::write_summary(&mut std::io::stderr().lock(), X::CROSS_PROCESS_WAKE),
         "conformance: summary line",
@@ -97,6 +100,7 @@ where
     wait::wait_past_is_not_woken_by_an_idempotent_replay(factory().await).await;
     boards::create_board_then_get_and_list(factory().await).await;
     boards::create_duplicate_board_is_board_exists(factory().await).await;
+    boards::concurrent_create_board_has_one_winner(factory().await).await;
     boards::main_exists_on_a_fresh_store(factory().await).await;
     boards::boards_are_isolated_sequences_start_at_1_per_board(factory().await).await;
     boards::unknown_board_is_not_found_from_every_method(factory().await).await;

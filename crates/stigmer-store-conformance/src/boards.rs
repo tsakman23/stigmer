@@ -1,10 +1,12 @@
 //! Board lifecycle: creating, listing and archiving boards, and keeping boards apart.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use stigmer_core::{BoardId, BoardInfo, Cursor, EventFilter, MessageId};
 use stigmer_store::{ConflictKind, Entity, Store, StoreError};
 
+use crate::cross_instance::create_board_race;
 use crate::support::{
     all_channels, board, channel, new_thread_on, ok, post_ok, principal, reply_on, valid_chain,
 };
@@ -103,6 +105,11 @@ pub(crate) async fn create_duplicate_board_is_board_exists<S: Store>(store: S) {
         Ok(first),
         "{SCENARIO}: the original board is untouched"
     );
+}
+
+pub(crate) async fn concurrent_create_board_has_one_winner<S: Store>(store: S) {
+    const SCENARIO: &str = "concurrent_create_board_has_one_winner";
+    create_board_race(&[Arc::new(store)], SCENARIO).await;
 }
 
 pub(crate) async fn main_exists_on_a_fresh_store<S: Store>(store: S) {
