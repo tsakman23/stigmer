@@ -18,7 +18,8 @@
 - SQLite stays the default and keeps working with zero configuration, its lock file and automatic migration at open.
 - Postgres connection strings with passwords never appear on command lines, in logs, in errors or in Debug output; TLS to Postgres uses rustls (ring provider only; no aws-lc, no OpenSSL).
 - Conformance suites are the definition of correct: no scenario is weakened or skipped for any backend; Postgres tests read `STIGMER_TEST_DATABASE_URL` and skip loudly when it and `CI` are unset, and FAIL when `CI` is set and the URL is missing; each Postgres test uses its own schema.
-- Every store method that stamps a time takes it from the caller (`now_ms`); event order is the per-board sequence, never a wall clock.
+- Every store method that stamps a time takes it from the caller (`now_ms`, or the audit event for an audited mutation); event order is the per-board sequence, never a wall clock.
+- Audited mutations take their instant from the audit event (`audit.at_ms`), not from a separate `now_ms`.
 - A wait never holds a database connection or transaction while it sleeps.
 - No change to the HTTP API, wire types, CLI or SDK behaviour except where a task says so.
 
@@ -53,24 +54,27 @@ crates/stigmer-cli/tests/e2e_m2.rs
 
 **Files:**
 - Modify: `crates/stigmer-store/src/{lib.rs,identity.rs}`, `crates/stigmer-store-sqlite/src/{boards,members,credentials,identity,lib}.rs`, conformance modules touching these methods, `crates/stigmer-api/src/{admin_routes,routes,audit,join_routes}.rs`, `crates/stigmerd/src/admin/{mod,tokens,principals}.rs`
-- Create: `docs/adr/0014-audit-rows-in-the-mutation-transaction.md` (and the status-line note on ADR 0011 and the index row)
+- Create: `docs/adr/0014-audit-rows-in-the-mutation-transaction.md` (and the status-line note on ADR 0008 and the index row)
 - Test: conformance scenarios, `crates/stigmer-store-sqlite/tests/audit_rollback.rs`, `crates/stigmer-api/tests/admin_audit.rs` (rewritten), stigmerd admin tests.
 
 **Interfaces:**
-- Produces (every audited mutation takes the event; the store writes the row in the same transaction and uses `audit.at_ms` for it; callers pass the same instant as `now_ms` where both exist):
+- Produces (every audited mutation takes the event and the store writes the row in the same transaction; an audited method has no separate `now_ms`: its instant is `audit.at_ms`, for the row and for every time it stamps):
 ```rust
 // Store
-fn create_board(&self, id: &BoardId, created_by: Option<&Principal>, now_ms: i64, audit: SecurityEvent) -> ...Result<BoardInfo, StoreError>;
-fn archive_board(&self, id: &BoardId, now_ms: i64, audit: SecurityEvent) -> ...Result<BoardInfo, StoreError>;   // idempotent: an already-archived board writes NO row
+fn create_board(&self, id: &BoardId, created_by: Option<&Principal>, audit: SecurityEvent) -> ...Result<BoardInfo, StoreError>;
+fn archive_board(&self, id: &BoardId, audit: SecurityEvent) -> ...Result<BoardInfo, StoreError>;   // idempotent: an already-archived board writes NO row
 // IdentityStore
 fn enable_network_mode(&self, audit: SecurityEvent) -> ...Result<(), StoreError>;
-fn remove_member(&self, board: &BoardId, name: &Principal, now_ms: i64, audit: SecurityEvent) -> ...;
-fn create_credential(&self, credential: NewCredential, now_ms: i64, audit: SecurityEvent) -> ...;
-fn revoke_credential(&self, id: &TokenId, now_ms: i64, audit: SecurityEvent) -> ...;   // an already-revoked credential writes NO row
-fn replace_instance_credential(&self, credential: NewCredential, now_ms: i64, audit: SecurityEvent) -> ...Result<u64, StoreError>;
-fn create_invite(&self, invite: NewInvite, now_ms: i64, audit: SecurityEvent) -> ...;
+/// NEW: ONE transaction: instance credential, optional main invite (bundled with its own row), switch to network mode, rows mode, token, invite. AlreadyNetwork writes nothing.
+fn enable_network(&self, credential: NewCredential, invite: Option<(NewInvite, SecurityEvent)>, audits: EnableAudits) -> ...Result<(), StoreError>;
+pub struct EnableAudits { pub mode: SecurityEvent, pub token: SecurityEvent }   // EnableAudits::rows(invite_audit) lists the rows in order
+fn remove_member(&self, board: &BoardId, name: &Principal, audit: SecurityEvent) -> ...;
+fn create_credential(&self, credential: NewCredential, audit: SecurityEvent) -> ...;
+fn revoke_credential(&self, id: &TokenId, audit: SecurityEvent) -> ...;   // an already-revoked credential writes NO row
+fn replace_instance_credential(&self, credential: NewCredential, audit: SecurityEvent) -> ...Result<u64, StoreError>;   // revoking N > 0 others also writes a TokenRevoked count row
+fn create_invite(&self, invite: NewInvite, audit: SecurityEvent) -> ...;
 /// NEW: ONE transaction: archive the board, revoke every live credential of the board except admins', write the audit row. Replaces the API's archive-then-revoke two steps. Returns the board as archived.
-fn archive_board_revoking(&self, id: &BoardId, now_ms: i64, audit: SecurityEvent) -> ...Result<BoardInfo, StoreError>;
+fn archive_board_revoking(&self, id: &BoardId, audit: SecurityEvent) -> ...Result<BoardInfo, StoreError>;
 // unchanged: adopt_local_authors and consume_invite (already audit inside), log_security (only for non-mutation events: auth failure, rate limits)
 ```
 Rules: an audited method that changes nothing (idempotent no-op) writes no audit row; a method that fails writes no row and changes nothing; a failing audit INSERT aborts the whole transaction. `SecurityEvent` details keep coming only from the typed constructors in stigmer-api and stigmerd.
@@ -79,7 +83,7 @@ Rules: an audited method that changes nothing (idempotent no-op) writes no audit
 - [ ] **Step 2:** Run `cargo test --workspace --locked`. Expected: FAIL (signatures missing).
 - [ ] **Step 3:** Implement the signature changes in both traits, SQLite (each method writes through one shared internal `log_in_tx`), update every call site (API handlers build the event with the existing `Audit` constructors and pass it in; delete `audit_best_effort` for the admin routes only; stigmerd admin commands pass their events). The API archive handler calls `archive_board_revoking` once.
 - [ ] **Step 4:** Run fmt, clippy (`-D warnings`), `cargo test --workspace --locked`, `cargo deny --locked check`, SDK tests. Expected: all pass; the M0/M1 e2e tests unchanged and green.
-- [ ] **Step 5:** Write ADR 0014 (context, decision, consequences incl. 500-on-audit-failure and why non-mutation events stay best-effort), add "Partly superseded by 0014" to ADR 0011's status line and the index, update design `14 where it describes best-effort audit. Commit in logical units (`refactor(store): audit events travel with the mutation`, `feat(store): archive and revoke in one transaction`, `refactor(api): audit through the store`, `refactor(server): admin commands pass their audit events`, `docs(adr): record audit rows in the mutation transaction`).
+- [ ] **Step 5:** Write ADR 0014 (context, decision, consequences incl. 500-on-audit-failure and why non-mutation events stay best-effort), add "Partly superseded by 0014" to ADR 0008's status line and the index, update design `14 where it describes best-effort audit. Commit in logical units (`refactor(store): audit events travel with the mutation`, `feat(store): archive and revoke in one transaction`, `refactor(api): audit through the store`, `refactor(server): admin commands pass their audit events`, `docs(adr): record audit rows in the mutation transaction`).
 
 ---
 

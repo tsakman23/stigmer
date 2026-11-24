@@ -30,22 +30,30 @@ for admin mutation rows and its two-step archive. It does not supersede
 rate-limited requests, which record no mutation, stands as written and stays best effort.
 
 - Every audited mutation takes the security log row that records it and the store writes it in
-  the same transaction: `Store::create_board` and `Store::archive_board` (which also gain a
-  `now_ms` parameter instead of reading the store's clock), and `IdentityStore`'s
-  `enable_network_mode`, `remove_member`, `create_credential`, `revoke_credential`,
-  `replace_instance_credential` and `create_invite`. The row is stored as given, stamped
-  `audit.at_ms`; callers pass the same instant as `now_ms`.
+  the same transaction: `Store::create_board` and `Store::archive_board` (which no longer read
+  the store's clock), and `IdentityStore`'s `enable_network_mode`, `remove_member`,
+  `create_credential`, `revoke_credential`, `replace_instance_credential` and `create_invite`.
+  The row is stored as given. An audited method takes no separate `now_ms`: its instant is
+  `audit.at_ms`, used for the row and for every time it stamps (created, archived, revoked), so
+  the state and its row cannot disagree.
 - A mutation that fails writes no row and changes nothing; one that changes nothing (archiving
   an archived board, revoking a revoked credential) writes no row; a row that cannot be written
   fails the mutation, which then changes nothing.
 - New `IdentityStore::archive_board_revoking` archives a board and revokes every live non-admin
   credential on it, with its row, in one transaction. The API's archive route calls it once.
+
+  It writes its row when it archived the board or revoked at least one credential, so a retry
+  that completes a half-finished archive (a board archived by `archive_board` alone, with
+  credentials still live) is recorded; a retry that does neither writes no row.
 - New `IdentityStore::enable_network` stores the instance credential and the optional main admin
   invite, switches to network mode and writes the `ModeEnabled`, `InstanceTokenIssued` and
   optional `InviteCreated` rows in one transaction; an instance already in network mode is
-  `AlreadyNetwork` and nothing is written. `stigmerd admin enable-auth` calls only this, so its
-  secrets are printed only after everything committed, and a failure shows none and leaves
-  local mode. `enable_network_mode` stays for direct use.
+  `AlreadyNetwork` and nothing is written. The invite comes bundled with its own row
+  (`Option<(NewInvite, SecurityEvent)>`), so one cannot be given without the other.
+  `stigmerd admin enable-auth` calls only this, so its secrets are printed only after everything
+  committed, and a failure shows none and leaves local mode.
+- `enable_network_mode(audit)` and `revoke_board_credentials` stay in the trait for direct use and
+  tests, although product code now uses `enable_network` and `archive_board_revoking`.
 - The API returns the generic 500 body when a mutation's row cannot be written: the mutation did
   not happen, so the client may retry. `stigmerd admin` commands fail (exit 1) the same way and
   print no secret.
