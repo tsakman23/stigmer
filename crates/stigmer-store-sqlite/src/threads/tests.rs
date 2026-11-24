@@ -322,6 +322,51 @@ async fn backfill_of_posted_messages_equals_what_post_wrote() {
     assert_eq!(replies, 3, "replays and refusals add nothing");
 }
 
+#[tokio::test]
+async fn read_channel_orders_by_sequence_when_the_clock_steps_back() {
+    let store = SqliteStore::open_memory().await.unwrap();
+    let post = |text: &str| {
+        NewMessage::new(
+            BoardId::main(),
+            Target::NewThread {
+                channel: ChannelPath::new("eng").unwrap(),
+            },
+            Principal::new("alice").unwrap(),
+            text.to_owned(),
+            vec![],
+            None,
+        )
+        .unwrap()
+    };
+    let older = store.post(post("older")).await.unwrap().message.id;
+    let newer = store.post(post("newer")).await.unwrap().message.id;
+    {
+        // The second post was stamped by a clock that had stepped back an hour.
+        let conn = store.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE messages SET at_ms = at_ms - 3600000 WHERE id = ?1",
+            [newer.as_str()],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE threads SET last_at_ms = last_at_ms - 3600000 WHERE thread_id = ?1",
+            [newer.as_str()],
+        )
+        .unwrap();
+    }
+    let page = stigmer_store::Page {
+        limit: 10,
+        before: None,
+    };
+    let listed = store
+        .read_channel(&BoardId::main(), &ChannelPath::new("eng").unwrap(), page)
+        .await
+        .unwrap();
+    let ids: Vec<&MessageId> = listed.iter().map(|t| &t.thread_id).collect();
+    assert_eq!(ids, vec![&newer, &older], "the later event leads");
+    assert!(listed[0].last_at_ms < listed[1].last_at_ms);
+}
+
 /// FNV-1a over the shipped migrations, so an edit to any of them fails this test.
 fn fingerprint(migrations: &[&str]) -> u64 {
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;

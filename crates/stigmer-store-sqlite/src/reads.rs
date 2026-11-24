@@ -8,7 +8,6 @@ use crate::posts::board_head;
 use crate::{backend, not_found};
 
 const MAX_PAGE: u32 = 200;
-const PREVIEW_CHARS: i64 = 200;
 
 /// SQL condition: channel `?N` is the prefix itself or sits under it, on whole segments.
 /// `LIKE` is avoided on purpose: `_` is legal in channel paths and is a LIKE wildcard.
@@ -16,7 +15,8 @@ pub(crate) fn channel_matches(column: &str, param: &str) -> String {
     format!("({column} = {param} OR substr({column}, 1, length({param}) + 1) = {param} || '/')")
 }
 
-/// Lists threads under `prefix`, newest activity first, one keyset page at a time.
+/// Lists threads under `prefix` from the summary table, latest event first (then thread id,
+/// both descending), one keyset page at a time.
 pub(crate) fn read_channel(
     conn: &mut Connection,
     board: &BoardId,
@@ -28,34 +28,28 @@ pub(crate) fn read_channel(
     let tx = conn.transaction().map_err(backend)?;
     board_head(&tx, board)?.ok_or_else(|| not_found(Entity::Board, board))?;
 
-    let cursor: Option<(i64, String)> = match &page.before {
+    let before_seq: Option<i64> = match &page.before {
         None => None,
         Some(before) => Some(
-            thread_activity(&tx, board, before)?
-                .ok_or_else(|| not_found(Entity::Thread, before))?,
+            tx.query_row(
+                "SELECT last_seq FROM threads WHERE board_id = ?1 AND thread_id = ?2",
+                [board.as_str(), before.as_str()],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(backend)?
+            .ok_or_else(|| not_found(Entity::Thread, before))?,
         ),
     };
-    let (before_at, before_id) = match &cursor {
-        Some((at, id)) => (Some(*at), Some(id.as_str())),
-        None => (None, None),
-    };
+    let before_id = page.before.as_ref().map(MessageId::as_str);
 
     let sql = format!(
-        "SELECT thread_id, channel, preview, reply_count, last_at FROM (
-            SELECT r.id AS thread_id, r.channel AS channel,
-                   substr(r.text, 1, {PREVIEW_CHARS}) AS preview,
-                   (SELECT COUNT(*) FROM messages x
-                     WHERE x.board_id = r.board_id AND x.thread_id = r.id AND x.id <> r.id)
-                       AS reply_count,
-                   max(r.at_ms, COALESCE((SELECT MAX(x.at_ms) FROM messages x
-                     WHERE x.board_id = r.board_id AND x.thread_id = r.id), r.at_ms)) AS last_at
-              FROM messages r
-             WHERE r.board_id = ?1 AND r.thread_id = r.id AND {}
-         )
-         WHERE ?3 IS NULL OR last_at < ?3 OR (last_at = ?3 AND thread_id < ?4)
-         ORDER BY last_at DESC, thread_id DESC
-         LIMIT ?5",
-        channel_matches("r.channel", "?2")
+        "SELECT thread_id, channel, preview, reply_count, last_at_ms FROM threads
+          WHERE board_id = ?1 AND {}
+            AND (?3 IS NULL OR last_seq < ?3 OR (last_seq = ?3 AND thread_id < ?4))
+          ORDER BY last_seq DESC, thread_id DESC
+          LIMIT ?5",
+        channel_matches("channel", "?2")
     );
     let mut stmt = tx.prepare(&sql).map_err(backend)?;
     let rows = stmt
@@ -63,7 +57,7 @@ pub(crate) fn read_channel(
             (
                 board.as_str(),
                 prefix.as_str(),
-                before_at,
+                before_seq,
                 before_id,
                 i64::from(limit),
             ),
@@ -90,24 +84,6 @@ pub(crate) fn read_channel(
         });
     }
     Ok(threads)
-}
-
-/// `(last activity, id)` of thread root `thread`, or `None` if it is not a root on `board`.
-fn thread_activity(
-    tx: &Transaction<'_>,
-    board: &BoardId,
-    thread: &MessageId,
-) -> Result<Option<(i64, String)>, StoreError> {
-    tx.query_row(
-        "SELECT max(r.at_ms, COALESCE((SELECT MAX(x.at_ms) FROM messages x
-                 WHERE x.board_id = r.board_id AND x.thread_id = r.id), r.at_ms)), r.id
-           FROM messages r
-          WHERE r.id = ?1 AND r.board_id = ?2 AND r.thread_id = r.id",
-        [thread.as_str(), board.as_str()],
-        |row| Ok((row.get(0)?, row.get(1)?)),
-    )
-    .optional()
-    .map_err(backend)
 }
 
 /// Reads a thread root and its replies in event order.

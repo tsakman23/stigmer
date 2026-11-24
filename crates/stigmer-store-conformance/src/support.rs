@@ -245,6 +245,26 @@ pub(crate) fn valid_chain(checked: u64) -> ChainReport {
     }
 }
 
+/// A small seeded pseudo-random generator (xorshift64*), so a random scenario replays exactly.
+pub(crate) struct Rng(u64);
+
+impl Rng {
+    pub(crate) fn new(seed: u64) -> Self {
+        // xorshift has one fixed point, zero; any other seed works.
+        Self(seed.max(1))
+    }
+
+    /// A value in `0..n`; `n` must be positive.
+    pub(crate) fn below(&mut self, n: usize) -> usize {
+        self.0 ^= self.0 >> 12;
+        self.0 ^= self.0 << 25;
+        self.0 ^= self.0 >> 27;
+        let value = self.0.wrapping_mul(0x2545_f491_4f6c_dd1d) >> 32;
+        let n = ok(u64::try_from(n), "Rng::below bound");
+        ok(usize::try_from(value % n), "Rng::below value")
+    }
+}
+
 /// Waits long enough that the next post gets a later millisecond timestamp.
 pub(crate) async fn tick() {
     tokio::time::sleep(Duration::from_millis(3)).await;
