@@ -113,6 +113,10 @@ where
     identity_enable::enable_network_twice_is_already_network_and_writes_nothing(factory().await)
         .await;
     identity_enable::enable_network_is_atomic_all_or_nothing(factory().await).await;
+    identity_enable::enable_network_rejects_an_invite_without_its_audit_row_and_the_reverse(
+        factory().await,
+    )
+    .await;
 }
 
 /// The token id `n` as 16 hex chars.

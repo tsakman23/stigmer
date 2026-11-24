@@ -692,15 +692,11 @@ fn new_instance_token_revoke_others_leaves_only_the_new_token_valid() {
 fn network_with_members(data: &Path, archive_ops: bool) {
     let out = admin(data, &["enable-auth", "--no-main-invite"]);
     assert_eq!(out.status.code(), Some(0), "stderr: {}", stderr(&out));
+    let now = now_ms();
     with_store(data, |store| async move {
         let ops = BoardId::new("ops").expect("board");
         store
-            .create_board(
-                &ops,
-                None,
-                now_ms(),
-                row(SecurityEventKind::BoardCreated, now_ms()),
-            )
+            .create_board(&ops, None, now, row(SecurityEventKind::BoardCreated, now))
             .await
             .expect("create ops");
         for (board, name) in [(BoardId::main(), "alice"), (ops.clone(), "bob")] {
@@ -710,18 +706,14 @@ fn network_with_members(data: &Path, archive_ops: bool) {
                     &Principal::new(name).expect("name"),
                     PrincipalKind::Agent,
                     Role::Member,
-                    now_ms(),
+                    now,
                 )
                 .await
                 .expect("add member");
         }
         if archive_ops {
             store
-                .archive_board(
-                    &ops,
-                    now_ms(),
-                    row(SecurityEventKind::BoardArchived, now_ms()),
-                )
+                .archive_board(&ops, now, row(SecurityEventKind::BoardArchived, now))
                 .await
                 .expect("archive ops");
         }

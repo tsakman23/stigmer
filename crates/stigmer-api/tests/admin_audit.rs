@@ -180,6 +180,10 @@ async fn audit_failure_fails_the_request_with_500_and_changes_nothing() {
     let inner = &rig.store.inner;
     let ops = board("ops");
     let before = rig.log().await;
+    // With `fail_mutations` the wrapper answers as a failed audit write would, without ever
+    // calling the inner store, so this checks the API's handling of that failure (generic 500,
+    // no fallback row) and not the rollback itself. The real rollback proof is
+    // crates/stigmer-store-sqlite/tests/audit_rollback.rs.
     rig.store.fail_mutations.store(true, Ordering::SeqCst);
     for (what, reply, _) in rig.mutations().await {
         assert_eq!(
@@ -211,7 +215,11 @@ async fn audit_failure_fails_the_request_with_500_and_changes_nothing() {
     assert!(matches!(carol, Ok(Some(_))), "carol still a member");
     let info = inner.get_board(&ops).await.unwrap();
     assert_eq!(info.archived_at_ms, None, "ops not archived");
-    assert_eq!(rig.log().await, before, "no row, no invite recorded");
+    assert_eq!(
+        rig.log().await,
+        before,
+        "the API wrote no row of its own (no best-effort fallback for a failed mutation)"
+    );
     assert_eq!(rig.warnings.lock().unwrap().clone(), Vec::<String>::new());
 }
 
