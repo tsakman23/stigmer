@@ -32,7 +32,7 @@ async fn rig() -> Rig {
         .unwrap();
     let ops = board("ops");
     inner
-        .create_board(&ops, None, NOW, audit(SecurityEventKind::BoardCreated, NOW))
+        .create_board(&ops, None, audit(SecurityEventKind::BoardCreated, NOW))
         .await
         .unwrap();
     let root = credential(&inner, CredentialScope::Instance, "root", NOW + DAY).await;

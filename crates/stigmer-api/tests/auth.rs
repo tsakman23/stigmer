@@ -87,7 +87,6 @@ async fn missing_malformed_unknown_expired_revoked_tokens_return_identical_401_b
     net.store
         .revoke_credential(
             &token_id(&revoked),
-            NOW,
             audit(SecurityEventKind::TokenRevoked, NOW),
         )
         .await
@@ -164,12 +163,7 @@ async fn valid_token_for_another_board_gets_404_on_every_board_route() {
     let net = network().await;
     let other = board("other");
     net.store
-        .create_board(
-            &other,
-            None,
-            NOW,
-            audit(SecurityEventKind::BoardCreated, NOW),
-        )
+        .create_board(&other, None, audit(SecurityEventKind::BoardCreated, NOW))
         .await
         .unwrap();
     let other_thread = seed_thread(&net.store, &other).await;
@@ -383,12 +377,12 @@ async fn post_to_archived_board_is_409_board_archived() {
     let net = network().await;
     let ops = BoardId::new("ops").unwrap();
     net.store
-        .create_board(&ops, None, NOW, audit(SecurityEventKind::BoardCreated, NOW))
+        .create_board(&ops, None, audit(SecurityEventKind::BoardCreated, NOW))
         .await
         .unwrap();
     let token = member_token(&net.store, &ops, "alice", Role::Admin).await;
     net.store
-        .archive_board(&ops, NOW, audit(SecurityEventKind::BoardArchived, NOW))
+        .archive_board(&ops, audit(SecurityEventKind::BoardArchived, NOW))
         .await
         .unwrap();
     let reply = send(
@@ -462,7 +456,6 @@ async fn removed_member_is_refused_on_the_very_next_request() {
         .remove_member(
             &main,
             &Principal::new("alice").unwrap(),
-            NOW,
             audit(SecurityEventKind::MemberRemoved, NOW),
         )
         .await
@@ -505,7 +498,6 @@ async fn revocation_ends_an_open_wait_with_401() {
     net.store
         .revoke_credential(
             &token_id(&revoked),
-            NOW,
             audit(SecurityEventKind::TokenRevoked, NOW),
         )
         .await
@@ -530,7 +522,6 @@ async fn member_removal_ends_an_open_wait_with_401() {
         .remove_member(
             &main,
             &Principal::new("alice").unwrap(),
-            NOW,
             audit(SecurityEventKind::MemberRemoved, NOW),
         )
         .await

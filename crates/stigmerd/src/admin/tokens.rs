@@ -56,10 +56,7 @@ pub(super) async fn enable_auth<S: IdentityStore>(
             )
         }),
     };
-    match store
-        .enable_network(credential, new_invite, now, audits)
-        .await
-    {
+    match store.enable_network(credential, new_invite, audits).await {
         Ok(()) => Ok(Issued {
             token: token.full,
             invite: invite.map(|i| i.full),
@@ -98,13 +95,13 @@ pub(super) async fn issue_instance_token<S: IdentityStore>(
     let row = token_issued(now, &secret.id, days);
     let revoked = if revoke_others {
         let revoked = store
-            .replace_instance_credential(credential, now, row)
+            .replace_instance_credential(credential, row)
             .await
             .map_err(|e| store_failure("cannot replace the instance token", &e))?;
         Some(revoked)
     } else {
         store
-            .create_credential(credential, now, row)
+            .create_credential(credential, row)
             .await
             .map_err(|e| store_failure("cannot store the instance token", &e))?;
         None
@@ -179,7 +176,7 @@ pub(super) async fn revoke_token<S: IdentityStore>(
         &format!("credential {id}"),
     );
     // A repeat revoke keeps the first time; the store writes no row for it.
-    match store.revoke_credential(&id, now, row).await {
+    match store.revoke_credential(&id, row).await {
         Ok(()) => Ok(format!("revoked {id}\n")),
         Err(StoreError::NotFound { .. }) => Err(unknown()),
         Err(e) => Err(store_failure("cannot revoke the token", &e)),
@@ -221,7 +218,6 @@ pub(super) async fn issue_member_token<S: IdentityStore>(
                 principal: member.name.clone(),
                 expires_at_ms: now + i64::from(days) * DAY_MS,
             },
-            now,
             row,
         )
         .await

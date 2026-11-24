@@ -103,11 +103,10 @@ impl Store for SqliteStore {
         &self,
         id: &BoardId,
         created_by: Option<&Principal>,
-        now_ms: i64,
         audit: SecurityEvent,
     ) -> impl Future<Output = Result<BoardInfo, StoreError>> + Send {
         let (id, created_by) = (id.clone(), created_by.cloned());
-        self.run(move |conn| boards::create(conn, &id, created_by.as_ref(), now_ms, &audit))
+        self.run(move |conn| boards::create(conn, &id, created_by.as_ref(), &audit))
     }
 
     fn get_board(
@@ -125,13 +124,12 @@ impl Store for SqliteStore {
     fn archive_board(
         &self,
         id: &BoardId,
-        now_ms: i64,
         audit: SecurityEvent,
     ) -> impl Future<Output = Result<BoardInfo, StoreError>> + Send {
         let id = id.clone();
         let notifier = Arc::clone(&self.notifier);
         self.run(move |conn| {
-            let info = boards::archive(conn, &id, now_ms, &audit)?;
+            let info = boards::archive(conn, &id, &audit)?;
             // Under the connection lock, like the subscription in `wait_past`.
             notifier.forget(&id);
             Ok(info)
@@ -329,7 +327,6 @@ mod tests {
             .create_board(
                 &old,
                 None,
-                1,
                 audit(stigmer_store::SecurityEventKind::BoardCreated, 1),
             )
             .await
@@ -348,7 +345,6 @@ mod tests {
         store
             .archive_board(
                 &old,
-                1,
                 audit(stigmer_store::SecurityEventKind::BoardArchived, 1),
             )
             .await

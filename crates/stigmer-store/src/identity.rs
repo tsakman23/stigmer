@@ -258,9 +258,10 @@ const REDACTED: &str = "<redacted>";
 /// row to the security log in the same transaction as the change it records, so either both
 /// happen or neither does. A mutation that fails, or changes nothing (an idempotent repeat),
 /// writes no row; a row that cannot be written fails the mutation and changes nothing. The row
-/// is stored as given, stamped `audit.at_ms`; where a method also takes `now_ms` the caller
-/// passes the same instant for both. `log_security` is only for events that are not part of a
-/// mutation (failed authentication, rate limiting).
+/// is stored as given. Audited methods take no separate `now_ms`: the instant is `audit.at_ms`,
+/// for the row and for every time the mutation stamps (created, archived and revoked times), so
+/// the two cannot disagree. `log_security` is only for events that are not part of a mutation
+/// (failed authentication, rate limiting).
 pub trait IdentityStore: Send + Sync + 'static {
     /// The instance mode. A fresh store is `Mode::Local`.
     fn mode(&self) -> impl Future<Output = Result<Mode, StoreError>> + Send;
@@ -273,7 +274,8 @@ pub trait IdentityStore: Send + Sync + 'static {
     ) -> impl Future<Output = Result<(), StoreError>> + Send;
 
     /// In one transaction: stores `credential`, which must have the instance scope, created at
-    /// `now_ms`; stores `invite` when given; switches the instance to `Mode::Network`; and
+    /// `audits.token.at_ms`; stores `invite` when given, created at its row's `at_ms`; switches
+    /// the instance to `Mode::Network`; and
     /// writes the rows of `audits` (mode, token, then the invite's). Either all of it happens or
     /// none. An instance already in network mode is `Conflict(ConflictKind::AlreadyNetwork)`; a
     /// board-scoped credential is `StoreError::Backend`; an invite into an unknown or archived
@@ -282,7 +284,6 @@ pub trait IdentityStore: Send + Sync + 'static {
         &self,
         credential: NewCredential,
         invite: Option<NewInvite>,
-        now_ms: i64,
         audits: EnableAudits,
     ) -> impl Future<Output = Result<(), StoreError>> + Send;
 
@@ -311,14 +312,13 @@ pub trait IdentityStore: Send + Sync + 'static {
         board: &BoardId,
     ) -> impl Future<Output = Result<Vec<Member>, StoreError>> + Send;
 
-    /// Removes `name` from `board`, revokes at `now_ms` every credential of theirs on that
+    /// Removes `name` from `board`, revokes at `audit.at_ms` every credential of theirs on that
     /// board and writes `audit`, atomically. An unknown member is `NotFound` with
     /// `Entity::Member`.
     fn remove_member(
         &self,
         board: &BoardId,
         name: &Principal,
-        now_ms: i64,
         audit: SecurityEvent,
     ) -> impl Future<Output = Result<(), StoreError>> + Send;
 
@@ -343,13 +343,12 @@ pub trait IdentityStore: Send + Sync + 'static {
         now_ms: i64,
     ) -> impl Future<Output = Result<u64, StoreError>> + Send;
 
-    /// Stores a credential created at `now_ms` and writes `audit`. A board-scoped credential
+    /// Stores a credential created at `audit.at_ms` and writes `audit`. A board-scoped credential
     /// for an archived board is `Conflict(ConflictKind::BoardArchived)`; the instance scope is
     /// not tied to a board.
     fn create_credential(
         &self,
         credential: NewCredential,
-        now_ms: i64,
         audit: SecurityEvent,
     ) -> impl Future<Output = Result<(), StoreError>> + Send;
 
@@ -373,13 +372,12 @@ pub trait IdentityStore: Send + Sync + 'static {
         board: &BoardId,
     ) -> impl Future<Output = Result<Vec<Credential>, StoreError>> + Send;
 
-    /// Revokes credential `id` at `now_ms` and writes `audit`. Revoking a revoked credential
+    /// Revokes credential `id` at `audit.at_ms` and writes `audit`. Revoking a revoked credential
     /// keeps the first time and writes no row. An unknown id is `NotFound` with
     /// `Entity::Credential`.
     fn revoke_credential(
         &self,
         id: &TokenId,
-        now_ms: i64,
         audit: SecurityEvent,
     ) -> impl Future<Output = Result<(), StoreError>> + Send;
 
@@ -393,8 +391,8 @@ pub trait IdentityStore: Send + Sync + 'static {
         now_ms: i64,
     ) -> impl Future<Output = Result<u64, StoreError>> + Send;
 
-    /// In one transaction: archives `id` at `now_ms` (as `Store::archive_board`), revokes at
-    /// `now_ms` every live credential scoped to it except those of the board's admins, and
+    /// In one transaction: archives `id` at `audit.at_ms` (as `Store::archive_board`), revokes
+    /// at that instant every live credential scoped to it except those of the board's admins, and
     /// writes `audit`. Returns the board as archived. Once archived the board takes no new
     /// credential, so no credential can escape the revocation. On an already archived board it
     /// keeps the first archive time and revokes what is still live; when that is nothing it
@@ -403,7 +401,6 @@ pub trait IdentityStore: Send + Sync + 'static {
     fn archive_board_revoking(
         &self,
         id: &BoardId,
-        now_ms: i64,
         audit: SecurityEvent,
     ) -> impl Future<Output = Result<BoardInfo, StoreError>> + Send;
 
@@ -417,7 +414,7 @@ pub trait IdentityStore: Send + Sync + 'static {
     ) -> impl Future<Output = Result<u64, StoreError>> + Send;
 
     /// In one transaction: stores `credential`, which must have the instance scope, revokes at
-    /// `now_ms` every other live instance credential and writes `audit`. When it revoked any, it
+    /// `audit.at_ms` every other live instance credential and writes `audit`. When it revoked any, it
     /// also writes, after `audit`, a `SecurityEventKind::TokenRevoked` row of its own (no board,
     /// `audit`'s principal and time, detail "revoked N other instance credentials"). Returns the
     /// number revoked. Either all of it happens or none, so a failure leaves the old instance
@@ -426,16 +423,14 @@ pub trait IdentityStore: Send + Sync + 'static {
     fn replace_instance_credential(
         &self,
         credential: NewCredential,
-        now_ms: i64,
         audit: SecurityEvent,
     ) -> impl Future<Output = Result<u64, StoreError>> + Send;
 
-    /// Stores an invite created at `now_ms` and writes `audit`. An archived board is
+    /// Stores an invite created at `audit.at_ms` and writes `audit`. An archived board is
     /// `Conflict(ConflictKind::BoardArchived)`.
     fn create_invite(
         &self,
         invite: NewInvite,
-        now_ms: i64,
         audit: SecurityEvent,
     ) -> impl Future<Output = Result<(), StoreError>> + Send;
 

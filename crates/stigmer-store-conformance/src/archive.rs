@@ -18,7 +18,7 @@ pub(crate) async fn archive_main_is_refused_and_main_stays_writable<S: Store>(st
     let main = BoardId::main();
     assert_eq!(
         store
-            .archive_board(&main, NOW, board_archived(&main, NOW))
+            .archive_board(&main, board_archived(&main, NOW))
             .await
             .map(|_| ()),
         Err(StoreError::Conflict(ConflictKind::BoardProtected)),
@@ -47,16 +47,14 @@ pub(crate) async fn post_to_archived_board_is_board_archived_and_uses_no_sequenc
     let old = board("old");
     ok(
         store
-            .create_board(&old, None, NOW, board_created(&old, NOW))
+            .create_board(&old, None, board_created(&old, NOW))
             .await,
         format_args!("{SCENARIO}: create"),
     );
     let keyed_root = keyed(new_thread_on(&old, "eng", "alice", "root"), "req-1");
     let root = post_ok(&store, keyed_root.clone(), SCENARIO).await;
     ok(
-        store
-            .archive_board(&old, NOW, board_archived(&old, NOW))
-            .await,
+        store.archive_board(&old, board_archived(&old, NOW)).await,
         format_args!("{SCENARIO}: archive"),
     );
 
@@ -95,7 +93,7 @@ pub(crate) async fn archived_board_is_still_readable<S: Store>(store: S) {
     let old = board("old");
     ok(
         store
-            .create_board(&old, None, NOW, board_created(&old, NOW))
+            .create_board(&old, None, board_created(&old, NOW))
             .await,
         format_args!("{SCENARIO}: create"),
     );
@@ -112,9 +110,7 @@ pub(crate) async fn archived_board_is_still_readable<S: Store>(store: S) {
     )
     .await;
     ok(
-        store
-            .archive_board(&old, NOW, board_archived(&old, NOW))
-            .await,
+        store.archive_board(&old, board_archived(&old, NOW)).await,
         format_args!("{SCENARIO}: archive"),
     );
 
@@ -168,18 +164,13 @@ pub(crate) async fn archive_is_idempotent_and_keeps_first_timestamp<S: Store>(st
     let old = board("old");
     let created = ok(
         store
-            .create_board(
-                &old,
-                Some(&principal("alice")),
-                NOW,
-                board_created(&old, NOW),
-            )
+            .create_board(&old, Some(&principal("alice")), board_created(&old, NOW))
             .await,
         format_args!("{SCENARIO}: create"),
     );
     let first = ok(
         store
-            .archive_board(&old, NOW + 1, board_archived(&old, NOW + 1))
+            .archive_board(&old, board_archived(&old, NOW + 1))
             .await,
         format_args!("{SCENARIO}: first archive"),
     );
@@ -197,7 +188,7 @@ pub(crate) async fn archive_is_idempotent_and_keeps_first_timestamp<S: Store>(st
     );
     assert_eq!(
         store
-            .archive_board(&old, NOW + 2, board_archived(&old, NOW + 2))
+            .archive_board(&old, board_archived(&old, NOW + 2))
             .await,
         Ok(first.clone()),
         "{SCENARIO}: a second archive is a no-op"

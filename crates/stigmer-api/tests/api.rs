@@ -667,10 +667,9 @@ impl Store for RacingStore {
         &self,
         id: &BoardId,
         created_by: Option<&Principal>,
-        now_ms: i64,
         audit: SecurityEvent,
     ) -> impl Future<Output = Result<BoardInfo, StoreError>> + Send {
-        self.inner.create_board(id, created_by, now_ms, audit)
+        self.inner.create_board(id, created_by, audit)
     }
 
     fn get_board(
@@ -687,10 +686,9 @@ impl Store for RacingStore {
     fn archive_board(
         &self,
         id: &BoardId,
-        now_ms: i64,
         audit: SecurityEvent,
     ) -> impl Future<Output = Result<BoardInfo, StoreError>> + Send {
-        self.inner.archive_board(id, now_ms, audit)
+        self.inner.archive_board(id, audit)
     }
 
     fn post(&self, msg: NewMessage) -> impl Future<Output = Result<Posted, StoreError>> + Send {
@@ -773,11 +771,9 @@ impl IdentityStore for RacingStore {
         &self,
         credential: NewCredential,
         invite: Option<NewInvite>,
-        now_ms: i64,
         audits: EnableAudits,
     ) -> impl Future<Output = Result<(), StoreError>> + Send {
-        self.inner
-            .enable_network(credential, invite, now_ms, audits)
+        self.inner.enable_network(credential, invite, audits)
     }
 
     fn add_member(
@@ -810,10 +806,9 @@ impl IdentityStore for RacingStore {
         &self,
         board: &BoardId,
         name: &Principal,
-        now_ms: i64,
         audit: SecurityEvent,
     ) -> impl Future<Output = Result<(), StoreError>> + Send {
-        self.inner.remove_member(board, name, now_ms, audit)
+        self.inner.remove_member(board, name, audit)
     }
 
     fn list_local_authors(
@@ -835,10 +830,9 @@ impl IdentityStore for RacingStore {
     fn create_credential(
         &self,
         credential: NewCredential,
-        now_ms: i64,
         audit: SecurityEvent,
     ) -> impl Future<Output = Result<(), StoreError>> + Send {
-        self.inner.create_credential(credential, now_ms, audit)
+        self.inner.create_credential(credential, audit)
     }
 
     fn find_credential(
@@ -866,10 +860,9 @@ impl IdentityStore for RacingStore {
     fn revoke_credential(
         &self,
         id: &TokenId,
-        now_ms: i64,
         audit: SecurityEvent,
     ) -> impl Future<Output = Result<(), StoreError>> + Send {
-        self.inner.revoke_credential(id, now_ms, audit)
+        self.inner.revoke_credential(id, audit)
     }
 
     fn revoke_board_credentials(
@@ -885,10 +878,9 @@ impl IdentityStore for RacingStore {
     fn archive_board_revoking(
         &self,
         id: &BoardId,
-        now_ms: i64,
         audit: SecurityEvent,
     ) -> impl Future<Output = Result<BoardInfo, StoreError>> + Send {
-        self.inner.archive_board_revoking(id, now_ms, audit)
+        self.inner.archive_board_revoking(id, audit)
     }
 
     fn revoke_instance_credentials_except(
@@ -902,20 +894,17 @@ impl IdentityStore for RacingStore {
     fn replace_instance_credential(
         &self,
         credential: NewCredential,
-        now_ms: i64,
         audit: SecurityEvent,
     ) -> impl Future<Output = Result<u64, StoreError>> + Send {
-        self.inner
-            .replace_instance_credential(credential, now_ms, audit)
+        self.inner.replace_instance_credential(credential, audit)
     }
 
     fn create_invite(
         &self,
         invite: NewInvite,
-        now_ms: i64,
         audit: SecurityEvent,
     ) -> impl Future<Output = Result<(), StoreError>> + Send {
-        self.inner.create_invite(invite, now_ms, audit)
+        self.inner.create_invite(invite, audit)
     }
 
     fn consume_invite(

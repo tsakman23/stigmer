@@ -52,20 +52,23 @@ pub(crate) fn enable_network(
     conn: &mut Connection,
     credential: &NewCredential,
     invite: Option<&NewInvite>,
-    now_ms: i64,
     audits: &EnableAudits,
 ) -> Result<(), StoreError> {
     require_instance_scope(credential)?;
-    if invite.is_some() != audits.invite.is_some() {
-        return Err(StoreError::Backend(
-            "an invite and its audit row go together".into(),
-        ));
-    }
+    let invite = match (invite, &audits.invite) {
+        (Some(invite), Some(row)) => Some((invite, row.at_ms)),
+        (None, None) => None,
+        _ => {
+            return Err(StoreError::Backend(
+                "an invite and its audit row go together".into(),
+            ))
+        }
+    };
     let tx = immediate(conn)?;
     switch_to_network(&tx)?;
-    insert_credential(&tx, credential, None, now_ms)?;
-    if let Some(invite) = invite {
-        insert_invite(&tx, invite, now_ms)?;
+    insert_credential(&tx, credential, None, audits.token.at_ms)?;
+    if let Some((invite, at_ms)) = invite {
+        insert_invite(&tx, invite, at_ms)?;
     }
     for row in [
         Some(&audits.mode),
@@ -175,9 +178,9 @@ pub(crate) fn remove(
     conn: &mut Connection,
     board: &BoardId,
     name: &Principal,
-    now_ms: i64,
     audit: &SecurityEvent,
 ) -> Result<(), StoreError> {
+    let now_ms = audit.at_ms;
     let tx = immediate(conn)?;
     require(&tx, board)?;
     let removed = tx

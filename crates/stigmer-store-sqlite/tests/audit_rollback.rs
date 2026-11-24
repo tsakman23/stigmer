@@ -91,7 +91,7 @@ async fn a_failing_audit_write_rolls_back_every_audited_mutation() {
     let store = SqliteStore::open(&path).await.unwrap();
     let (ops, main) = (BoardId::new("ops").unwrap(), BoardId::main());
     store
-        .create_board(&ops, None, NOW, audit(SecurityEventKind::BoardCreated))
+        .create_board(&ops, None, audit(SecurityEventKind::BoardCreated))
         .await
         .unwrap();
     for (who, role) in [("ann", Role::Admin), ("bob", Role::Member)] {
@@ -107,7 +107,7 @@ async fn a_failing_audit_write_rolls_back_every_audited_mutation() {
     ] {
         let issued = audit(SecurityEventKind::MemberTokenIssued);
         store
-            .create_credential(credential(n, scope, who), NOW, issued)
+            .create_credential(credential(n, scope, who), issued)
             .await
             .unwrap();
     }
@@ -118,7 +118,7 @@ async fn a_failing_audit_write_rolls_back_every_audited_mutation() {
     let new = BoardId::new("new").unwrap();
     is_backend(
         store
-            .create_board(&new, None, NOW, audit(SecurityEventKind::BoardCreated))
+            .create_board(&new, None, audit(SecurityEventKind::BoardCreated))
             .await,
         "create_board",
     );
@@ -126,13 +126,13 @@ async fn a_failing_audit_write_rolls_back_every_audited_mutation() {
 
     is_backend(
         store
-            .archive_board(&ops, NOW, audit(SecurityEventKind::BoardArchived))
+            .archive_board(&ops, audit(SecurityEventKind::BoardArchived))
             .await,
         "archive_board",
     );
     is_backend(
         store
-            .archive_board_revoking(&ops, NOW, audit(SecurityEventKind::BoardArchived))
+            .archive_board_revoking(&ops, audit(SecurityEventKind::BoardArchived))
             .await,
         "archive_board_revoking",
     );
@@ -143,11 +143,7 @@ async fn a_failing_audit_write_rolls_back_every_audited_mutation() {
     let board_token = credential(4, CredentialScope::Board(main.clone()), "zed");
     is_backend(
         store
-            .create_credential(
-                board_token,
-                NOW,
-                audit(SecurityEventKind::MemberTokenIssued),
-            )
+            .create_credential(board_token, audit(SecurityEventKind::MemberTokenIssued))
             .await,
         "create_credential",
     );
@@ -155,7 +151,7 @@ async fn a_failing_audit_write_rolls_back_every_audited_mutation() {
 
     is_backend(
         store
-            .revoke_credential(&id(2), NOW, audit(SecurityEventKind::TokenRevoked))
+            .revoke_credential(&id(2), audit(SecurityEventKind::TokenRevoked))
             .await,
         "revoke_credential",
     );
@@ -163,12 +159,7 @@ async fn a_failing_audit_write_rolls_back_every_audited_mutation() {
 
     is_backend(
         store
-            .remove_member(
-                &ops,
-                &name("bob"),
-                NOW,
-                audit(SecurityEventKind::MemberRemoved),
-            )
+            .remove_member(&ops, &name("bob"), audit(SecurityEventKind::MemberRemoved))
             .await,
         "remove_member",
     );
@@ -178,11 +169,7 @@ async fn a_failing_audit_write_rolls_back_every_audited_mutation() {
 
     is_backend(
         store
-            .create_invite(
-                invite(5, &main),
-                NOW,
-                audit(SecurityEventKind::InviteCreated),
-            )
+            .create_invite(invite(5, &main), audit(SecurityEventKind::InviteCreated))
             .await,
         "create_invite",
     );
@@ -191,11 +178,7 @@ async fn a_failing_audit_write_rolls_back_every_audited_mutation() {
     let replacement = credential(6, CredentialScope::Instance, "instance-admin");
     is_backend(
         store
-            .replace_instance_credential(
-                replacement,
-                NOW,
-                audit(SecurityEventKind::InstanceTokenIssued),
-            )
+            .replace_instance_credential(replacement, audit(SecurityEventKind::InstanceTokenIssued))
             .await,
         "replace_instance_credential",
     );
@@ -218,7 +201,6 @@ async fn a_failing_audit_write_rolls_back_every_audited_mutation() {
             .enable_network(
                 credential(7, CredentialScope::Instance, "instance-admin"),
                 Some(invite(8, &main)),
-                NOW,
                 audits,
             )
             .await,
@@ -232,7 +214,7 @@ async fn a_failing_audit_write_rolls_back_every_audited_mutation() {
     // Nothing was half-done, so once the log works again a retry succeeds.
     set_audit_trigger(&path, false);
     store
-        .archive_board_revoking(&ops, NOW, audit(SecurityEventKind::BoardArchived))
+        .archive_board_revoking(&ops, audit(SecurityEventKind::BoardArchived))
         .await
         .unwrap();
     assert!(revoked(&store, 2).await, "the retry revoked bob");
@@ -249,7 +231,7 @@ async fn a_failing_count_row_rolls_back_the_replacement_and_its_first_row() {
     let store = SqliteStore::open(&path).await.unwrap();
     let old = credential(1, CredentialScope::Instance, "instance-admin");
     let issued = audit(SecurityEventKind::InstanceTokenIssued);
-    store.create_credential(old, NOW, issued).await.unwrap();
+    store.create_credential(old, issued).await.unwrap();
     let rows = count(&path, "security_log");
     Connection::open(&path)
         .unwrap()
@@ -263,11 +245,7 @@ async fn a_failing_count_row_rolls_back_the_replacement_and_its_first_row() {
     let replacement = credential(2, CredentialScope::Instance, "instance-admin");
     is_backend(
         store
-            .replace_instance_credential(
-                replacement,
-                NOW,
-                audit(SecurityEventKind::InstanceTokenIssued),
-            )
+            .replace_instance_credential(replacement, audit(SecurityEventKind::InstanceTokenIssued))
             .await,
         "replace_instance_credential",
     );

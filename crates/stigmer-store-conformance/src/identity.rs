@@ -105,6 +105,8 @@ where
         factory().await,
     )
     .await;
+    identity_audit::audited_mutations_stamp_state_and_row_with_the_audit_instant(factory().await)
+        .await;
     identity_audit::enable_network_mode_writes_one_row_and_a_second_call_none(factory().await)
         .await;
     identity_audit_failures::failed_mutations_write_no_rows(factory().await).await;
@@ -238,7 +240,7 @@ async fn identity_methods_on_unknown_board_are_not_found<S: Store + IdentityStor
     );
     expect(store.list_members(&nowhere).await.map(drop), "list_members");
     let removed = store
-        .remove_member(&nowhere, &alice, NOW, member_removed(&nowhere, NOW))
+        .remove_member(&nowhere, &alice, member_removed(&nowhere, NOW))
         .await;
     expect(removed, "remove_member");
     let authors = store.list_local_authors(&nowhere).await;
@@ -251,14 +253,12 @@ async fn identity_methods_on_unknown_board_are_not_found<S: Store + IdentityStor
     expect(revoked.map(drop), "revoke_board_credentials");
     let scoped = credential(1, CredentialScope::Board(nowhere.clone()), "alice");
     expect(
-        store
-            .create_credential(scoped, NOW, token_issued(NOW))
-            .await,
+        store.create_credential(scoped, token_issued(NOW)).await,
         "create_credential",
     );
     let into = invite(2, &nowhere, Role::Member, PrincipalKind::Agent);
     expect(
-        store.create_invite(into, NOW, invite_created(NOW)).await,
+        store.create_invite(into, invite_created(NOW)).await,
         "create_invite",
     );
     assert_eq!(

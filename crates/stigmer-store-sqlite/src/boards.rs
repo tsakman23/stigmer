@@ -15,9 +15,9 @@ pub(crate) fn create(
     conn: &mut Connection,
     id: &BoardId,
     created_by: Option<&Principal>,
-    now_ms: i64,
     audit: &SecurityEvent,
 ) -> Result<BoardInfo, StoreError> {
+    let now_ms = audit.at_ms;
     let tx = conn
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(backend)?;
@@ -70,9 +70,9 @@ pub(crate) fn list(conn: &mut Connection) -> Result<Vec<BoardInfo>, StoreError> 
 pub(crate) fn archive(
     conn: &mut Connection,
     id: &BoardId,
-    now_ms: i64,
     audit: &SecurityEvent,
 ) -> Result<BoardInfo, StoreError> {
+    let now_ms = audit.at_ms;
     let tx = archivable(conn, id)?;
     let (info, archived) = set_archived(&tx, id, now_ms)?;
     if archived {
@@ -88,9 +88,9 @@ pub(crate) fn archive(
 pub(crate) fn archive_revoking(
     conn: &mut Connection,
     id: &BoardId,
-    now_ms: i64,
     audit: &SecurityEvent,
 ) -> Result<BoardInfo, StoreError> {
+    let now_ms = audit.at_ms;
     let tx = archivable(conn, id)?;
     let (info, archived) = set_archived(&tx, id, now_ms)?;
     let revoked = revoke_board_in_tx(&tx, id, true, now_ms)?;

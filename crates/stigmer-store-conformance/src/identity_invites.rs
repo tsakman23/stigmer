@@ -14,14 +14,14 @@ pub(crate) async fn invite_consumes_once<S: Store + IdentityStore>(store: S) {
     let research = board("research");
     ok(
         store
-            .create_board(&research, None, NOW, board_created(&research, NOW))
+            .create_board(&research, None, board_created(&research, NOW))
             .await,
         SCENARIO,
     );
     let new = invite(1, &research, Role::Member, PrincipalKind::Agent);
     let hash = new.secret_hash;
     ok(
-        store.create_invite(new, NOW, invite_created(NOW)).await,
+        store.create_invite(new, invite_created(NOW)).await,
         SCENARIO,
     );
 
@@ -81,7 +81,7 @@ pub(crate) async fn invite_expired_is_not_found<S: IdentityStore>(store: S) {
     let new = invite(1, &main, Role::Member, PrincipalKind::Human);
     let (hash, expires) = (new.secret_hash, new.expires_at_ms);
     ok(
-        store.create_invite(new, NOW, invite_created(NOW)).await,
+        store.create_invite(new, invite_created(NOW)).await,
         SCENARIO,
     );
     assert_eq!(expires, NOW + HOUR, "{SCENARIO}");
@@ -126,7 +126,7 @@ pub(crate) async fn invite_wrong_hash_is_not_found_and_not_consumed<S: IdentityS
     let new = invite(1, &main, Role::Member, PrincipalKind::Human);
     let hash = new.secret_hash;
     ok(
-        store.create_invite(new, NOW, invite_created(NOW)).await,
+        store.create_invite(new, invite_created(NOW)).await,
         SCENARIO,
     );
     let mut one_bit_off = hash;
@@ -197,7 +197,7 @@ pub(crate) async fn invite_with_taken_name_conflicts_and_stays_unconsumed<S: Ide
     let new = invite(1, &main, Role::Bridge, PrincipalKind::Bridge);
     let hash = new.secret_hash;
     ok(
-        store.create_invite(new, NOW, invite_created(NOW)).await,
+        store.create_invite(new, invite_created(NOW)).await,
         SCENARIO,
     );
 
@@ -252,7 +252,7 @@ pub(crate) async fn concurrent_consumes_of_one_invite_create_exactly_one_member<
     let new = invite(1, &main, Role::Member, PrincipalKind::Agent);
     let hash = new.secret_hash;
     ok(
-        store.create_invite(new, NOW, invite_created(NOW)).await,
+        store.create_invite(new, invite_created(NOW)).await,
         SCENARIO,
     );
     let store = Arc::new(store);

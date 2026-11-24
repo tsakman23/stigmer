@@ -100,11 +100,11 @@ pub(crate) async fn no_secret_material_in_security_log_rows<S: Store + IdentityS
         join_credential(100).secret_hash,
     );
     ok(
-        store.create_credential(token, NOW, token_issued(NOW)).await,
+        store.create_credential(token, token_issued(NOW)).await,
         SCENARIO,
     );
     ok(
-        store.create_invite(into, NOW, invite_created(NOW)).await,
+        store.create_invite(into, invite_created(NOW)).await,
         SCENARIO,
     );
 

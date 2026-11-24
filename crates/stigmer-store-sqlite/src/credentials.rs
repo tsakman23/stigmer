@@ -19,9 +19,9 @@ const CREDENTIAL_COLUMNS: &str = "SELECT id, secret_hash, board_id, principal, e
 pub(crate) fn create(
     conn: &mut Connection,
     credential: NewCredential,
-    now_ms: i64,
     audit: &SecurityEvent,
 ) -> Result<(), StoreError> {
+    let now_ms = audit.at_ms;
     let tx = immediate(conn)?;
     let board = match &credential.scope {
         CredentialScope::Instance => None,
@@ -107,9 +107,9 @@ pub(crate) fn list(conn: &mut Connection, board: &BoardId) -> Result<Vec<Credent
 pub(crate) fn revoke(
     conn: &mut Connection,
     id: &TokenId,
-    now_ms: i64,
     audit: &SecurityEvent,
 ) -> Result<(), StoreError> {
+    let now_ms = audit.at_ms;
     let tx = immediate(conn)?;
     let revoked_at: Option<Option<i64>> = tx
         .query_row(
@@ -188,9 +188,9 @@ pub(crate) fn revoke_instance_except(
 pub(crate) fn replace_instance(
     conn: &mut Connection,
     credential: NewCredential,
-    now_ms: i64,
     audit: &SecurityEvent,
 ) -> Result<u64, StoreError> {
+    let now_ms = audit.at_ms;
     require_instance_scope(&credential)?;
     let tx = immediate(conn)?;
     insert_credential(&tx, &credential, None, now_ms)?;
@@ -256,9 +256,9 @@ struct StoredInvite {
 pub(crate) fn create_invite(
     conn: &mut Connection,
     invite: NewInvite,
-    now_ms: i64,
     audit: &SecurityEvent,
 ) -> Result<(), StoreError> {
+    let now_ms = audit.at_ms;
     let tx = immediate(conn)?;
     insert_invite(&tx, &invite, now_ms)?;
     log_in_tx(&tx, audit)?;

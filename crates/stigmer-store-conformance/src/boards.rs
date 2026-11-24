@@ -24,7 +24,6 @@ pub(crate) async fn create_board_then_get_and_list<S: Store>(store: S) {
             .create_board(
                 &board("research"),
                 Some(&alice),
-                at,
                 board_created(&board("research"), at),
             )
             .await,
@@ -49,7 +48,6 @@ pub(crate) async fn create_board_then_get_and_list<S: Store>(store: S) {
             .create_board(
                 &board("alpha"),
                 None,
-                at + 1,
                 board_created(&board("alpha"), at + 1),
             )
             .await,
@@ -75,7 +73,6 @@ pub(crate) async fn create_duplicate_board_is_board_exists<S: Store>(store: S) {
             .create_board(
                 &board("research"),
                 None,
-                NOW,
                 board_created(&board("research"), NOW),
             )
             .await,
@@ -85,7 +82,6 @@ pub(crate) async fn create_duplicate_board_is_board_exists<S: Store>(store: S) {
         .create_board(
             &board("research"),
             Some(&principal("bob")),
-            NOW,
             board_created(&board("research"), NOW),
         )
         .await;
@@ -95,12 +91,7 @@ pub(crate) async fn create_duplicate_board_is_board_exists<S: Store>(store: S) {
         "{SCENARIO}: second create"
     );
     let main = store
-        .create_board(
-            &BoardId::main(),
-            None,
-            NOW,
-            board_created(&BoardId::main(), NOW),
-        )
+        .create_board(&BoardId::main(), None, board_created(&BoardId::main(), NOW))
         .await;
     assert_eq!(
         main,
@@ -132,7 +123,7 @@ pub(crate) async fn boards_are_isolated_sequences_start_at_1_per_board<S: Store>
     let (main, other) = (BoardId::main(), board("other"));
     ok(
         store
-            .create_board(&other, None, NOW, board_created(&other, NOW))
+            .create_board(&other, None, board_created(&other, NOW))
             .await,
         format_args!("{SCENARIO}: create other"),
     );
@@ -228,7 +219,7 @@ pub(crate) async fn unknown_board_is_not_found_from_every_method<S: Store>(store
     not_found(store.get_board(&nowhere).await.map(drop), "get_board");
     not_found(
         store
-            .archive_board(&nowhere, NOW, board_archived(&nowhere, NOW))
+            .archive_board(&nowhere, board_archived(&nowhere, NOW))
             .await
             .map(drop),
         "archive_board",

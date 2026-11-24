@@ -36,7 +36,7 @@ async fn rig() -> Rig {
     let root = credential(&inner, CredentialScope::Instance, "root", NOW + DAY).await;
     let ops = board("ops");
     inner
-        .create_board(&ops, None, NOW, audit(SecurityEventKind::BoardCreated, NOW))
+        .create_board(&ops, None, audit(SecurityEventKind::BoardCreated, NOW))
         .await
         .unwrap();
     let admin = member_token(&inner, &ops, "oda", Role::Admin).await;

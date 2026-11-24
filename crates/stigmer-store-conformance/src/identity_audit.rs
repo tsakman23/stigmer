@@ -21,7 +21,7 @@ pub(crate) async fn create_board_writes_exactly_one_board_created_row<S: Store +
     let row = board_created(&ops, NOW + 7);
     let info = ok(
         store
-            .create_board(&ops, Some(&principal("root")), NOW + 7, row.clone())
+            .create_board(&ops, Some(&principal("root")), row.clone())
             .await,
         SCENARIO,
     );
@@ -34,13 +34,13 @@ pub(crate) async fn duplicate_create_board_writes_no_row<S: Store + IdentityStor
     let ops = board("ops");
     let first = board_created(&ops, NOW);
     ok(
-        store.create_board(&ops, None, NOW, first.clone()).await,
+        store.create_board(&ops, None, first.clone()).await,
         SCENARIO,
     );
     for on in [&ops, &BoardId::main()] {
         assert_eq!(
             store
-                .create_board(on, None, NOW + 1, board_created(on, NOW + 1))
+                .create_board(on, None, board_created(on, NOW + 1))
                 .await,
             Err(StoreError::Conflict(ConflictKind::BoardExists)),
             "{SCENARIO}: {on}"
@@ -58,17 +58,14 @@ pub(crate) async fn archive_board_writes_one_row_and_a_second_archive_writes_non
     let ops = board("ops");
     let created = board_created(&ops, NOW);
     ok(
-        store.create_board(&ops, None, NOW, created.clone()).await,
+        store.create_board(&ops, None, created.clone()).await,
         SCENARIO,
     );
     let archived = board_archived(&ops, NOW + 1);
-    let info = ok(
-        store.archive_board(&ops, NOW + 1, archived.clone()).await,
-        SCENARIO,
-    );
+    let info = ok(store.archive_board(&ops, archived.clone()).await, SCENARIO);
     assert_eq!(info.archived_at_ms, Some(NOW + 1), "{SCENARIO}");
     let again = store
-        .archive_board(&ops, NOW + 2, board_archived(&ops, NOW + 2))
+        .archive_board(&ops, board_archived(&ops, NOW + 2))
         .await;
     assert_eq!(again, Ok(info), "{SCENARIO}: a repeat changes nothing");
     assert_eq!(
@@ -86,20 +83,15 @@ pub(crate) async fn revoke_credential_writes_one_row_and_a_repeat_writes_none<
     const SCENARIO: &str = "revoke_credential_writes_one_row_and_a_repeat_writes_none";
     let c = credential(1, CredentialScope::Board(BoardId::main()), "alice");
     let issued = token_issued(NOW);
-    ok(
-        store.create_credential(c, NOW, issued.clone()).await,
-        SCENARIO,
-    );
+    ok(store.create_credential(c, issued.clone()).await, SCENARIO);
     let revoked = token_revoked(NOW + 1);
     ok(
-        store
-            .revoke_credential(&token_id(1), NOW + 1, revoked.clone())
-            .await,
+        store.revoke_credential(&token_id(1), revoked.clone()).await,
         SCENARIO,
     );
     assert_eq!(
         store
-            .revoke_credential(&token_id(1), NOW + 2, token_revoked(NOW + 2))
+            .revoke_credential(&token_id(1), token_revoked(NOW + 2))
             .await,
         Ok(()),
         "{SCENARIO}: a repeat is allowed"
@@ -131,15 +123,10 @@ pub(crate) async fn remove_member_revokes_credentials_and_writes_one_row<
     ok(added, SCENARIO);
     let c = credential(1, CredentialScope::Board(main.clone()), "alice");
     let issued = token_issued(NOW);
-    ok(
-        store.create_credential(c, NOW, issued.clone()).await,
-        SCENARIO,
-    );
+    ok(store.create_credential(c, issued.clone()).await, SCENARIO);
     let removed = member_removed(&main, NOW + 1);
     ok(
-        store
-            .remove_member(&main, &alice, NOW + 1, removed.clone())
-            .await,
+        store.remove_member(&main, &alice, removed.clone()).await,
         SCENARIO,
     );
     let found = ok(store.find_credential(&token_id(1)).await, SCENARIO);
@@ -150,7 +137,7 @@ pub(crate) async fn remove_member_revokes_credentials_and_writes_one_row<
     );
     assert_eq!(
         store
-            .remove_member(&main, &alice, NOW + 2, member_removed(&main, NOW + 2))
+            .remove_member(&main, &alice, member_removed(&main, NOW + 2))
             .await,
         Err(not_found(Entity::Member, "alice")),
         "{SCENARIO}: remove again"
@@ -177,28 +164,20 @@ pub(crate) async fn create_invite_and_create_credential_and_replace_instance_cre
         instance_token_issued(NOW + 3),
     ];
     let into = invite(1, &main, Role::Member, PrincipalKind::Agent);
-    ok(
-        store.create_invite(into, NOW, rows[0].clone()).await,
-        SCENARIO,
-    );
+    ok(store.create_invite(into, rows[0].clone()).await, SCENARIO);
     let c = credential(2, CredentialScope::Board(main.clone()), "alice");
-    ok(
-        store.create_credential(c, NOW + 1, rows[1].clone()).await,
-        SCENARIO,
-    );
+    ok(store.create_credential(c, rows[1].clone()).await, SCENARIO);
     // A board credential: the replacement below has no other instance credential to revoke,
     // so it writes only its own row (revoking ones are the next two scenarios).
     let other = credential(3, CredentialScope::Board(main.clone()), "bob");
     ok(
-        store
-            .create_credential(other, NOW + 2, rows[2].clone())
-            .await,
+        store.create_credential(other, rows[2].clone()).await,
         SCENARIO,
     );
     let new = credential(4, CredentialScope::Instance, "instance-admin");
     assert_eq!(
         store
-            .replace_instance_credential(new, NOW + 3, rows[3].clone())
+            .replace_instance_credential(new, rows[3].clone())
             .await,
         Ok(0),
         "{SCENARIO}: replace"
@@ -216,7 +195,7 @@ pub(crate) async fn replace_instance_credential_writes_a_token_revoked_row_with_
         let old = credential(n, CredentialScope::Instance, "instance-admin");
         ok(
             store
-                .create_credential(old, NOW, instance_token_issued(NOW))
+                .create_credential(old, instance_token_issued(NOW))
                 .await,
             SCENARIO,
         );
@@ -225,9 +204,7 @@ pub(crate) async fn replace_instance_credential_writes_a_token_revoked_row_with_
     let issued = instance_token_issued(NOW + 1);
     let new = credential(3, CredentialScope::Instance, "instance-admin");
     assert_eq!(
-        store
-            .replace_instance_credential(new, NOW + 1, issued.clone())
-            .await,
+        store.replace_instance_credential(new, issued.clone()).await,
         Ok(2),
         "{SCENARIO}: replace"
     );
@@ -257,9 +234,7 @@ pub(crate) async fn replace_instance_credential_writes_no_extra_row_when_nothing
     let issued = instance_token_issued(NOW);
     let new = credential(1, CredentialScope::Instance, "instance-admin");
     assert_eq!(
-        store
-            .replace_instance_credential(new, NOW, issued.clone())
-            .await,
+        store.replace_instance_credential(new, issued.clone()).await,
         Ok(0),
         "{SCENARIO}: replace"
     );
@@ -284,4 +259,58 @@ pub(crate) async fn enable_network_mode_writes_one_row_and_a_second_call_none<
         "{SCENARIO}: second call"
     );
     assert_eq!(log_of(&store, SCENARIO).await, vec![row], "{SCENARIO}");
+}
+
+/// Every audited mutation takes its instant from its audit event: the times it stores and the
+/// row's `at_ms` are that one instant. A credential's and an invite's creation times are not
+/// readable through the trait; the SQLite tests read those columns.
+pub(crate) async fn audited_mutations_stamp_state_and_row_with_the_audit_instant<
+    S: Store + IdentityStore,
+>(
+    store: S,
+) {
+    const SCENARIO: &str = "audited_mutations_stamp_state_and_row_with_the_audit_instant";
+    let (ops, main) = (board("ops"), BoardId::main());
+    let created = board_created(&ops, NOW + 11);
+    let info = ok(
+        store.create_board(&ops, None, created.clone()).await,
+        SCENARIO,
+    );
+    assert_eq!(info.created_at_ms, NOW + 11, "{SCENARIO}: board created_at");
+    let archived = board_archived(&ops, NOW + 12);
+    let info = ok(store.archive_board(&ops, archived.clone()).await, SCENARIO);
+    assert_eq!(
+        info.archived_at_ms,
+        Some(NOW + 12),
+        "{SCENARIO}: board archived_at"
+    );
+    let invited = invite_created(NOW + 13);
+    let into = invite(1, &main, Role::Member, PrincipalKind::Agent);
+    ok(store.create_invite(into, invited.clone()).await, SCENARIO);
+    let issued = token_issued(NOW + 14);
+    let c = credential(2, CredentialScope::Board(main.clone()), "alice");
+    ok(store.create_credential(c, issued.clone()).await, SCENARIO);
+    let revoked = token_revoked(NOW + 15);
+    ok(
+        store.revoke_credential(&token_id(2), revoked.clone()).await,
+        SCENARIO,
+    );
+    let found = ok(store.find_credential(&token_id(2)).await, SCENARIO);
+    assert_eq!(
+        found.and_then(|c| c.revoked_at_ms),
+        Some(NOW + 15),
+        "{SCENARIO}: revoked_at"
+    );
+    let rows = vec![created, archived, invited, issued, revoked];
+    let instants: Vec<i64> = rows.iter().map(|r| r.at_ms).collect();
+    assert_eq!(
+        instants,
+        [NOW + 11, NOW + 12, NOW + 13, NOW + 14, NOW + 15],
+        "{SCENARIO}"
+    );
+    assert_eq!(
+        log_of(&store, SCENARIO).await,
+        rows,
+        "{SCENARIO}: rows as given"
+    );
 }

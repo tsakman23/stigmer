@@ -14,29 +14,23 @@ pub(crate) async fn failed_mutations_write_no_rows<S: Store + IdentityStore>(sto
     let (nowhere, old, main) = (board("nowhere"), board("old"), BoardId::main());
     ok(
         store
-            .create_board(&old, None, NOW, board_created(&old, NOW))
+            .create_board(&old, None, board_created(&old, NOW))
             .await,
         SCENARIO,
     );
     ok(
-        store
-            .archive_board(&old, NOW, board_archived(&old, NOW))
-            .await,
+        store.archive_board(&old, board_archived(&old, NOW)).await,
         SCENARIO,
     );
     let existing = credential(9, CredentialScope::Board(main.clone()), "zed");
     ok(
-        store
-            .create_credential(existing, NOW, token_issued(NOW))
-            .await,
+        store.create_credential(existing, token_issued(NOW)).await,
         SCENARIO,
     );
     let into_main = invite(8, &main, Role::Member, PrincipalKind::Agent);
     let main_hash = into_main.secret_hash;
     ok(
-        store
-            .create_invite(into_main, NOW, invite_created(NOW))
-            .await,
+        store.create_invite(into_main, invite_created(NOW)).await,
         SCENARIO,
     );
     let added = store
@@ -59,7 +53,6 @@ pub(crate) async fn failed_mutations_write_no_rows<S: Store + IdentityStore>(sto
         store
             .create_invite(
                 invite(1, &nowhere, Role::Member, PrincipalKind::Agent),
-                at,
                 invite_created(at),
             )
             .await
@@ -70,7 +63,6 @@ pub(crate) async fn failed_mutations_write_no_rows<S: Store + IdentityStore>(sto
         store
             .create_credential(
                 credential(2, CredentialScope::Board(nowhere.clone()), "a"),
-                at,
                 token_issued(at),
             )
             .await
@@ -79,21 +71,21 @@ pub(crate) async fn failed_mutations_write_no_rows<S: Store + IdentityStore>(sto
     failures.push((
         "remove_member unknown board",
         store
-            .remove_member(&nowhere, &principal("a"), at, member_removed(&nowhere, at))
+            .remove_member(&nowhere, &principal("a"), member_removed(&nowhere, at))
             .await
             .is_err(),
     ));
     failures.push((
         "archive_board unknown board",
         store
-            .archive_board(&nowhere, at, board_archived(&nowhere, at))
+            .archive_board(&nowhere, board_archived(&nowhere, at))
             .await
             .is_err(),
     ));
     failures.push((
         "archive_board main",
         store
-            .archive_board(&main, at, board_archived(&main, at))
+            .archive_board(&main, board_archived(&main, at))
             .await
             .is_err(),
     ));
@@ -103,7 +95,6 @@ pub(crate) async fn failed_mutations_write_no_rows<S: Store + IdentityStore>(sto
         store
             .create_invite(
                 invite(3, &old, Role::Member, PrincipalKind::Agent),
-                at,
                 invite_created(at),
             )
             .await
@@ -114,7 +105,6 @@ pub(crate) async fn failed_mutations_write_no_rows<S: Store + IdentityStore>(sto
         store
             .create_credential(
                 credential(4, CredentialScope::Board(old.clone()), "a"),
-                at,
                 token_issued(at),
             )
             .await
@@ -124,7 +114,7 @@ pub(crate) async fn failed_mutations_write_no_rows<S: Store + IdentityStore>(sto
     failures.push((
         "create_board taken id",
         store
-            .create_board(&old, None, at, board_created(&old, at))
+            .create_board(&old, None, board_created(&old, at))
             .await
             .is_err(),
     ));
@@ -133,7 +123,6 @@ pub(crate) async fn failed_mutations_write_no_rows<S: Store + IdentityStore>(sto
         store
             .create_credential(
                 credential(9, CredentialScope::Board(main.clone()), "zed"),
-                at,
                 token_issued(at),
             )
             .await
@@ -156,14 +145,14 @@ pub(crate) async fn failed_mutations_write_no_rows<S: Store + IdentityStore>(sto
     failures.push((
         "remove_member unknown member",
         store
-            .remove_member(&main, &principal("nobody"), at, member_removed(&main, at))
+            .remove_member(&main, &principal("nobody"), member_removed(&main, at))
             .await
             .is_err(),
     ));
     failures.push((
         "revoke_credential unknown id",
         store
-            .revoke_credential(&token_id(77), at, token_revoked(at))
+            .revoke_credential(&token_id(77), token_revoked(at))
             .await
             .is_err(),
     ));
@@ -172,7 +161,6 @@ pub(crate) async fn failed_mutations_write_no_rows<S: Store + IdentityStore>(sto
         store
             .replace_instance_credential(
                 credential(5, CredentialScope::Board(main.clone()), "a"),
-                at,
                 instance_token_issued(at),
             )
             .await

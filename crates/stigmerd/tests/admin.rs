@@ -696,7 +696,7 @@ fn network_with_members(data: &Path, archive_ops: bool) {
     with_store(data, |store| async move {
         let ops = BoardId::new("ops").expect("board");
         store
-            .create_board(&ops, None, now, row(SecurityEventKind::BoardCreated, now))
+            .create_board(&ops, None, row(SecurityEventKind::BoardCreated, now))
             .await
             .expect("create ops");
         for (board, name) in [(BoardId::main(), "alice"), (ops.clone(), "bob")] {
@@ -713,7 +713,7 @@ fn network_with_members(data: &Path, archive_ops: bool) {
         }
         if archive_ops {
             store
-                .archive_board(&ops, now, row(SecurityEventKind::BoardArchived, now))
+                .archive_board(&ops, row(SecurityEventKind::BoardArchived, now))
                 .await
                 .expect("archive ops");
         }

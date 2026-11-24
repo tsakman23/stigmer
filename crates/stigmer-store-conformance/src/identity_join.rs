@@ -31,14 +31,14 @@ pub(crate) async fn join_creates_member_credential_and_audit_row_atomically<
     let research = board("research");
     ok(
         store
-            .create_board(&research, None, NOW, board_created(&research, NOW))
+            .create_board(&research, None, board_created(&research, NOW))
             .await,
         SCENARIO,
     );
     let new = invite(1, &research, Role::Member, PrincipalKind::Agent);
     let hash = new.secret_hash;
     ok(
-        store.create_invite(new, NOW, invite_created(NOW)).await,
+        store.create_invite(new, invite_created(NOW)).await,
         SCENARIO,
     );
 
@@ -114,7 +114,7 @@ pub(crate) async fn join_failure_leaves_no_member_credential_or_audit_row<
     let old = board("old");
     ok(
         store
-            .create_board(&old, None, NOW, board_created(&old, NOW))
+            .create_board(&old, None, board_created(&old, NOW))
             .await,
         SCENARIO,
     );
@@ -134,19 +134,15 @@ pub(crate) async fn join_failure_leaves_no_member_credential_or_audit_row<
     let archived = invite(2, &old, Role::Member, PrincipalKind::Agent);
     let (taken_hash, archived_hash) = (taken.secret_hash, archived.secret_hash);
     ok(
-        store.create_invite(taken, NOW, invite_created(NOW)).await,
+        store.create_invite(taken, invite_created(NOW)).await,
         SCENARIO,
     );
     ok(
-        store
-            .create_invite(archived, NOW, invite_created(NOW))
-            .await,
+        store.create_invite(archived, invite_created(NOW)).await,
         SCENARIO,
     );
     ok(
-        store
-            .archive_board(&old, NOW, board_archived(&old, NOW))
-            .await,
+        store.archive_board(&old, board_archived(&old, NOW)).await,
         SCENARIO,
     );
 
@@ -212,21 +208,18 @@ pub(crate) async fn create_credential_on_archived_board_is_board_archived<
     let old = board("old");
     ok(
         store
-            .create_board(&old, None, NOW, board_created(&old, NOW))
+            .create_board(&old, None, board_created(&old, NOW))
             .await,
         SCENARIO,
     );
     ok(
-        store
-            .archive_board(&old, NOW, board_archived(&old, NOW))
-            .await,
+        store.archive_board(&old, board_archived(&old, NOW)).await,
         SCENARIO,
     );
     assert_eq!(
         store
             .create_credential(
                 credential(1, CredentialScope::Board(old.clone()), "ann"),
-                NOW,
                 token_issued(NOW)
             )
             .await,
@@ -242,7 +235,6 @@ pub(crate) async fn create_credential_on_archived_board_is_board_archived<
     let instance = store
         .create_credential(
             credential(2, CredentialScope::Instance, "root"),
-            NOW,
             token_issued(NOW),
         )
         .await;
@@ -261,7 +253,7 @@ pub(crate) async fn concurrent_joins_with_one_invite_create_exactly_one_member_a
     let new = invite(1, &main, Role::Member, PrincipalKind::Agent);
     let hash = new.secret_hash;
     ok(
-        store.create_invite(new, NOW, invite_created(NOW)).await,
+        store.create_invite(new, invite_created(NOW)).await,
         SCENARIO,
     );
     let store = Arc::new(store);

@@ -116,7 +116,6 @@ pub async fn credential(
                 principal: Principal::new(name).unwrap(),
                 expires_at_ms: expires,
             },
-            NOW,
             audit(SecurityEventKind::MemberTokenIssued, NOW),
         )
         .await

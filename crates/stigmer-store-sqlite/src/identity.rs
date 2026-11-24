@@ -29,12 +29,9 @@ impl IdentityStore for SqliteStore {
         &self,
         credential: NewCredential,
         invite: Option<NewInvite>,
-        now_ms: i64,
         audits: EnableAudits,
     ) -> impl Future<Output = Result<(), StoreError>> + Send {
-        self.run(move |conn| {
-            members::enable_network(conn, &credential, invite.as_ref(), now_ms, &audits)
-        })
+        self.run(move |conn| members::enable_network(conn, &credential, invite.as_ref(), &audits))
     }
 
     fn add_member(
@@ -70,11 +67,10 @@ impl IdentityStore for SqliteStore {
         &self,
         board: &BoardId,
         name: &Principal,
-        now_ms: i64,
         audit: SecurityEvent,
     ) -> impl Future<Output = Result<(), StoreError>> + Send {
         let (board, name) = (board.clone(), name.clone());
-        self.run(move |conn| members::remove(conn, &board, &name, now_ms, &audit))
+        self.run(move |conn| members::remove(conn, &board, &name, &audit))
     }
 
     fn list_local_authors(
@@ -98,10 +94,9 @@ impl IdentityStore for SqliteStore {
     fn create_credential(
         &self,
         credential: NewCredential,
-        now_ms: i64,
         audit: SecurityEvent,
     ) -> impl Future<Output = Result<(), StoreError>> + Send {
-        self.run(move |conn| credentials::create(conn, credential, now_ms, &audit))
+        self.run(move |conn| credentials::create(conn, credential, &audit))
     }
 
     fn find_credential(
@@ -132,11 +127,10 @@ impl IdentityStore for SqliteStore {
     fn revoke_credential(
         &self,
         id: &TokenId,
-        now_ms: i64,
         audit: SecurityEvent,
     ) -> impl Future<Output = Result<(), StoreError>> + Send {
         let id = id.clone();
-        self.run(move |conn| credentials::revoke(conn, &id, now_ms, &audit))
+        self.run(move |conn| credentials::revoke(conn, &id, &audit))
     }
 
     fn revoke_board_credentials(
@@ -152,13 +146,12 @@ impl IdentityStore for SqliteStore {
     fn archive_board_revoking(
         &self,
         id: &BoardId,
-        now_ms: i64,
         audit: SecurityEvent,
     ) -> impl Future<Output = Result<BoardInfo, StoreError>> + Send {
         let id = id.clone();
         let notifier = Arc::clone(&self.notifier);
         self.run(move |conn| {
-            let info = boards::archive_revoking(conn, &id, now_ms, &audit)?;
+            let info = boards::archive_revoking(conn, &id, &audit)?;
             // Under the connection lock, as in `archive_board`.
             notifier.forget(&id);
             Ok(info)
@@ -177,19 +170,17 @@ impl IdentityStore for SqliteStore {
     fn replace_instance_credential(
         &self,
         credential: NewCredential,
-        now_ms: i64,
         audit: SecurityEvent,
     ) -> impl Future<Output = Result<u64, StoreError>> + Send {
-        self.run(move |conn| credentials::replace_instance(conn, credential, now_ms, &audit))
+        self.run(move |conn| credentials::replace_instance(conn, credential, &audit))
     }
 
     fn create_invite(
         &self,
         invite: NewInvite,
-        now_ms: i64,
         audit: SecurityEvent,
     ) -> impl Future<Output = Result<(), StoreError>> + Send {
-        self.run(move |conn| credentials::create_invite(conn, invite, now_ms, &audit))
+        self.run(move |conn| credentials::create_invite(conn, invite, &audit))
     }
 
     fn consume_invite(

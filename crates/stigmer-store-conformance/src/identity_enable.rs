@@ -38,7 +38,6 @@ pub(crate) async fn enable_network_writes_its_rows_in_order<S: Store + IdentityS
             .enable_network(
                 credential(1, CredentialScope::Instance, "instance-admin"),
                 Some(main_invite),
-                NOW,
                 audits.clone(),
             )
             .await,
@@ -77,7 +76,6 @@ pub(crate) async fn enable_network_without_invite_writes_two_rows<S: Store + Ide
             .enable_network(
                 credential(1, CredentialScope::Instance, "instance-admin"),
                 None,
-                NOW,
                 audits.clone(),
             )
             .await,
@@ -102,7 +100,6 @@ pub(crate) async fn enable_network_twice_is_already_network_and_writes_nothing<
             .enable_network(
                 credential(1, CredentialScope::Instance, "instance-admin"),
                 None,
-                NOW,
                 enable_audits(NOW, false),
             )
             .await,
@@ -119,8 +116,7 @@ pub(crate) async fn enable_network_twice_is_already_network_and_writes_nothing<
                     Role::Admin,
                     PrincipalKind::Human
                 )),
-                NOW + 1,
-                enable_audits(NOW + 1, true),
+                enable_audits(NOW + 1, true)
             )
             .await,
         Err(StoreError::Conflict(ConflictKind::AlreadyNetwork)),
@@ -140,14 +136,12 @@ pub(crate) async fn enable_network_is_atomic_all_or_nothing<S: Store + IdentityS
     let old = board("old");
     ok(
         store
-            .create_board(&old, None, NOW, board_created(&old, NOW))
+            .create_board(&old, None, board_created(&old, NOW))
             .await,
         SCENARIO,
     );
     ok(
-        store
-            .archive_board(&old, NOW, board_archived(&old, NOW))
-            .await,
+        store.archive_board(&old, board_archived(&old, NOW)).await,
         SCENARIO,
     );
     let before = log_of(&store, SCENARIO).await;
@@ -186,7 +180,7 @@ pub(crate) async fn enable_network_is_atomic_all_or_nothing<S: Store + IdentityS
     for (what, c, into) in attempts {
         let with_invite = into.is_some();
         let result = store
-            .enable_network(c, into, NOW + 1, enable_audits(NOW + 1, with_invite))
+            .enable_network(c, into, enable_audits(NOW + 1, with_invite))
             .await;
         assert!(result.is_err(), "{SCENARIO}: {what} must fail");
         assert_eq!(
@@ -212,7 +206,6 @@ pub(crate) async fn enable_network_is_atomic_all_or_nothing<S: Store + IdentityS
             .enable_network(
                 credential(1, CredentialScope::Instance, "instance-admin"),
                 None,
-                NOW + 2,
                 enable_audits(NOW + 2, false),
             )
             .await,
@@ -241,7 +234,6 @@ pub(crate) async fn enable_network_rejects_an_invite_without_its_audit_row_and_t
             .enable_network(
                 credential(1, CredentialScope::Instance, "instance-admin"),
                 into,
-                NOW,
                 audits,
             )
             .await;

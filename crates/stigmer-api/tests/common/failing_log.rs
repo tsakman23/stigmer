@@ -70,10 +70,9 @@ impl Store for LogFailingStore {
         &self,
         id: &BoardId,
         created_by: Option<&Principal>,
-        now_ms: i64,
         audit: SecurityEvent,
     ) -> Result<BoardInfo, StoreError> {
-        self.mutate(self.inner.create_board(id, created_by, now_ms, audit))
+        self.mutate(self.inner.create_board(id, created_by, audit))
             .await
     }
 
@@ -91,11 +90,9 @@ impl Store for LogFailingStore {
     async fn archive_board(
         &self,
         id: &BoardId,
-        now_ms: i64,
         audit: SecurityEvent,
     ) -> Result<BoardInfo, StoreError> {
-        self.mutate(self.inner.archive_board(id, now_ms, audit))
-            .await
+        self.mutate(self.inner.archive_board(id, audit)).await
     }
 
     fn post(&self, msg: NewMessage) -> impl Future<Output = Result<Posted, StoreError>> + Send {
@@ -166,14 +163,10 @@ impl IdentityStore for LogFailingStore {
         &self,
         credential: NewCredential,
         invite: Option<NewInvite>,
-        now_ms: i64,
         audits: EnableAudits,
     ) -> Result<(), StoreError> {
-        self.mutate(
-            self.inner
-                .enable_network(credential, invite, now_ms, audits),
-        )
-        .await
+        self.mutate(self.inner.enable_network(credential, invite, audits))
+            .await
     }
 
     fn add_member(
@@ -206,10 +199,9 @@ impl IdentityStore for LogFailingStore {
         &self,
         board: &BoardId,
         name: &Principal,
-        now_ms: i64,
         audit: SecurityEvent,
     ) -> Result<(), StoreError> {
-        self.mutate(self.inner.remove_member(board, name, now_ms, audit))
+        self.mutate(self.inner.remove_member(board, name, audit))
             .await
     }
 
@@ -232,10 +224,9 @@ impl IdentityStore for LogFailingStore {
     async fn create_credential(
         &self,
         credential: NewCredential,
-        now_ms: i64,
         audit: SecurityEvent,
     ) -> Result<(), StoreError> {
-        self.mutate(self.inner.create_credential(credential, now_ms, audit))
+        self.mutate(self.inner.create_credential(credential, audit))
             .await
     }
 
@@ -264,11 +255,9 @@ impl IdentityStore for LogFailingStore {
     async fn revoke_credential(
         &self,
         id: &TokenId,
-        now_ms: i64,
         audit: SecurityEvent,
     ) -> Result<(), StoreError> {
-        self.mutate(self.inner.revoke_credential(id, now_ms, audit))
-            .await
+        self.mutate(self.inner.revoke_credential(id, audit)).await
     }
 
     fn revoke_board_credentials(
@@ -284,11 +273,11 @@ impl IdentityStore for LogFailingStore {
     async fn archive_board_revoking(
         &self,
         id: &BoardId,
-        now_ms: i64,
         audit: SecurityEvent,
     ) -> Result<BoardInfo, StoreError> {
+        let now_ms = audit.at_ms;
         let archived = self
-            .mutate(self.inner.archive_board_revoking(id, now_ms, audit))
+            .mutate(self.inner.archive_board_revoking(id, audit))
             .await;
         let racer = self.join_after_archive.lock().unwrap().take();
         if let Some(j) = racer {
@@ -312,24 +301,18 @@ impl IdentityStore for LogFailingStore {
     async fn replace_instance_credential(
         &self,
         credential: NewCredential,
-        now_ms: i64,
         audit: SecurityEvent,
     ) -> Result<u64, StoreError> {
-        self.mutate(
-            self.inner
-                .replace_instance_credential(credential, now_ms, audit),
-        )
-        .await
+        self.mutate(self.inner.replace_instance_credential(credential, audit))
+            .await
     }
 
     async fn create_invite(
         &self,
         invite: NewInvite,
-        now_ms: i64,
         audit: SecurityEvent,
     ) -> Result<(), StoreError> {
-        self.mutate(self.inner.create_invite(invite, now_ms, audit))
-            .await
+        self.mutate(self.inner.create_invite(invite, audit)).await
     }
 
     fn consume_invite(

@@ -147,7 +147,6 @@ async fn create_board<S: Store + IdentityStore, A: Authorize>(
         .create_board(
             &req.name,
             Some(&who.principal),
-            audit.at_ms,
             audit.board_created(&req.name),
         )
         .await?;
@@ -220,7 +219,7 @@ async fn archive_board<S: Store + IdentityStore, A: Authorize>(
     };
     let info = state
         .store
-        .archive_board_revoking(&board, audit.at_ms, audit.board_archived(&board))
+        .archive_board_revoking(&board, audit.board_archived(&board))
         .await?;
     Ok(Json(summary(&info)))
 }
@@ -269,10 +268,7 @@ async fn remove_member<S: Store + IdentityStore, A: Authorize>(
         by: &who.principal,
     };
     let row = audit.member_removed(&board, &name);
-    state
-        .store
-        .remove_member(&board, &name, audit.at_ms, row)
-        .await?;
+    state.store.remove_member(&board, &name, row).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -316,7 +312,7 @@ async fn create_invite<S: Store + IdentityStore, A: Authorize>(
         by: &who.principal,
     };
     let row = audit.invite_created(&board, &secret.id, req.kind, req.role);
-    state.store.create_invite(invite, at_ms, row).await?;
+    state.store.create_invite(invite, row).await?;
     Ok((
         StatusCode::CREATED,
         Json(InviteResponse {
@@ -386,6 +382,6 @@ async fn revoke_token<S: Store + IdentityStore, A: Authorize>(
     };
     let row = audit.token_revoked(&board, &id, &credential.principal);
     // A repeat revoke is allowed; the store writes no row for it.
-    state.store.revoke_credential(&id, audit.at_ms, row).await?;
+    state.store.revoke_credential(&id, row).await?;
     Ok(StatusCode::NO_CONTENT)
 }

@@ -294,7 +294,6 @@ mod tests {
             .create_board(
                 &other,
                 None,
-                1,
                 crate::tests::audit(stigmer_store::SecurityEventKind::BoardCreated, 1),
             )
             .await

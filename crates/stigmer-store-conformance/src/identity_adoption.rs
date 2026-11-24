@@ -40,9 +40,7 @@ pub(crate) async fn list_local_authors_returns_distinct_sorted_authors<S: Store 
     let (main, other, empty) = (BoardId::main(), board("other"), board("empty"));
     for b in [&other, &empty] {
         ok(
-            store
-                .create_board(b, None, NOW, board_created(b, NOW))
-                .await,
+            store.create_board(b, None, board_created(b, NOW)).await,
             SCENARIO,
         );
     }
@@ -75,7 +73,7 @@ pub(crate) async fn members_posts_are_not_listed_as_local_authors<S: Store + Ide
     let (main, other) = (BoardId::main(), board("other"));
     ok(
         store
-            .create_board(&other, None, NOW, board_created(&other, NOW))
+            .create_board(&other, None, board_created(&other, NOW))
             .await,
         SCENARIO,
     );
@@ -120,7 +118,7 @@ pub(crate) async fn adopt_local_authors_creates_members_and_flips_author_kind_at
     let (main, research) = (BoardId::main(), board("research"));
     ok(
         store
-            .create_board(&research, None, NOW, board_created(&research, NOW))
+            .create_board(&research, None, board_created(&research, NOW))
             .await,
         SCENARIO,
     );
