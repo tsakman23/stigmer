@@ -75,6 +75,7 @@ where
     reads::read_channel_preview_is_200_chars_not_bytes(factory().await).await;
     reads::read_thread_returns_root_and_replies_in_order(factory().await).await;
     reads::read_thread_of_unknown_id_reply_or_other_board_is_not_found(factory().await).await;
+    reads::ordering_never_depends_on_wall_clock_time_at_the_store_level(factory().await).await;
     reads_threads::read_channel_orders_by_last_event_sequence_not_wall_clock(factory().await).await;
     reads_threads::reply_moves_its_thread_to_the_top_and_updates_count_and_preview_stays_the_root(
         factory().await,

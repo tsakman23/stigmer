@@ -280,11 +280,6 @@ pub(crate) async fn yield_times(n: usize) {
     }
 }
 
-/// Waits long enough that the next post gets a later millisecond timestamp.
-pub(crate) async fn tick() {
-    tokio::time::sleep(Duration::from_millis(3)).await;
-}
-
 /// The whole security log, oldest first.
 pub(crate) async fn log_of<S: IdentityStore>(store: &S, scenario: &str) -> Vec<SecurityEvent> {
     let mut rows = ok(

@@ -1,12 +1,13 @@
 //! Channel listings, pagination and thread reads.
 
+use std::collections::HashMap;
 use std::future::Future;
 use std::panic::Location;
 
-use stigmer_core::{BoardId, MessageId, Page, Target, ThreadSummary};
+use stigmer_core::{BoardId, Message, MessageId, Page, Target, ThreadSummary};
 use stigmer_store::{Entity, Store, StoreError};
 
-use crate::support::{channel, label, message, new_thread, ok, ok_from, post_ok, reply, tick};
+use crate::support::{channel, label, message, new_thread, ok, ok_from, post_ok, reply, Rng};
 
 fn page(limit: u32, before: Option<&MessageId>) -> Page {
     Page {
@@ -44,18 +45,14 @@ pub(crate) async fn read_channel_lists_threads_newest_first_and_filters_by_prefi
 ) {
     const SCENARIO: &str = "read_channel_lists_threads_newest_first_and_filters_by_prefix";
     let t1 = post_ok(&store, new_thread("research", "alice", "first"), SCENARIO).await;
-    tick().await;
     let t2 = post_ok(
         &store,
         new_thread("research/tls", "bob", "second"),
         SCENARIO,
     )
     .await;
-    tick().await;
     let t3 = post_ok(&store, new_thread("research2", "carol", "other"), SCENARIO).await;
-    tick().await;
     let t4 = post_ok(&store, new_thread("eng", "dave", "eng thread"), SCENARIO).await;
-    tick().await;
 
     let before_reply = read_channel_ok(&store, "research", page(50, None), SCENARIO).await;
     assert_eq!(
@@ -99,18 +96,14 @@ pub(crate) async fn read_channel_lists_threads_newest_first_and_filters_by_prefi
 pub(crate) async fn read_channel_matches_whole_path_segments_only<S: Store>(store: S) {
     const SCENARIO: &str = "read_channel_matches_whole_path_segments_only";
     let under = post_ok(&store, new_thread("a_b/c", "alice", "under"), SCENARIO).await;
-    tick().await;
     let exact = post_ok(&store, new_thread("a_b", "alice", "exact"), SCENARIO).await;
-    tick().await;
     post_ok(
         &store,
         new_thread("axb", "alice", "wildcard bait"),
         SCENARIO,
     )
     .await;
-    tick().await;
     post_ok(&store, new_thread("a_bc", "alice", "longer name"), SCENARIO).await;
-    tick().await;
     post_ok(&store, new_thread("a.b", "alice", "dot bait"), SCENARIO).await;
 
     let listed = read_channel_ok(&store, "a_b", page(50, None), SCENARIO).await;
@@ -133,7 +126,6 @@ pub(crate) async fn read_channel_paginates_with_before_and_clamps_limit<S: Store
             )
             .await,
         );
-        tick().await;
     }
     let newest_first: Vec<&MessageId> = roots.iter().rev().map(|p| &p.message.id).collect();
 
@@ -247,6 +239,64 @@ pub(crate) async fn read_thread_of_unknown_id_reply_or_other_board_is_not_found<
                 })
             ),
             "{SCENARIO}: {board} {id} gave {result:?}"
+        );
+    }
+}
+
+pub(crate) async fn ordering_never_depends_on_wall_clock_time_at_the_store_level<S: Store>(
+    store: S,
+) {
+    const SCENARIO: &str = "ordering_never_depends_on_wall_clock_time_at_the_store_level";
+    const POSTS: usize = 30;
+    const CHANNELS: [&str; 3] = ["order/a", "order/b", "order/c"];
+    // Rapid posts the store stamps itself: many share a millisecond, so an order keyed on time
+    // would have to break ties some other way and would not match the posting order.
+    let mut rng = Rng::new(30);
+    // (thread, channel), least recently active first.
+    let mut activity: Vec<(MessageId, &str)> = Vec::new();
+    let mut replies: HashMap<MessageId, Vec<Message>> = HashMap::new();
+    for i in 0..POSTS {
+        if activity.is_empty() || rng.below(2) == 0 {
+            let at = CHANNELS[rng.below(CHANNELS.len())];
+            let text = format!("root {i}");
+            let root = post_ok(&store, new_thread(at, "alice", &text), SCENARIO).await;
+            activity.push((root.message.id, at));
+        } else {
+            let (thread, at) = activity.remove(rng.below(activity.len()));
+            let text = format!("reply {i}");
+            let answer = post_ok(&store, reply(&thread, "bob", &text), SCENARIO).await;
+            replies
+                .entry(thread.clone())
+                .or_default()
+                .push(answer.message);
+            activity.push((thread, at));
+        }
+    }
+    assert!(!replies.is_empty(), "{SCENARIO}: the seed posts replies");
+
+    let newest_first = |only: Option<&str>| -> Vec<&MessageId> {
+        let in_scope = |at: &str| only.is_none_or(|c| c == at);
+        let touched = activity.iter().rev().filter(|(_, at)| in_scope(at));
+        touched.map(|(id, _)| id).collect()
+    };
+    let listed = read_channel_ok(&store, "order", page(50, None), SCENARIO).await;
+    assert_eq!(
+        ids(&listed),
+        newest_first(None),
+        "{SCENARIO}: every channel, in posting order of the last activity"
+    );
+    for at in CHANNELS {
+        let listed = read_channel_ok(&store, at, page(50, None), SCENARIO).await;
+        assert_eq!(ids(&listed), newest_first(Some(at)), "{SCENARIO}: {at}");
+    }
+    for (thread, posted) in &replies {
+        let read = ok(
+            store.read_thread(&BoardId::main(), thread).await,
+            format_args!("{SCENARIO}: read_thread {thread}"),
+        );
+        assert_eq!(
+            &read.replies, posted,
+            "{SCENARIO}: replies of {thread} in posting order"
         );
     }
 }
