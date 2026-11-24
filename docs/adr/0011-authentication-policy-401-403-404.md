@@ -1,6 +1,6 @@
 # 0011. Authentication policy: 429, 401, 404, 403
 
-Status: Accepted, amended
+Status: Accepted, amended; partly superseded by [0014](0014-audit-rows-in-the-mutation-transaction.md)
 Date: 2026-11-22
 
 ## Context
