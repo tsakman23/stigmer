@@ -24,10 +24,10 @@ parameter per method and a different failure mode, and removes a class of half-d
 
 ## Decision
 
-This replaces the best-effort rule for admin mutation rows recorded in
-[0008](0008-board-isolation-and-credentials.md) (and its two-step archive) and the best-effort
-assumption behind [0011](0011-authentication-policy-401-403-404.md)'s security log; 0011's
-logging of failed authentications and rate-limited requests stands as written.
+This partly supersedes [0008](0008-board-isolation-and-credentials.md): its best-effort rule
+for admin mutation rows and its two-step archive. It does not supersede
+[0011](0011-authentication-policy-401-403-404.md): 0011's logging of failed authentications and
+rate-limited requests, which record no mutation, stands as written and stays best effort.
 
 - Every audited mutation takes the security log row that records it and the store writes it in
   the same transaction: `Store::create_board` and `Store::archive_board` (which also gain a
