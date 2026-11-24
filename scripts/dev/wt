@@ -15,13 +15,15 @@ milestone() {
 slug() { echo "${1//\//-}"; }
 
 cmd="${1:-}"; branch="${2:-}"
-[[ -n "$cmd" && -n "$branch" ]] || die "usage: wt new|finish <type>/m<N>-t<NN>-<slug>"
+base_arg="${3:-}"
+[[ -n "$cmd" && -n "$branch" ]] || die "usage: wt new <branch> [base] | wt finish <branch>"
 [[ "$branch" =~ $pattern ]] || die "branch '$branch' does not match $pattern"
 dir=".worktrees/$(slug "$branch")"
 
 case "$cmd" in
   new)
-    base="$(milestone)"
+    # One PR per task: the base defaults to the branch the main checkout is on (usually main).
+    base="${base_arg:-$(git branch --show-current)}"
     [[ -z "$(git status --porcelain)" ]] || die "main checkout is dirty"
     git worktree add -b "$branch" "$dir" "$base"
     echo "worktree: $root/$dir (from $base)"

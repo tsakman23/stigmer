@@ -7,31 +7,32 @@ This is the working agreement for the repo. It is short on purpose.
 | Branch | Purpose | Lifetime |
 |---|---|---|
 | `main` | Always green and releasable. Nothing is committed to it directly. | permanent |
-| `milestone/m<N>-<slug>` | Integration branch for one milestone, for example `milestone/m0-local-board`. | until merged into `main` |
-| `<type>/m<N>-t<NN>-<slug>` | One task from the milestone plan, for example `feat/m0-t02-core-types`. | hours; deleted on merge |
+| `<type>/m<N>-t<NN>-<slug>` | One task from the milestone plan, for example `feat/m2-t01-audit-in-transaction`. One pull request per task. | until its PR is merged |
 
 Types: `feat`, `fix`, `refactor`, `test`, `docs`, `chore`, `ci`. Slugs are lowercase kebab-case. Only these names are accepted by `scripts/dev/wt`.
 
 ## Worktrees
 
-Every task is built in its own worktree under `.worktrees/` (git-ignored), branched from the tip of the milestone branch. The main checkout stays on the milestone branch and is never edited by hand.
+Every task is built in its own worktree under `.worktrees/` (git-ignored), branched from `main` (or from the previous task's branch only when that task's PR is not merged yet and the next one depends on it). The main checkout stays on `main` and is never edited by hand.
 
 ```
-scripts/dev/wt new feat/m0-t02-core-types     # create branch + worktree from the milestone tip
-scripts/dev/wt finish feat/m0-t02-core-types  # rebase if needed, fast-forward merge, remove worktree, delete branch
+scripts/dev/wt new feat/m2-t01-audit-in-transaction [base]  # branch + worktree from the current branch, or from base
 scripts/dev/tidy                              # dry run: list stale worktrees and merged branches
 scripts/dev/tidy --apply                      # prune them
 ```
 
-Run `scripts/dev/tidy --apply` at the end of every task and at every milestone boundary. It only removes branches that are fully merged and worktrees that are clean, and it never touches `main` or `milestone/*`.
+## Pull requests: one per task
+
+Each task is pushed on its own branch and opened as its own small pull request; the next task starts when the previous PR is merged. A PR description says what the one task does, how it was tested, which rulings were made and the review result. A milestone's design and plan are not PRs of their own: they ride in the first task's PR. After a PR merges, run `scripts/dev/tidy --apply`.
+
+Run `scripts/dev/tidy --apply` after every merged PR. It only removes branches that are fully merged and worktrees that are clean, and it never touches `main`.
 
 ## Commits
 
-- Conventional Commits: `type(scope): summary`. Types: `feat`, `fix`, `refactor`, `test`, `docs`, `chore`, `ci`, `perf`, `build`. The scope is optional and names the crate or area: `core`, `store`, `store-conformance`, `store-sqlite`, `api`, `server`, `cli`, `sdk`, `e2e`, `skill`, `workspace`, `docs`, `adr`, `design`, `readme`, `ci`. Summary is imperative, lowercase, no trailing period, at most 72 characters.
+- Conventional Commits: `type(scope): summary`. Types: `feat`, `fix`, `refactor`, `test`, `docs`, `chore`, `ci`, `perf`, `build`. The scope is optional and names the crate or area: `core`, `store`, `store-conformance`, `store-sqlite`, `store-postgres`, `api`, `server`, `cli`, `sdk`, `e2e`, `skill`, `workspace`, `docs`, `adr`, `design`, `readme`, `ci`. Summary is imperative, lowercase, no trailing period, at most 72 characters.
 - Pull requests are checked by `.github/workflows/pr-checks.yml`, which runs `scripts/ci/check-branch-name.sh` (branch names, as above) and `scripts/ci/check-commit-messages.sh` (every commit subject must match `^(feat|fix|refactor|test|docs|chore|ci|perf|build)(\([a-z0-9-]+\))?!?: .{1,72}$`). Run them locally before pushing.
 - One logical change per commit. Tests and the code they cover go in the same commit.
-- Task branches are rebased onto the milestone branch and fast-forward merged, so each milestone has a linear, readable history.
-- A milestone branch merges into `main` with a merge commit (`--no-ff`) so the milestone stays visible in history, then is tagged `v0.<N>.0`.
+- A task PR merges into `main` with a merge commit so each task stays visible in history; a release is tagged `v0.<N>.0` on the merge commit that completes the milestone.
 
 ## Definition of done for a task
 
