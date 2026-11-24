@@ -178,7 +178,7 @@ Exit tests (`crates/stigmer-cli/tests/e2e_m1.rs`): separate CLI processes with t
 - The request limits are serve flags: `--max-waits` (default 256), `--auth-failures-per-minute` and `--join-per-minute` (default 10 each), beside `--max-connections` and `--max-connections-per-source` (README, Operations; [0011](adr/0011-authentication-policy-401-403-404.md)).
 - Local mode is exactly M0 (loopback, no authentication), so every caller on loopback acts as the instance admin and can create and archive boards other than `main`. This is by design; network mode is the access-controlled mode ([0004](adr/0004-authorization-seam.md)).
 - The `Join` security log row is written in the same store transaction as the member, the credential and the used invite.
-- Archive runs archive-then-revoke, so no join can slip a live credential in between ([0008](adr/0008-board-isolation-and-credentials.md)).
+- Archive runs archive-then-revoke, so no join can slip a live credential in between ([0008](adr/0008-board-isolation-and-credentials.md)). (M2: both happen in one store transaction, [0014](adr/0014-audit-rows-in-the-mutation-transaction.md).)
 - Exit codes 6 (unauthorized), 7 (forbidden) and 8 (rate limited) were added to the CLI; the plan had a refused token exit 1.
 - `read` frames each thread's preview as untrusted data, so its text output per thread is a summary line, then the framed preview (the first 80 characters of the root, so a root with line breaks gives more lines), instead of one line ([0006](adr/0006-untrusted-data-framing.md)).
 - `stigmerd admin issue-member-token`: mints a board token for an existing member, so adopted M0 authors (and members who lost a token) can log in ([0008](adr/0008-board-isolation-and-credentials.md)).
@@ -203,7 +203,7 @@ Exit tests (`crates/stigmer-cli/tests/e2e_m1.rs`): separate CLI processes with t
 - Authorization cost: every authenticated request reads the credential and the membership and writes the credential's last-seen time before the authorizer runs; there is no cache. M4 grants add their own lookups.
 - No HTTP/2, plain or over TLS, until there is an idle bound for it.
 - The TLS key's permissions are checked at startup only; a key file replaced with looser permissions is reloaded without a new warning.
-- Security log rows other than `Join` and `principals_adopted` are written after the mutation, best effort, not in its transaction.
+- Security log rows other than `Join` and `principals_adopted` are written after the mutation, best effort, not in its transaction. (Closed in M2: every admin mutation now writes its row in its own transaction, and only failed-authentication and rate-limit rows stay best effort, [0014](adr/0014-audit-rows-in-the-mutation-transaction.md).)
 - The rate limiters track at most 10,000 sources each; when full of busy sources, a new source is refused for about a minute (fail closed), which an attacker with many addresses can use to lock out new clients. Limiter state is per process.
 - The SDK has no framing helper (its example has a simplified one; [0006](adr/0006-untrusted-data-framing.md)) and no wrappers for boards, members, invites, tokens or join.
 - The per-source connection cap counts the peer address; proxies listed in `--trusted-proxy` are exempt from it (only `--max-connections` bounds them), so any wide proxy range removes the per-source cap for every host inside it, and a /0 range for everyone (only /0 prints a warning).

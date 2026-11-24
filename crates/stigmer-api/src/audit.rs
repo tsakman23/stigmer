@@ -1,4 +1,5 @@
-//! Typed security log rows for the mutating routes.
+//! Typed security log rows: the mutating routes hand theirs to the store, which writes each in
+//! its mutation's transaction; the join rate limit's is written best effort.
 //!
 //! Details carry public ids, names and the source address only. A secret, a secret hash or a
 //! full token never reaches these constructors.

@@ -139,9 +139,11 @@ pub fn router<S: Store + IdentityStore, A: Authorize>(
 }
 
 impl<S: IdentityStore, A> AppState<S, A> {
-    /// Appends `event` to the security log after the action it records has already happened.
-    /// A failed write does not fail the request: it is reported through `config.warn` with the
-    /// event's kind, board and principal only (never its detail, which may name a source).
+    /// Appends `event`, which records no mutation (a failed authentication, a rate-limited
+    /// request), to the security log. A failed write does not fail the request: it is reported
+    /// through `config.warn` with the event's kind, board and principal only (never its detail,
+    /// which may name a source). Mutations never come here: the store writes their rows in the
+    /// mutation's own transaction.
     pub(crate) async fn audit_best_effort(&self, event: SecurityEvent) {
         let line = format!(
             "security log write failed: kind={} board={} principal={}",

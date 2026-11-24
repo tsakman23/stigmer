@@ -19,6 +19,17 @@ fn join_credential() -> NewJoinCredential {
     }
 }
 
+/// An audit row for a mutation made at `at_ms`.
+fn audit(kind: SecurityEventKind, at_ms: i64) -> SecurityEvent {
+    SecurityEvent {
+        at_ms,
+        kind,
+        board: None,
+        principal: Some("root".to_owned()),
+        detail: format!("{kind} at {at_ms}"),
+    }
+}
+
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
@@ -59,7 +70,7 @@ async fn secret_hashes_not_stored_in_plain_text() {
                 principal: stigmer_core::Principal::new("alice").unwrap(),
                 expires_at_ms: NOW + 1,
             },
-            NOW,
+            audit(SecurityEventKind::MemberTokenIssued, NOW),
         )
         .await
         .unwrap();
@@ -74,7 +85,7 @@ async fn secret_hashes_not_stored_in_plain_text() {
                 created_by: stigmer_core::Principal::new("root").unwrap(),
                 expires_at_ms: NOW + 1,
             },
-            NOW,
+            audit(SecurityEventKind::InviteCreated, NOW),
         )
         .await
         .unwrap();
@@ -145,7 +156,7 @@ async fn unknown_invite_id_is_refused_exactly_like_a_wrong_secret() {
                 created_by: stigmer_core::Principal::new("root").unwrap(),
                 expires_at_ms: NOW + 1,
             },
-            NOW,
+            audit(SecurityEventKind::InviteCreated, NOW),
         )
         .await
         .unwrap();
@@ -195,7 +206,10 @@ async fn refused_join_leaves_no_credential_member_or_join_row_in_the_file() {
         created_by: alice.clone(),
         expires_at_ms: NOW + 1,
     };
-    store.create_invite(new, NOW).await.unwrap();
+    store
+        .create_invite(new, audit(SecurityEventKind::InviteCreated, NOW))
+        .await
+        .unwrap();
 
     let refused = store
         .consume_invite(&invite.id, &invite.hash, &alice, NOW, join_credential())
@@ -235,7 +249,10 @@ async fn join_row_holds_public_ids_but_no_secret_bytes() {
         created_by: stigmer_core::Principal::new("root").unwrap(),
         expires_at_ms: NOW + 1,
     };
-    store.create_invite(new, NOW).await.unwrap();
+    store
+        .create_invite(new, audit(SecurityEventKind::InviteCreated, NOW))
+        .await
+        .unwrap();
     let join = NewJoinCredential {
         id: token.id.clone(),
         secret_hash: token.hash,
@@ -271,4 +288,44 @@ async fn join_row_holds_public_ids_but_no_secret_bytes() {
             assert!(!cell.contains(&hex(&secret.hash)));
         }
     }
+}
+
+/// Creation times the trait does not expose: a credential's and an invite's `created_at_ms` are
+/// the instant of their audit event.
+#[tokio::test]
+async fn credential_and_invite_creation_times_are_the_audit_instant() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("board.db");
+    let store = SqliteStore::open(&path).await.unwrap();
+    let token = generate_secret(SecretKind::Token).unwrap();
+    let invite = generate_secret(SecretKind::Invite).unwrap();
+    let credential = NewCredential {
+        id: token.id.clone(),
+        secret_hash: token.hash,
+        scope: CredentialScope::Board(BoardId::main()),
+        principal: stigmer_core::Principal::new("alice").unwrap(),
+        expires_at_ms: NOW + 1_000,
+    };
+    let issued = audit(SecurityEventKind::MemberTokenIssued, NOW + 7);
+    store.create_credential(credential, issued).await.unwrap();
+    let new_invite = NewInvite {
+        id: invite.id.clone(),
+        secret_hash: invite.hash,
+        board: BoardId::main(),
+        role: Role::Member,
+        kind: PrincipalKind::Agent,
+        created_by: stigmer_core::Principal::new("root").unwrap(),
+        expires_at_ms: NOW + 1_000,
+    };
+    let invited = audit(SecurityEventKind::InviteCreated, NOW + 8);
+    store.create_invite(new_invite, invited).await.unwrap();
+    let conn = Connection::open(&path).unwrap();
+    let created = |table: &str| -> i64 {
+        conn.query_row(&format!("SELECT created_at_ms FROM {table}"), [], |r| {
+            r.get(0)
+        })
+        .unwrap()
+    };
+    assert_eq!(created("credentials"), NOW + 7);
+    assert_eq!(created("invites"), NOW + 8);
 }

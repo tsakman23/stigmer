@@ -7,14 +7,23 @@ use stigmer_store::{ConflictKind, Consumed, Entity, IdentityStore, Store, StoreE
 
 use crate::identity::{hash_of, invite, join_credential, member, not_found, token_id, HOUR, NOW};
 use crate::support::{board, ok, principal};
+use crate::support::{board_created, invite_created};
 
 pub(crate) async fn invite_consumes_once<S: Store + IdentityStore>(store: S) {
     const SCENARIO: &str = "invite_consumes_once";
     let research = board("research");
-    ok(store.create_board(&research, None).await, SCENARIO);
+    ok(
+        store
+            .create_board(&research, None, board_created(&research, NOW))
+            .await,
+        SCENARIO,
+    );
     let new = invite(1, &research, Role::Member, PrincipalKind::Agent);
     let hash = new.secret_hash;
-    ok(store.create_invite(new, NOW).await, SCENARIO);
+    ok(
+        store.create_invite(new, invite_created(NOW)).await,
+        SCENARIO,
+    );
 
     let dave = member(
         &research,
@@ -71,7 +80,10 @@ pub(crate) async fn invite_expired_is_not_found<S: IdentityStore>(store: S) {
     let main = BoardId::main();
     let new = invite(1, &main, Role::Member, PrincipalKind::Human);
     let (hash, expires) = (new.secret_hash, new.expires_at_ms);
-    ok(store.create_invite(new, NOW).await, SCENARIO);
+    ok(
+        store.create_invite(new, invite_created(NOW)).await,
+        SCENARIO,
+    );
     assert_eq!(expires, NOW + HOUR, "{SCENARIO}");
 
     for at_ms in [expires, expires + HOUR] {
@@ -113,7 +125,10 @@ pub(crate) async fn invite_wrong_hash_is_not_found_and_not_consumed<S: IdentityS
     let main = BoardId::main();
     let new = invite(1, &main, Role::Member, PrincipalKind::Human);
     let hash = new.secret_hash;
-    ok(store.create_invite(new, NOW).await, SCENARIO);
+    ok(
+        store.create_invite(new, invite_created(NOW)).await,
+        SCENARIO,
+    );
     let mut one_bit_off = hash;
     one_bit_off[31] ^= 1;
 
@@ -181,7 +196,10 @@ pub(crate) async fn invite_with_taken_name_conflicts_and_stays_unconsumed<S: Ide
     );
     let new = invite(1, &main, Role::Bridge, PrincipalKind::Bridge);
     let hash = new.secret_hash;
-    ok(store.create_invite(new, NOW).await, SCENARIO);
+    ok(
+        store.create_invite(new, invite_created(NOW)).await,
+        SCENARIO,
+    );
 
     assert_eq!(
         store
@@ -233,7 +251,10 @@ pub(crate) async fn concurrent_consumes_of_one_invite_create_exactly_one_member<
     let main = BoardId::main();
     let new = invite(1, &main, Role::Member, PrincipalKind::Agent);
     let hash = new.secret_hash;
-    ok(store.create_invite(new, NOW).await, SCENARIO);
+    ok(
+        store.create_invite(new, invite_created(NOW)).await,
+        SCENARIO,
+    );
     let store = Arc::new(store);
     let handles: Vec<_> = (0..TASKS)
         .map(|i| {

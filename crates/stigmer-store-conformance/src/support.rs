@@ -10,7 +10,54 @@ use std::panic::Location;
 use std::time::Duration;
 
 use stigmer_core::{BoardId, ChannelPath, Label, MessageId, NewMessage, Page, Principal, Target};
-use stigmer_store::{ChainReport, Posted, Store};
+use stigmer_store::{ChainReport, IdentityStore, Posted, SecurityEvent, SecurityEventKind, Store};
+
+/// The scenarios' fixed "now", in milliseconds since the Unix epoch.
+pub(crate) const NOW: i64 = 1_700_000_000_000;
+
+/// The security log row a scenario hands to an audited mutation: `kind` about `on` at
+/// `at_ms`, by `root`. The detail names the kind and time, so two rows never look alike.
+pub(crate) fn audit(kind: SecurityEventKind, on: Option<&BoardId>, at_ms: i64) -> SecurityEvent {
+    SecurityEvent {
+        at_ms,
+        kind,
+        board: on.cloned(),
+        principal: Some("root".to_owned()),
+        detail: format!("{kind} at {at_ms}"),
+    }
+}
+
+pub(crate) fn board_created(on: &BoardId, at_ms: i64) -> SecurityEvent {
+    audit(SecurityEventKind::BoardCreated, Some(on), at_ms)
+}
+
+pub(crate) fn board_archived(on: &BoardId, at_ms: i64) -> SecurityEvent {
+    audit(SecurityEventKind::BoardArchived, Some(on), at_ms)
+}
+
+pub(crate) fn mode_enabled(at_ms: i64) -> SecurityEvent {
+    audit(SecurityEventKind::ModeEnabled, None, at_ms)
+}
+
+pub(crate) fn member_removed(on: &BoardId, at_ms: i64) -> SecurityEvent {
+    audit(SecurityEventKind::MemberRemoved, Some(on), at_ms)
+}
+
+pub(crate) fn token_issued(at_ms: i64) -> SecurityEvent {
+    audit(SecurityEventKind::MemberTokenIssued, None, at_ms)
+}
+
+pub(crate) fn instance_token_issued(at_ms: i64) -> SecurityEvent {
+    audit(SecurityEventKind::InstanceTokenIssued, None, at_ms)
+}
+
+pub(crate) fn token_revoked(at_ms: i64) -> SecurityEvent {
+    audit(SecurityEventKind::TokenRevoked, None, at_ms)
+}
+
+pub(crate) fn invite_created(at_ms: i64) -> SecurityEvent {
+    audit(SecurityEventKind::InviteCreated, None, at_ms)
+}
 
 /// Panics with `message`, reported at the caller's line.
 #[track_caller]
@@ -201,4 +248,14 @@ pub(crate) fn valid_chain(checked: u64) -> ChainReport {
 /// Waits long enough that the next post gets a later millisecond timestamp.
 pub(crate) async fn tick() {
     tokio::time::sleep(Duration::from_millis(3)).await;
+}
+
+/// The whole security log, oldest first.
+pub(crate) async fn log_of<S: IdentityStore>(store: &S, scenario: &str) -> Vec<SecurityEvent> {
+    let mut rows = ok(
+        store.security_log(1_000).await,
+        format_args!("{scenario}: log"),
+    );
+    rows.reverse();
+    rows
 }

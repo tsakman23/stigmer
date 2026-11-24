@@ -3,7 +3,9 @@
 //! Identity routes (members, invites, tokens, join) need network mode; in local mode they answer
 //! 409. Board routes work in both modes. Every handler asks the async authorizer, resolves the
 //! board with the same visibility rule as the content routes (a board credential never learns
-//! whether another board exists), and writes one security log row per mutation.
+//! whether another board exists), and hands each mutation its security log row, which the store
+//! writes in the mutation's transaction: if the row cannot be written the mutation does not
+//! happen and the request fails with the generic 500, so a retry is safe.
 
 use std::collections::HashMap;
 
@@ -135,16 +137,19 @@ async fn create_board<S: Store + IdentityStore, A: Authorize>(
         .check(&who, Action::ManageBoards, &Scope::Instance)
         .await?;
     let req: CreateBoardRequest = json_body(body)?;
-    let info = state
-        .store
-        .create_board(&req.name, Some(&who.principal))
-        .await?;
     let audit = Audit {
         at_ms: now(&state),
         source,
         by: &who.principal,
     };
-    state.audit_best_effort(audit.board_created(&info.id)).await;
+    let info = state
+        .store
+        .create_board(
+            &req.name,
+            Some(&who.principal),
+            audit.board_created(&req.name),
+        )
+        .await?;
     Ok((StatusCode::CREATED, Json(summary(&info))))
 }
 
@@ -192,13 +197,9 @@ async fn get_board<S: Store + IdentityStore, A: Authorize>(
     Ok(Json(summary(&info)))
 }
 
-/// Archives a board, then revokes every non-admin credential on it.
-///
-/// The order matters: once the board is archived no join can get a new credential (the store
-/// refuses invites into it), so the revoke step that follows sees every credential there will
-/// ever be. Revoking first would leave a window in which a join gets a live credential that is
-/// never revoked. Both steps are idempotent, so when the second fails (500) the board is
-/// already archived and a retry completes the revoke.
+/// Archives a board and revokes every non-admin credential on it, in one store transaction:
+/// once the board is archived no join can get a new credential, so no credential escapes the
+/// revocation, and a failure leaves the board as it was for a retry.
 async fn archive_board<S: Store + IdentityStore, A: Authorize>(
     State(state): State<AppState<S, A>>,
     Extension(who): Extension<Authenticated>,
@@ -211,18 +212,15 @@ async fn archive_board<S: Store + IdentityStore, A: Authorize>(
         .authz
         .check(&who, action, &board_scope(&board))
         .await?;
-    let at_ms = now(&state);
-    let info = state.store.archive_board(&board).await?;
-    state
-        .store
-        .revoke_board_credentials(&board, true, at_ms)
-        .await?;
     let audit = Audit {
-        at_ms,
+        at_ms: now(&state),
         source,
         by: &who.principal,
     };
-    state.audit_best_effort(audit.board_archived(&board)).await;
+    let info = state
+        .store
+        .archive_board_revoking(&board, audit.board_archived(&board))
+        .await?;
     Ok(Json(summary(&info)))
 }
 
@@ -264,16 +262,13 @@ async fn remove_member<S: Store + IdentityStore, A: Authorize>(
     let (board, name) = path_or_400(path)?;
     let board = authorize_board(&state, &who, Action::ManageMembers, &board).await?;
     let name = Principal::new(&name).map_err(|_| ApiError::not_found("no such member"))?;
-    let at_ms = now(&state);
-    state.store.remove_member(&board, &name, at_ms).await?;
     let audit = Audit {
-        at_ms,
+        at_ms: now(&state),
         source,
         by: &who.principal,
     };
-    state
-        .audit_best_effort(audit.member_removed(&board, &name))
-        .await;
+    let row = audit.member_removed(&board, &name);
+    state.store.remove_member(&board, &name, row).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -311,14 +306,13 @@ async fn create_invite<S: Store + IdentityStore, A: Authorize>(
         created_by: who.principal.clone(),
         expires_at_ms,
     };
-    state.store.create_invite(invite, at_ms).await?;
     let audit = Audit {
         at_ms,
         source,
         by: &who.principal,
     };
     let row = audit.invite_created(&board, &secret.id, req.kind, req.role);
-    state.audit_best_effort(row).await;
+    state.store.create_invite(invite, row).await?;
     Ok((
         StatusCode::CREATED,
         Json(InviteResponse {
@@ -381,17 +375,13 @@ async fn revoke_token<S: Store + IdentityStore, A: Authorize>(
         .await?
         .filter(|c| c.scope == CredentialScope::Board(board.clone()))
         .ok_or_else(no_such_token)?;
-    let at_ms = now(&state);
-    state.store.revoke_credential(&id, at_ms).await?;
-    // A repeat revoke is allowed but is not a new event.
-    if credential.revoked_at_ms.is_none() {
-        let audit = Audit {
-            at_ms,
-            source,
-            by: &who.principal,
-        };
-        let row = audit.token_revoked(&board, &id, &credential.principal);
-        state.audit_best_effort(row).await;
-    }
+    let audit = Audit {
+        at_ms: now(&state),
+        source,
+        by: &who.principal,
+    };
+    let row = audit.token_revoked(&board, &id, &credential.principal);
+    // A repeat revoke is allowed; the store writes no row for it.
+    state.store.revoke_credential(&id, row).await?;
     Ok(StatusCode::NO_CONTENT)
 }

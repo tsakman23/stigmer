@@ -6,6 +6,7 @@ mod boards;
 mod credentials;
 mod events;
 mod identity;
+mod invites;
 mod members;
 mod notify;
 mod posts;
@@ -21,8 +22,8 @@ use std::time::Duration;
 use rusqlite::Connection;
 use stigmer_core::{BoardId, ChannelPath, Cursor, Event, MessageId, NewMessage, Principal};
 use stigmer_store::{
-    BoardInfo, ChainReport, Entity, EventFilter, Page, Posted, Store, StoreError, Thread,
-    ThreadSummary,
+    BoardInfo, ChainReport, Entity, EventFilter, Page, Posted, SecurityEvent, Store, StoreError,
+    Thread, ThreadSummary,
 };
 
 /// A `Store` backed by one SQLite database.
@@ -103,9 +104,10 @@ impl Store for SqliteStore {
         &self,
         id: &BoardId,
         created_by: Option<&Principal>,
+        audit: SecurityEvent,
     ) -> impl Future<Output = Result<BoardInfo, StoreError>> + Send {
         let (id, created_by) = (id.clone(), created_by.cloned());
-        self.run(move |conn| boards::create(conn, &id, created_by.as_ref()))
+        self.run(move |conn| boards::create(conn, &id, created_by.as_ref(), &audit))
     }
 
     fn get_board(
@@ -123,11 +125,12 @@ impl Store for SqliteStore {
     fn archive_board(
         &self,
         id: &BoardId,
+        audit: SecurityEvent,
     ) -> impl Future<Output = Result<BoardInfo, StoreError>> + Send {
         let id = id.clone();
         let notifier = Arc::clone(&self.notifier);
         self.run(move |conn| {
-            let info = boards::archive(conn, &id)?;
+            let info = boards::archive(conn, &id, &audit)?;
             // Under the connection lock, like the subscription in `wait_past`.
             notifier.forget(&id);
             Ok(info)
@@ -258,6 +261,17 @@ mod tests {
     use super::*;
     use stigmer_core::GENESIS_HASH;
 
+    /// An audit row for a mutation made at `at_ms`.
+    pub(crate) fn audit(kind: stigmer_store::SecurityEventKind, at_ms: i64) -> SecurityEvent {
+        SecurityEvent {
+            at_ms,
+            kind,
+            board: None,
+            principal: None,
+            detail: format!("{kind} at {at_ms}"),
+        }
+    }
+
     fn query<T: rusqlite::types::FromSql>(store: &SqliteStore, sql: &str) -> T {
         let conn = store.conn.lock().unwrap();
         conn.query_row(sql, [], |row| row.get(0)).unwrap()
@@ -310,7 +324,14 @@ mod tests {
     async fn archive_drops_the_notifier_entry_and_waits_on_it_time_out() {
         let store = Arc::new(SqliteStore::open_memory().await.unwrap());
         let old = BoardId::new("old").unwrap();
-        store.create_board(&old, None).await.unwrap();
+        store
+            .create_board(
+                &old,
+                None,
+                audit(stigmer_store::SecurityEventKind::BoardCreated, 1),
+            )
+            .await
+            .unwrap();
         let waiter = {
             let (store, old) = (Arc::clone(&store), old.clone());
             tokio::spawn(async move {
@@ -322,7 +343,13 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(50)).await;
         assert_eq!(store.notifier.entry_count(), 1, "the waiter subscribed");
 
-        store.archive_board(&old).await.unwrap();
+        store
+            .archive_board(
+                &old,
+                audit(stigmer_store::SecurityEventKind::BoardArchived, 1),
+            )
+            .await
+            .unwrap();
         assert_eq!(store.notifier.entry_count(), 0, "archive drops the entry");
         assert_eq!(
             waiter.await.unwrap(),

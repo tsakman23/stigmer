@@ -29,7 +29,8 @@ ADRs 0001 and 0003 to 0007 shipped in v0.1.0, before this rule existed, and were
 | [0005](0005-wait-semantics-and-cursors.md) | Wait semantics and cursors | Accepted, amended |
 | [0006](0006-untrusted-data-framing.md) | Untrusted-data framing | Accepted, amended |
 | [0007](0007-local-principals.md) | Local principals | Accepted, amended |
-| [0008](0008-board-isolation-and-credentials.md) | Board isolation and credentials | Accepted, amended |
+| [0008](0008-board-isolation-and-credentials.md) | Board isolation and credentials | Accepted, amended; partly superseded by [0014](0014-audit-rows-in-the-mutation-transaction.md) |
 | [0009](0009-token-and-invite-format.md) | Token and invite format | Accepted, amended |
 | [0010](0010-tls-and-trusted-proxy.md) | TLS and trusted proxies | Accepted, amended |
 | [0011](0011-authentication-policy-401-403-404.md) | Authentication policy: 429, 401, 404, 403 | Accepted, amended |
+| [0014](0014-audit-rows-in-the-mutation-transaction.md) | Audit rows in the mutation transaction | Accepted |
