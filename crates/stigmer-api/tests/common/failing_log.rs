@@ -1,4 +1,9 @@
-//! A store whose security log can be made to fail, for best-effort audit tests.
+//! A store whose mutations or best-effort security log can be made to fail.
+//!
+//! An audited mutation writes its security log row inside the store's own transaction, so a
+//! failing audit write cannot be injected from a wrapper: `fail_mutations` makes every audited
+//! mutation fail as the store reports such a failure (a backend error, nothing changed). The
+//! real rollback is proven against SQLite in `stigmer-store-sqlite/tests/audit_rollback.rs`.
 
 #![allow(dead_code)]
 
@@ -12,19 +17,19 @@ use stigmer_core::{
     Posted, Principal, PrincipalKind, Role, Thread, ThreadSummary, TokenId,
 };
 use stigmer_store::{
-    Adoption, ChainReport, Consumed, Credential, IdentityStore, Member, Mode, NewCredential,
-    NewInvite, NewJoinCredential, SecurityEvent, Store, StoreError,
+    Adoption, ChainReport, Consumed, Credential, EnableAudits, IdentityStore, Member, Mode,
+    NewCredential, NewInvite, NewJoinCredential, SecurityEvent, Store, StoreError,
 };
 use stigmer_store_sqlite::SqliteStore;
 
 pub struct LogFailingStore {
     pub inner: SqliteStore,
-    /// While true, `log_security` fails with a backend error.
+    /// While true, `log_security` (the best-effort log) fails with a backend error.
     pub fail_log: AtomicBool,
-    /// The next `revoke_board_credentials` fails once, after which it works again.
-    pub fail_revoke_once: AtomicBool,
-    /// Runs once right after the next `revoke_board_credentials`: a join that races in there.
-    pub join_after_revoke: Mutex<Option<JoinAttempt>>,
+    /// While true, every audited mutation fails with a backend error and changes nothing.
+    pub fail_mutations: AtomicBool,
+    /// Runs once right after the next `archive_board_revoking`: a join that races in there.
+    pub join_after_archive: Mutex<Option<JoinAttempt>>,
     /// What that join got.
     pub join_result: Mutex<Option<Result<Consumed, StoreError>>>,
 }
@@ -42,20 +47,34 @@ impl LogFailingStore {
         Self {
             inner,
             fail_log: AtomicBool::new(false),
-            fail_revoke_once: AtomicBool::new(false),
-            join_after_revoke: Mutex::new(None),
+            fail_mutations: AtomicBool::new(false),
+            join_after_archive: Mutex::new(None),
             join_result: Mutex::new(None),
         }
+    }
+
+    /// `mutation`, or the failure `fail_mutations` asks for without running it.
+    async fn mutate<T>(
+        &self,
+        mutation: impl Future<Output = Result<T, StoreError>>,
+    ) -> Result<T, StoreError> {
+        if self.fail_mutations.load(Ordering::SeqCst) {
+            return Err(StoreError::Backend("audit write failed".into()));
+        }
+        mutation.await
     }
 }
 
 impl Store for LogFailingStore {
-    fn create_board(
+    async fn create_board(
         &self,
         id: &BoardId,
         created_by: Option<&Principal>,
-    ) -> impl Future<Output = Result<BoardInfo, StoreError>> + Send {
-        self.inner.create_board(id, created_by)
+        now_ms: i64,
+        audit: SecurityEvent,
+    ) -> Result<BoardInfo, StoreError> {
+        self.mutate(self.inner.create_board(id, created_by, now_ms, audit))
+            .await
     }
 
     fn get_board(
@@ -69,11 +88,14 @@ impl Store for LogFailingStore {
         self.inner.list_boards()
     }
 
-    fn archive_board(
+    async fn archive_board(
         &self,
         id: &BoardId,
-    ) -> impl Future<Output = Result<BoardInfo, StoreError>> + Send {
-        self.inner.archive_board(id)
+        now_ms: i64,
+        audit: SecurityEvent,
+    ) -> Result<BoardInfo, StoreError> {
+        self.mutate(self.inner.archive_board(id, now_ms, audit))
+            .await
     }
 
     fn post(&self, msg: NewMessage) -> impl Future<Output = Result<Posted, StoreError>> + Send {
@@ -136,8 +158,22 @@ impl IdentityStore for LogFailingStore {
         self.inner.mode()
     }
 
-    fn enable_network_mode(&self) -> impl Future<Output = Result<(), StoreError>> + Send {
-        self.inner.enable_network_mode()
+    async fn enable_network_mode(&self, audit: SecurityEvent) -> Result<(), StoreError> {
+        self.mutate(self.inner.enable_network_mode(audit)).await
+    }
+
+    async fn enable_network(
+        &self,
+        credential: NewCredential,
+        invite: Option<NewInvite>,
+        now_ms: i64,
+        audits: EnableAudits,
+    ) -> Result<(), StoreError> {
+        self.mutate(
+            self.inner
+                .enable_network(credential, invite, now_ms, audits),
+        )
+        .await
     }
 
     fn add_member(
@@ -166,13 +202,15 @@ impl IdentityStore for LogFailingStore {
         self.inner.list_members(board)
     }
 
-    fn remove_member(
+    async fn remove_member(
         &self,
         board: &BoardId,
         name: &Principal,
         now_ms: i64,
-    ) -> impl Future<Output = Result<(), StoreError>> + Send {
-        self.inner.remove_member(board, name, now_ms)
+        audit: SecurityEvent,
+    ) -> Result<(), StoreError> {
+        self.mutate(self.inner.remove_member(board, name, now_ms, audit))
+            .await
     }
 
     fn list_local_authors(
@@ -191,12 +229,14 @@ impl IdentityStore for LogFailingStore {
         self.inner.adopt_local_authors(board, adoptions, now_ms)
     }
 
-    fn create_credential(
+    async fn create_credential(
         &self,
         credential: NewCredential,
         now_ms: i64,
-    ) -> impl Future<Output = Result<(), StoreError>> + Send {
-        self.inner.create_credential(credential, now_ms)
+        audit: SecurityEvent,
+    ) -> Result<(), StoreError> {
+        self.mutate(self.inner.create_credential(credential, now_ms, audit))
+            .await
     }
 
     fn find_credential(
@@ -221,28 +261,36 @@ impl IdentityStore for LogFailingStore {
         self.inner.list_credentials(board)
     }
 
-    fn revoke_credential(
+    async fn revoke_credential(
         &self,
         id: &TokenId,
         now_ms: i64,
-    ) -> impl Future<Output = Result<(), StoreError>> + Send {
-        self.inner.revoke_credential(id, now_ms)
+        audit: SecurityEvent,
+    ) -> Result<(), StoreError> {
+        self.mutate(self.inner.revoke_credential(id, now_ms, audit))
+            .await
     }
 
-    async fn revoke_board_credentials(
+    fn revoke_board_credentials(
         &self,
         board: &BoardId,
         keep_admins: bool,
         now_ms: i64,
-    ) -> Result<u64, StoreError> {
-        if self.fail_revoke_once.swap(false, Ordering::SeqCst) {
-            return Err(StoreError::Backend("revoke unavailable".into()));
-        }
-        let revoked = self
-            .inner
+    ) -> impl Future<Output = Result<u64, StoreError>> + Send {
+        self.inner
             .revoke_board_credentials(board, keep_admins, now_ms)
+    }
+
+    async fn archive_board_revoking(
+        &self,
+        id: &BoardId,
+        now_ms: i64,
+        audit: SecurityEvent,
+    ) -> Result<BoardInfo, StoreError> {
+        let archived = self
+            .mutate(self.inner.archive_board_revoking(id, now_ms, audit))
             .await;
-        let racer = self.join_after_revoke.lock().unwrap().take();
+        let racer = self.join_after_archive.lock().unwrap().take();
         if let Some(j) = racer {
             let joined = self
                 .inner
@@ -250,7 +298,7 @@ impl IdentityStore for LogFailingStore {
                 .await;
             *self.join_result.lock().unwrap() = Some(joined);
         }
-        revoked
+        archived
     }
 
     fn revoke_instance_credentials_except(
@@ -261,20 +309,27 @@ impl IdentityStore for LogFailingStore {
         self.inner.revoke_instance_credentials_except(keep, now_ms)
     }
 
-    fn replace_instance_credential(
+    async fn replace_instance_credential(
         &self,
         credential: NewCredential,
         now_ms: i64,
-    ) -> impl Future<Output = Result<u64, StoreError>> + Send {
-        self.inner.replace_instance_credential(credential, now_ms)
+        audit: SecurityEvent,
+    ) -> Result<u64, StoreError> {
+        self.mutate(
+            self.inner
+                .replace_instance_credential(credential, now_ms, audit),
+        )
+        .await
     }
 
-    fn create_invite(
+    async fn create_invite(
         &self,
         invite: NewInvite,
         now_ms: i64,
-    ) -> impl Future<Output = Result<(), StoreError>> + Send {
-        self.inner.create_invite(invite, now_ms)
+        audit: SecurityEvent,
+    ) -> Result<(), StoreError> {
+        self.mutate(self.inner.create_invite(invite, now_ms, audit))
+            .await
     }
 
     fn consume_invite(

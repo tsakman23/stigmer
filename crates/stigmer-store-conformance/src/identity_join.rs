@@ -10,6 +10,7 @@ use stigmer_store::{
 
 use crate::identity::{credential, hash_of, invite, join_credential, not_found, token_id, NOW};
 use crate::support::{board, ok, principal};
+use crate::support::{board_archived, board_created, invite_created, token_issued};
 
 const JOIN_CREDENTIAL: u8 = 100;
 
@@ -28,10 +29,18 @@ pub(crate) async fn join_creates_member_credential_and_audit_row_atomically<
 ) {
     const SCENARIO: &str = "join_creates_member_credential_and_audit_row_atomically";
     let research = board("research");
-    ok(store.create_board(&research, None).await, SCENARIO);
+    ok(
+        store
+            .create_board(&research, None, NOW, board_created(&research, NOW))
+            .await,
+        SCENARIO,
+    );
     let new = invite(1, &research, Role::Member, PrincipalKind::Agent);
     let hash = new.secret_hash;
-    ok(store.create_invite(new, NOW).await, SCENARIO);
+    ok(
+        store.create_invite(new, NOW, invite_created(NOW)).await,
+        SCENARIO,
+    );
 
     let joined = ok(
         store
@@ -103,7 +112,12 @@ pub(crate) async fn join_failure_leaves_no_member_credential_or_audit_row<
     const SCENARIO: &str = "join_failure_leaves_no_member_credential_or_audit_row";
     let main = BoardId::main();
     let old = board("old");
-    ok(store.create_board(&old, None).await, SCENARIO);
+    ok(
+        store
+            .create_board(&old, None, NOW, board_created(&old, NOW))
+            .await,
+        SCENARIO,
+    );
     ok(
         store
             .add_member(
@@ -119,9 +133,22 @@ pub(crate) async fn join_failure_leaves_no_member_credential_or_audit_row<
     let taken = invite(1, &main, Role::Member, PrincipalKind::Agent);
     let archived = invite(2, &old, Role::Member, PrincipalKind::Agent);
     let (taken_hash, archived_hash) = (taken.secret_hash, archived.secret_hash);
-    ok(store.create_invite(taken, NOW).await, SCENARIO);
-    ok(store.create_invite(archived, NOW).await, SCENARIO);
-    ok(store.archive_board(&old).await, SCENARIO);
+    ok(
+        store.create_invite(taken, NOW, invite_created(NOW)).await,
+        SCENARIO,
+    );
+    ok(
+        store
+            .create_invite(archived, NOW, invite_created(NOW))
+            .await,
+        SCENARIO,
+    );
+    ok(
+        store
+            .archive_board(&old, NOW, board_archived(&old, NOW))
+            .await,
+        SCENARIO,
+    );
 
     let attempts = [
         (
@@ -183,13 +210,24 @@ pub(crate) async fn create_credential_on_archived_board_is_board_archived<
 ) {
     const SCENARIO: &str = "create_credential_on_archived_board_is_board_archived";
     let old = board("old");
-    ok(store.create_board(&old, None).await, SCENARIO);
-    ok(store.archive_board(&old).await, SCENARIO);
+    ok(
+        store
+            .create_board(&old, None, NOW, board_created(&old, NOW))
+            .await,
+        SCENARIO,
+    );
+    ok(
+        store
+            .archive_board(&old, NOW, board_archived(&old, NOW))
+            .await,
+        SCENARIO,
+    );
     assert_eq!(
         store
             .create_credential(
                 credential(1, CredentialScope::Board(old.clone()), "ann"),
-                NOW
+                NOW,
+                token_issued(NOW)
             )
             .await,
         Err(StoreError::Conflict(ConflictKind::BoardArchived)),
@@ -202,7 +240,11 @@ pub(crate) async fn create_credential_on_archived_board_is_board_archived<
     );
     // The instance scope is not tied to a board.
     let instance = store
-        .create_credential(credential(2, CredentialScope::Instance, "root"), NOW)
+        .create_credential(
+            credential(2, CredentialScope::Instance, "root"),
+            NOW,
+            token_issued(NOW),
+        )
         .await;
     assert_eq!(instance, Ok(()), "{SCENARIO}: instance scope");
 }
@@ -218,7 +260,10 @@ pub(crate) async fn concurrent_joins_with_one_invite_create_exactly_one_member_a
     let main = BoardId::main();
     let new = invite(1, &main, Role::Member, PrincipalKind::Agent);
     let hash = new.secret_hash;
-    ok(store.create_invite(new, NOW).await, SCENARIO);
+    ok(
+        store.create_invite(new, NOW, invite_created(NOW)).await,
+        SCENARIO,
+    );
     let store = Arc::new(store);
     let handles: Vec<_> = (0..TASKS)
         .map(|i| {

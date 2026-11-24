@@ -2,19 +2,21 @@
 
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior};
 use stigmer_core::{BoardId, BoardInfo, Principal, GENESIS_HASH};
-use stigmer_store::{ConflictKind, Entity, StoreError};
+use stigmer_store::{ConflictKind, Entity, SecurityEvent, StoreError};
 
-use stigmer_core::now_ms;
-
+use crate::credentials::{log_in_tx, revoke_board_in_tx};
 use crate::{backend, not_found};
 
 const BOARD_COLUMNS: &str = "SELECT id, created_at_ms, created_by, archived_at_ms FROM boards";
 
-/// Creates an empty board at the genesis hash, or `BoardExists` if the id is taken.
+/// Creates an empty board at the genesis hash and writes its audit row, or `BoardExists` if the
+/// id is taken.
 pub(crate) fn create(
     conn: &mut Connection,
     id: &BoardId,
     created_by: Option<&Principal>,
+    now_ms: i64,
+    audit: &SecurityEvent,
 ) -> Result<BoardInfo, StoreError> {
     let tx = conn
         .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -24,7 +26,7 @@ pub(crate) fn create(
     }
     let info = BoardInfo {
         id: id.clone(),
-        created_at_ms: now_ms(),
+        created_at_ms: now_ms,
         created_by: created_by.cloned(),
         archived_at_ms: None,
     };
@@ -39,6 +41,7 @@ pub(crate) fn create(
         ),
     )
     .map_err(backend)?;
+    log_in_tx(&tx, audit)?;
     tx.commit().map_err(backend)?;
     Ok(info)
 }
@@ -62,27 +65,69 @@ pub(crate) fn list(conn: &mut Connection) -> Result<Vec<BoardInfo>, StoreError> 
     Ok(boards)
 }
 
-/// Sets the board's archive time unless it is already set; returns the board as stored.
-/// `main` is refused with `BoardProtected`.
-pub(crate) fn archive(conn: &mut Connection, id: &BoardId) -> Result<BoardInfo, StoreError> {
+/// Sets the board's archive time and writes the audit row unless it is already archived;
+/// returns the board as stored. `main` is refused with `BoardProtected`.
+pub(crate) fn archive(
+    conn: &mut Connection,
+    id: &BoardId,
+    now_ms: i64,
+    audit: &SecurityEvent,
+) -> Result<BoardInfo, StoreError> {
+    let tx = archivable(conn, id)?;
+    let (info, archived) = set_archived(&tx, id, now_ms)?;
+    if archived {
+        log_in_tx(&tx, audit)?;
+        tx.commit().map_err(backend)?;
+    }
+    Ok(info)
+}
+
+/// Archives the board and revokes every live non-admin credential on it in one transaction,
+/// writing the audit row when anything changed. Once the board is archived no credential can be
+/// added to it, so nothing escapes the revocation.
+pub(crate) fn archive_revoking(
+    conn: &mut Connection,
+    id: &BoardId,
+    now_ms: i64,
+    audit: &SecurityEvent,
+) -> Result<BoardInfo, StoreError> {
+    let tx = archivable(conn, id)?;
+    let (info, archived) = set_archived(&tx, id, now_ms)?;
+    let revoked = revoke_board_in_tx(&tx, id, true, now_ms)?;
+    if archived || revoked > 0 {
+        log_in_tx(&tx, audit)?;
+        tx.commit().map_err(backend)?;
+    }
+    Ok(info)
+}
+
+/// A write transaction for archiving `id`; `main` is refused with `BoardProtected` first.
+fn archivable<'c>(conn: &'c mut Connection, id: &BoardId) -> Result<Transaction<'c>, StoreError> {
     if *id == BoardId::main() {
         return Err(StoreError::Conflict(ConflictKind::BoardProtected));
     }
-    let tx = conn
-        .transaction_with_behavior(TransactionBehavior::Immediate)
-        .map_err(backend)?;
-    let mut info = require(&tx, id)?;
-    if info.archived_at_ms.is_none() {
-        let at_ms = now_ms();
-        tx.execute(
-            "UPDATE boards SET archived_at_ms = ?1 WHERE id = ?2",
-            (at_ms, id.as_str()),
-        )
-        .map_err(backend)?;
-        tx.commit().map_err(backend)?;
-        info.archived_at_ms = Some(at_ms);
+    conn.transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(backend)
+}
+
+/// Sets the archive time of an unarchived board inside `tx`. Returns the board as it now is and
+/// whether this call archived it.
+fn set_archived(
+    tx: &Transaction<'_>,
+    id: &BoardId,
+    now_ms: i64,
+) -> Result<(BoardInfo, bool), StoreError> {
+    let mut info = require(tx, id)?;
+    if info.archived_at_ms.is_some() {
+        return Ok((info, false));
     }
-    Ok(info)
+    tx.execute(
+        "UPDATE boards SET archived_at_ms = ?1 WHERE id = ?2",
+        (now_ms, id.as_str()),
+    )
+    .map_err(backend)?;
+    info.archived_at_ms = Some(now_ms);
+    Ok((info, true))
 }
 
 /// The head `(seq, hash)` of a board that accepts posts: `NotFound` for an unknown board,

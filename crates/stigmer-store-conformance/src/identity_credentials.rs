@@ -5,6 +5,7 @@ use stigmer_store::{Credential, CredentialScope, Entity, IdentityStore, NewCrede
 
 use crate::identity::{credential, not_found, token_id, NOW};
 use crate::support::{board, ok, principal};
+use crate::support::{board_created, instance_token_issued, token_issued, token_revoked};
 
 /// The credential `new` as freshly stored: never revoked or seen.
 fn stored(new: &NewCredential) -> Credential {
@@ -27,7 +28,12 @@ pub(crate) async fn credential_roundtrip_and_find_unknown_is_none<S: IdentitySto
     let earlier = credential(2, CredentialScope::Board(main.clone()), "bob");
     let instance = credential(3, CredentialScope::Instance, "root");
     for (c, at_ms) in [(&earlier, NOW), (&later, NOW + 1), (&instance, NOW + 2)] {
-        ok(store.create_credential(c.clone(), at_ms).await, SCENARIO);
+        ok(
+            store
+                .create_credential(c.clone(), at_ms, token_issued(at_ms))
+                .await,
+            SCENARIO,
+        );
     }
     for c in [&later, &earlier, &instance] {
         assert_eq!(
@@ -72,9 +78,16 @@ pub(crate) async fn credential_roundtrip_and_find_unknown_is_none<S: IdentitySto
 pub(crate) async fn revoke_credential_is_idempotent<S: IdentityStore>(store: S) {
     const SCENARIO: &str = "revoke_credential_is_idempotent";
     let c = credential(1, CredentialScope::Board(BoardId::main()), "alice");
-    ok(store.create_credential(c.clone(), NOW).await, SCENARIO);
+    ok(
+        store
+            .create_credential(c.clone(), NOW, token_issued(NOW))
+            .await,
+        SCENARIO,
+    );
     for at_ms in [NOW + 1, NOW + 2] {
-        let revoked = store.revoke_credential(&c.id, at_ms).await;
+        let revoked = store
+            .revoke_credential(&c.id, at_ms, token_revoked(at_ms))
+            .await;
         assert_eq!(revoked, Ok(()), "{SCENARIO}: revoke at {at_ms}");
     }
     let found = ok(store.find_credential(&c.id).await, SCENARIO);
@@ -84,7 +97,9 @@ pub(crate) async fn revoke_credential_is_idempotent<S: IdentityStore>(store: S) 
         "{SCENARIO}: the first revocation time is kept"
     );
     assert_eq!(
-        store.revoke_credential(&token_id(9), NOW).await,
+        store
+            .revoke_credential(&token_id(9), NOW, token_revoked(NOW))
+            .await,
         Err(not_found(Entity::Credential, token_id(9))),
         "{SCENARIO}: revoke unknown"
     );
@@ -95,7 +110,12 @@ pub(crate) async fn archive_style_revoke_keeps_admins_when_asked<S: Store + Iden
 ) {
     const SCENARIO: &str = "archive_style_revoke_keeps_admins_when_asked";
     let (main, research) = (BoardId::main(), board("research"));
-    ok(store.create_board(&research, None).await, SCENARIO);
+    ok(
+        store
+            .create_board(&research, None, NOW, board_created(&research, NOW))
+            .await,
+        SCENARIO,
+    );
     let members = [
         (&main, "ann", Role::Admin),
         (&main, "bob", Role::Member),
@@ -116,7 +136,10 @@ pub(crate) async fn archive_style_revoke_keeps_admins_when_asked<S: Store + Iden
         credential(5, CredentialScope::Instance, "ann"),
     ];
     for c in creds {
-        ok(store.create_credential(c, NOW).await, SCENARIO);
+        ok(
+            store.create_credential(c, NOW, token_issued(NOW)).await,
+            SCENARIO,
+        );
     }
     let revoked_at = |n: u8| {
         let store = &store;
@@ -169,9 +192,17 @@ pub(crate) async fn revoke_instance_credentials_except_spares_the_kept_one_and_b
         credential(4, CredentialScope::Board(BoardId::main()), "alice"),
     ];
     for c in creds {
-        ok(store.create_credential(c, NOW).await, SCENARIO);
+        ok(
+            store.create_credential(c, NOW, token_issued(NOW)).await,
+            SCENARIO,
+        );
     }
-    ok(store.revoke_credential(&token_id(3), NOW).await, SCENARIO);
+    ok(
+        store
+            .revoke_credential(&token_id(3), NOW, token_revoked(NOW))
+            .await,
+        SCENARIO,
+    );
 
     assert_eq!(
         store
@@ -206,13 +237,21 @@ pub(crate) async fn replace_instance_credential_stores_the_new_one_and_revokes_t
         "replace_instance_credential_stores_the_new_one_and_revokes_the_rest_atomically";
     let old = credential(1, CredentialScope::Instance, "instance-admin");
     let board_token = credential(4, CredentialScope::Board(BoardId::main()), "alice");
-    ok(store.create_credential(old, NOW).await, SCENARIO);
-    ok(store.create_credential(board_token, NOW).await, SCENARIO);
+    ok(
+        store.create_credential(old, NOW, token_issued(NOW)).await,
+        SCENARIO,
+    );
+    ok(
+        store
+            .create_credential(board_token, NOW, token_issued(NOW))
+            .await,
+        SCENARIO,
+    );
 
     let new = credential(5, CredentialScope::Instance, "instance-admin");
     assert_eq!(
         store
-            .replace_instance_credential(new.clone(), NOW + 1)
+            .replace_instance_credential(new.clone(), NOW + 1, instance_token_issued(NOW + 1))
             .await,
         Ok(1),
         "{SCENARIO}: the old instance credential is revoked"
@@ -237,6 +276,7 @@ pub(crate) async fn replace_instance_credential_stores_the_new_one_and_revokes_t
             .create_credential(
                 credential(6, CredentialScope::Instance, "instance-admin"),
                 NOW,
+                token_issued(NOW),
             )
             .await,
         SCENARIO,
@@ -244,7 +284,7 @@ pub(crate) async fn replace_instance_credential_stores_the_new_one_and_revokes_t
     let clash = credential(5, CredentialScope::Instance, "instance-admin");
     assert!(
         store
-            .replace_instance_credential(clash, NOW + 2)
+            .replace_instance_credential(clash, NOW + 2, instance_token_issued(NOW + 2))
             .await
             .is_err(),
         "{SCENARIO}: a duplicate id is refused"
@@ -262,7 +302,7 @@ pub(crate) async fn replace_instance_credential_stores_the_new_one_and_revokes_t
     let scoped = credential(7, CredentialScope::Board(BoardId::main()), "alice");
     assert!(
         store
-            .replace_instance_credential(scoped, NOW + 3)
+            .replace_instance_credential(scoped, NOW + 3, instance_token_issued(NOW + 3))
             .await
             .is_err(),
         "{SCENARIO}: a board credential is refused"

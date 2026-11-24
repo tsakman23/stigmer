@@ -7,8 +7,9 @@ use stigmer_store::{ConflictKind, Store, StoreError};
 
 use crate::support::{
     all_channels, board, channel, fail, keyed, new_thread_on, ok, post_ok, principal, reply_on,
-    tick, valid_chain,
+    valid_chain,
 };
+use crate::support::{board_archived, board_created, NOW};
 
 const SHORT: Duration = Duration::from_millis(150);
 
@@ -16,7 +17,10 @@ pub(crate) async fn archive_main_is_refused_and_main_stays_writable<S: Store>(st
     const SCENARIO: &str = "archive_main_is_refused_and_main_stays_writable";
     let main = BoardId::main();
     assert_eq!(
-        store.archive_board(&main).await.map(|_| ()),
+        store
+            .archive_board(&main, NOW, board_archived(&main, NOW))
+            .await
+            .map(|_| ()),
         Err(StoreError::Conflict(ConflictKind::BoardProtected)),
         "{SCENARIO}: archive main"
     );
@@ -42,13 +46,17 @@ pub(crate) async fn post_to_archived_board_is_board_archived_and_uses_no_sequenc
     const SCENARIO: &str = "post_to_archived_board_is_board_archived_and_uses_no_sequence_number";
     let old = board("old");
     ok(
-        store.create_board(&old, None).await,
+        store
+            .create_board(&old, None, NOW, board_created(&old, NOW))
+            .await,
         format_args!("{SCENARIO}: create"),
     );
     let keyed_root = keyed(new_thread_on(&old, "eng", "alice", "root"), "req-1");
     let root = post_ok(&store, keyed_root.clone(), SCENARIO).await;
     ok(
-        store.archive_board(&old).await,
+        store
+            .archive_board(&old, NOW, board_archived(&old, NOW))
+            .await,
         format_args!("{SCENARIO}: archive"),
     );
 
@@ -86,7 +94,9 @@ pub(crate) async fn archived_board_is_still_readable<S: Store>(store: S) {
     const SCENARIO: &str = "archived_board_is_still_readable";
     let old = board("old");
     ok(
-        store.create_board(&old, None).await,
+        store
+            .create_board(&old, None, NOW, board_created(&old, NOW))
+            .await,
         format_args!("{SCENARIO}: create"),
     );
     let root = post_ok(
@@ -102,7 +112,9 @@ pub(crate) async fn archived_board_is_still_readable<S: Store>(store: S) {
     )
     .await;
     ok(
-        store.archive_board(&old).await,
+        store
+            .archive_board(&old, NOW, board_archived(&old, NOW))
+            .await,
         format_args!("{SCENARIO}: archive"),
     );
 
@@ -155,17 +167,26 @@ pub(crate) async fn archive_is_idempotent_and_keeps_first_timestamp<S: Store>(st
     const SCENARIO: &str = "archive_is_idempotent_and_keeps_first_timestamp";
     let old = board("old");
     let created = ok(
-        store.create_board(&old, Some(&principal("alice"))).await,
+        store
+            .create_board(
+                &old,
+                Some(&principal("alice")),
+                NOW,
+                board_created(&old, NOW),
+            )
+            .await,
         format_args!("{SCENARIO}: create"),
     );
     let first = ok(
-        store.archive_board(&old).await,
+        store
+            .archive_board(&old, NOW + 1, board_archived(&old, NOW + 1))
+            .await,
         format_args!("{SCENARIO}: first archive"),
     );
     let Some(archived_at) = first.archived_at_ms else {
         fail(format_args!("{SCENARIO}: archive sets archived_at_ms"));
     };
-    assert!(archived_at >= created.created_at_ms, "{SCENARIO}");
+    assert_eq!(archived_at, NOW + 1, "{SCENARIO}: the caller's time");
     assert_eq!(
         first,
         BoardInfo {
@@ -174,9 +195,10 @@ pub(crate) async fn archive_is_idempotent_and_keeps_first_timestamp<S: Store>(st
         },
         "{SCENARIO}: only the archive time changes"
     );
-    tick().await;
     assert_eq!(
-        store.archive_board(&old).await,
+        store
+            .archive_board(&old, NOW + 2, board_archived(&old, NOW + 2))
+            .await,
         Ok(first.clone()),
         "{SCENARIO}: a second archive is a no-op"
     );

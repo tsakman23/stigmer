@@ -15,8 +15,8 @@ use stigmer_core::{
     Posted, Principal, PrincipalKind, Role, Target, Thread, ThreadSummary, TokenId,
 };
 use stigmer_store::{
-    Adoption, ChainReport, Consumed, Credential, IdentityStore, Member, Mode, NewCredential,
-    NewInvite, NewJoinCredential, SecurityEvent, Store, StoreError,
+    Adoption, ChainReport, Consumed, Credential, EnableAudits, IdentityStore, Member, Mode,
+    NewCredential, NewInvite, NewJoinCredential, SecurityEvent, Store, StoreError,
 };
 use stigmer_store_sqlite::SqliteStore;
 use tokio::sync::watch;
@@ -667,8 +667,10 @@ impl Store for RacingStore {
         &self,
         id: &BoardId,
         created_by: Option<&Principal>,
+        now_ms: i64,
+        audit: SecurityEvent,
     ) -> impl Future<Output = Result<BoardInfo, StoreError>> + Send {
-        self.inner.create_board(id, created_by)
+        self.inner.create_board(id, created_by, now_ms, audit)
     }
 
     fn get_board(
@@ -685,8 +687,10 @@ impl Store for RacingStore {
     fn archive_board(
         &self,
         id: &BoardId,
+        now_ms: i64,
+        audit: SecurityEvent,
     ) -> impl Future<Output = Result<BoardInfo, StoreError>> + Send {
-        self.inner.archive_board(id)
+        self.inner.archive_board(id, now_ms, audit)
     }
 
     fn post(&self, msg: NewMessage) -> impl Future<Output = Result<Posted, StoreError>> + Send {
@@ -758,8 +762,22 @@ impl IdentityStore for RacingStore {
         self.inner.mode()
     }
 
-    fn enable_network_mode(&self) -> impl Future<Output = Result<(), StoreError>> + Send {
-        self.inner.enable_network_mode()
+    fn enable_network_mode(
+        &self,
+        audit: SecurityEvent,
+    ) -> impl Future<Output = Result<(), StoreError>> + Send {
+        self.inner.enable_network_mode(audit)
+    }
+
+    fn enable_network(
+        &self,
+        credential: NewCredential,
+        invite: Option<NewInvite>,
+        now_ms: i64,
+        audits: EnableAudits,
+    ) -> impl Future<Output = Result<(), StoreError>> + Send {
+        self.inner
+            .enable_network(credential, invite, now_ms, audits)
     }
 
     fn add_member(
@@ -793,8 +811,9 @@ impl IdentityStore for RacingStore {
         board: &BoardId,
         name: &Principal,
         now_ms: i64,
+        audit: SecurityEvent,
     ) -> impl Future<Output = Result<(), StoreError>> + Send {
-        self.inner.remove_member(board, name, now_ms)
+        self.inner.remove_member(board, name, now_ms, audit)
     }
 
     fn list_local_authors(
@@ -817,8 +836,9 @@ impl IdentityStore for RacingStore {
         &self,
         credential: NewCredential,
         now_ms: i64,
+        audit: SecurityEvent,
     ) -> impl Future<Output = Result<(), StoreError>> + Send {
-        self.inner.create_credential(credential, now_ms)
+        self.inner.create_credential(credential, now_ms, audit)
     }
 
     fn find_credential(
@@ -847,8 +867,9 @@ impl IdentityStore for RacingStore {
         &self,
         id: &TokenId,
         now_ms: i64,
+        audit: SecurityEvent,
     ) -> impl Future<Output = Result<(), StoreError>> + Send {
-        self.inner.revoke_credential(id, now_ms)
+        self.inner.revoke_credential(id, now_ms, audit)
     }
 
     fn revoke_board_credentials(
@@ -859,6 +880,15 @@ impl IdentityStore for RacingStore {
     ) -> impl Future<Output = Result<u64, StoreError>> + Send {
         self.inner
             .revoke_board_credentials(board, keep_admins, now_ms)
+    }
+
+    fn archive_board_revoking(
+        &self,
+        id: &BoardId,
+        now_ms: i64,
+        audit: SecurityEvent,
+    ) -> impl Future<Output = Result<BoardInfo, StoreError>> + Send {
+        self.inner.archive_board_revoking(id, now_ms, audit)
     }
 
     fn revoke_instance_credentials_except(
@@ -873,16 +903,19 @@ impl IdentityStore for RacingStore {
         &self,
         credential: NewCredential,
         now_ms: i64,
+        audit: SecurityEvent,
     ) -> impl Future<Output = Result<u64, StoreError>> + Send {
-        self.inner.replace_instance_credential(credential, now_ms)
+        self.inner
+            .replace_instance_credential(credential, now_ms, audit)
     }
 
     fn create_invite(
         &self,
         invite: NewInvite,
         now_ms: i64,
+        audit: SecurityEvent,
     ) -> impl Future<Output = Result<(), StoreError>> + Send {
-        self.inner.create_invite(invite, now_ms)
+        self.inner.create_invite(invite, now_ms, audit)
     }
 
     fn consume_invite(

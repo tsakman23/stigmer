@@ -6,9 +6,9 @@ use stigmer_core::{BoardId, BoardInfo, Cursor, EventFilter, MessageId};
 use stigmer_store::{ConflictKind, Entity, Store, StoreError};
 
 use crate::support::{
-    all_channels, board, channel, new_thread_on, ok, post_ok, principal, reply_on, tick,
-    valid_chain,
+    all_channels, board, channel, new_thread_on, ok, post_ok, principal, reply_on, valid_chain,
 };
+use crate::support::{board_archived, board_created, NOW};
 
 fn ids(boards: &[BoardInfo]) -> Vec<&str> {
     boards.iter().map(|b| b.id.as_str()).collect()
@@ -17,17 +17,25 @@ fn ids(boards: &[BoardInfo]) -> Vec<&str> {
 pub(crate) async fn create_board_then_get_and_list<S: Store>(store: S) {
     const SCENARIO: &str = "create_board_then_get_and_list";
     let alice = principal("alice");
-    tick().await;
+    // After main, which the store stamped with the real clock when it opened.
+    let at = stigmer_core::now_ms() + 1_000;
     let research = ok(
-        store.create_board(&board("research"), Some(&alice)).await,
+        store
+            .create_board(
+                &board("research"),
+                Some(&alice),
+                at,
+                board_created(&board("research"), at),
+            )
+            .await,
         format_args!("{SCENARIO}: create research"),
     );
     assert_eq!(research.id, board("research"), "{SCENARIO}");
     assert_eq!(research.created_by, Some(alice), "{SCENARIO}: creator");
     assert_eq!(research.archived_at_ms, None, "{SCENARIO}: not archived");
-    assert!(
-        research.created_at_ms > 0,
-        "{SCENARIO}: creation time is set"
+    assert_eq!(
+        research.created_at_ms, at,
+        "{SCENARIO}: creation time is the caller's"
     );
     assert_eq!(
         store.get_board(&board("research")).await,
@@ -35,10 +43,16 @@ pub(crate) async fn create_board_then_get_and_list<S: Store>(store: S) {
         "{SCENARIO}: get returns what create returned"
     );
 
-    tick().await;
     // Created later but sorting first by id: the list must order by creation time.
     let alpha = ok(
-        store.create_board(&board("alpha"), None).await,
+        store
+            .create_board(
+                &board("alpha"),
+                None,
+                at + 1,
+                board_created(&board("alpha"), at + 1),
+            )
+            .await,
         format_args!("{SCENARIO}: create alpha"),
     );
     assert_eq!(alpha.created_by, None, "{SCENARIO}: no creator");
@@ -57,18 +71,37 @@ pub(crate) async fn create_board_then_get_and_list<S: Store>(store: S) {
 pub(crate) async fn create_duplicate_board_is_board_exists<S: Store>(store: S) {
     const SCENARIO: &str = "create_duplicate_board_is_board_exists";
     let first = ok(
-        store.create_board(&board("research"), None).await,
+        store
+            .create_board(
+                &board("research"),
+                None,
+                NOW,
+                board_created(&board("research"), NOW),
+            )
+            .await,
         format_args!("{SCENARIO}: first create"),
     );
     let again = store
-        .create_board(&board("research"), Some(&principal("bob")))
+        .create_board(
+            &board("research"),
+            Some(&principal("bob")),
+            NOW,
+            board_created(&board("research"), NOW),
+        )
         .await;
     assert_eq!(
         again,
         Err(StoreError::Conflict(ConflictKind::BoardExists)),
         "{SCENARIO}: second create"
     );
-    let main = store.create_board(&BoardId::main(), None).await;
+    let main = store
+        .create_board(
+            &BoardId::main(),
+            None,
+            NOW,
+            board_created(&BoardId::main(), NOW),
+        )
+        .await;
     assert_eq!(
         main,
         Err(StoreError::Conflict(ConflictKind::BoardExists)),
@@ -98,7 +131,9 @@ pub(crate) async fn boards_are_isolated_sequences_start_at_1_per_board<S: Store>
     const SCENARIO: &str = "boards_are_isolated_sequences_start_at_1_per_board";
     let (main, other) = (BoardId::main(), board("other"));
     ok(
-        store.create_board(&other, None).await,
+        store
+            .create_board(&other, None, NOW, board_created(&other, NOW))
+            .await,
         format_args!("{SCENARIO}: create other"),
     );
     let on_main = post_ok(&store, new_thread_on(&main, "eng", "alice", "m1"), SCENARIO).await;
@@ -192,7 +227,10 @@ pub(crate) async fn unknown_board_is_not_found_from_every_method<S: Store>(store
     not_found(post.map(drop), "post");
     not_found(store.get_board(&nowhere).await.map(drop), "get_board");
     not_found(
-        store.archive_board(&nowhere).await.map(drop),
+        store
+            .archive_board(&nowhere, NOW, board_archived(&nowhere, NOW))
+            .await
+            .map(drop),
         "archive_board",
     );
 

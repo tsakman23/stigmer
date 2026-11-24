@@ -3,21 +3,38 @@
 
 use std::future::Future;
 
-use stigmer_core::{BoardId, Principal, PrincipalKind, Role, TokenId};
+use std::sync::Arc;
+
+use stigmer_core::{BoardId, BoardInfo, Principal, PrincipalKind, Role, TokenId};
 use stigmer_store::{
-    Adoption, Consumed, Credential, IdentityStore, Member, Mode, NewCredential, NewInvite,
-    NewJoinCredential, SecurityEvent, StoreError,
+    Adoption, Consumed, Credential, EnableAudits, IdentityStore, Member, Mode, NewCredential,
+    NewInvite, NewJoinCredential, SecurityEvent, StoreError,
 };
 
-use crate::{credentials, members, SqliteStore};
+use crate::{boards, credentials, members, SqliteStore};
 
 impl IdentityStore for SqliteStore {
     fn mode(&self) -> impl Future<Output = Result<Mode, StoreError>> + Send {
         self.run(|conn| members::mode(conn))
     }
 
-    fn enable_network_mode(&self) -> impl Future<Output = Result<(), StoreError>> + Send {
-        self.run(members::enable_network_mode)
+    fn enable_network_mode(
+        &self,
+        audit: SecurityEvent,
+    ) -> impl Future<Output = Result<(), StoreError>> + Send {
+        self.run(move |conn| members::enable_network_mode(conn, &audit))
+    }
+
+    fn enable_network(
+        &self,
+        credential: NewCredential,
+        invite: Option<NewInvite>,
+        now_ms: i64,
+        audits: EnableAudits,
+    ) -> impl Future<Output = Result<(), StoreError>> + Send {
+        self.run(move |conn| {
+            members::enable_network(conn, &credential, invite.as_ref(), now_ms, &audits)
+        })
     }
 
     fn add_member(
@@ -54,9 +71,10 @@ impl IdentityStore for SqliteStore {
         board: &BoardId,
         name: &Principal,
         now_ms: i64,
+        audit: SecurityEvent,
     ) -> impl Future<Output = Result<(), StoreError>> + Send {
         let (board, name) = (board.clone(), name.clone());
-        self.run(move |conn| members::remove(conn, &board, &name, now_ms))
+        self.run(move |conn| members::remove(conn, &board, &name, now_ms, &audit))
     }
 
     fn list_local_authors(
@@ -81,8 +99,9 @@ impl IdentityStore for SqliteStore {
         &self,
         credential: NewCredential,
         now_ms: i64,
+        audit: SecurityEvent,
     ) -> impl Future<Output = Result<(), StoreError>> + Send {
-        self.run(move |conn| credentials::create(conn, credential, now_ms))
+        self.run(move |conn| credentials::create(conn, credential, now_ms, &audit))
     }
 
     fn find_credential(
@@ -114,9 +133,10 @@ impl IdentityStore for SqliteStore {
         &self,
         id: &TokenId,
         now_ms: i64,
+        audit: SecurityEvent,
     ) -> impl Future<Output = Result<(), StoreError>> + Send {
         let id = id.clone();
-        self.run(move |conn| credentials::revoke(conn, &id, now_ms))
+        self.run(move |conn| credentials::revoke(conn, &id, now_ms, &audit))
     }
 
     fn revoke_board_credentials(
@@ -127,6 +147,22 @@ impl IdentityStore for SqliteStore {
     ) -> impl Future<Output = Result<u64, StoreError>> + Send {
         let board = board.clone();
         self.run(move |conn| credentials::revoke_board(conn, &board, keep_admins, now_ms))
+    }
+
+    fn archive_board_revoking(
+        &self,
+        id: &BoardId,
+        now_ms: i64,
+        audit: SecurityEvent,
+    ) -> impl Future<Output = Result<BoardInfo, StoreError>> + Send {
+        let id = id.clone();
+        let notifier = Arc::clone(&self.notifier);
+        self.run(move |conn| {
+            let info = boards::archive_revoking(conn, &id, now_ms, &audit)?;
+            // Under the connection lock, as in `archive_board`.
+            notifier.forget(&id);
+            Ok(info)
+        })
     }
 
     fn revoke_instance_credentials_except(
@@ -142,16 +178,18 @@ impl IdentityStore for SqliteStore {
         &self,
         credential: NewCredential,
         now_ms: i64,
+        audit: SecurityEvent,
     ) -> impl Future<Output = Result<u64, StoreError>> + Send {
-        self.run(move |conn| credentials::replace_instance(conn, credential, now_ms))
+        self.run(move |conn| credentials::replace_instance(conn, credential, now_ms, &audit))
     }
 
     fn create_invite(
         &self,
         invite: NewInvite,
         now_ms: i64,
+        audit: SecurityEvent,
     ) -> impl Future<Output = Result<(), StoreError>> + Send {
-        self.run(move |conn| credentials::create_invite(conn, invite, now_ms))
+        self.run(move |conn| credentials::create_invite(conn, invite, now_ms, &audit))
     }
 
     fn consume_invite(
@@ -172,7 +210,7 @@ impl IdentityStore for SqliteStore {
         &self,
         event: SecurityEvent,
     ) -> impl Future<Output = Result<(), StoreError>> + Send {
-        self.run(move |conn| credentials::log_security(conn, event))
+        self.run(move |conn| credentials::log_in_tx(conn, &event))
     }
 
     fn security_log(

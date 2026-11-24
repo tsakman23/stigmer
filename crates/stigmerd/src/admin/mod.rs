@@ -140,8 +140,7 @@ pub async fn run(command: AdminCommand) -> Result<(), Failure> {
             if let Some(invite) = issued.invite {
                 lines.push_str(&format!("main admin invite: {invite}\n"));
             }
-            write_once(&mut out, &lines)?;
-            issued.log_failure.map_or(Ok(()), Err)
+            write_once(&mut out, &lines)
         }
         AdminCommand::NewInstanceToken {
             expires_days,
@@ -160,7 +159,7 @@ pub async fn run(command: AdminCommand) -> Result<(), Failure> {
                 Some(1) => eprintln!("stigmerd: revoked 1 other instance token"),
                 Some(n) => eprintln!("stigmerd: revoked {n} other instance tokens"),
             }
-            issued.log_failure.map_or(Ok(()), Err)
+            Ok(())
         }
         AdminCommand::RevokeToken { id, .. } => {
             require_network(&store).await?;
@@ -219,23 +218,17 @@ async fn require_network<S: IdentityStore>(store: &S) -> Result<(), Failure> {
     }
 }
 
-async fn log<S: IdentityStore>(
-    store: &S,
-    now: i64,
-    kind: SecurityEventKind,
-    board: Option<BoardId>,
-    detail: &str,
-) -> Result<(), Failure> {
-    store
-        .log_security(SecurityEvent {
-            at_ms: now,
-            kind,
-            board,
-            principal: Some(INSTANCE_ADMIN.to_owned()),
-            detail: detail.to_owned(),
-        })
-        .await
-        .map_err(|e| store_failure("cannot write the security log", &e))
+/// A security log row by the instance admin, which the command hands to the store mutation it
+/// records: the store writes it in the mutation's transaction, so a command whose row cannot be
+/// written fails and changes nothing.
+fn event(now: i64, kind: SecurityEventKind, board: Option<BoardId>, detail: &str) -> SecurityEvent {
+    SecurityEvent {
+        at_ms: now,
+        kind,
+        board,
+        principal: Some(INSTANCE_ADMIN.to_owned()),
+        detail: detail.to_owned(),
+    }
 }
 
 fn new_secret(kind: SecretKind) -> Result<NewSecret, Failure> {

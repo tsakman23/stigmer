@@ -10,7 +10,9 @@ use stigmer_core::{
     generate_secret, hash_secret, parse_secret, secrets_match, BoardId, MessageId, Principal,
     PrincipalKind, Role, SecretKind,
 };
-use stigmer_store::{CredentialScope, IdentityStore, Mode, SecurityEventKind, Store};
+use stigmer_store::{
+    CredentialScope, IdentityStore, Mode, SecurityEvent, SecurityEventKind, Store,
+};
 use stigmer_store_sqlite::SqliteStore;
 
 const DAY_MS: i64 = 86_400_000;
@@ -56,6 +58,34 @@ fn now_ms() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .expect("clock after epoch");
     i64::try_from(since.as_millis()).expect("fits i64")
+}
+
+/// A security log row for a mutation a test makes straight through the store.
+fn row(kind: SecurityEventKind, at_ms: i64) -> SecurityEvent {
+    SecurityEvent {
+        at_ms,
+        kind,
+        board: None,
+        principal: Some("test".to_owned()),
+        detail: format!("{kind} by the test"),
+    }
+}
+
+/// Rows in `table` of the database in `data`, read straight from the file.
+fn count_rows(data: &Path, table: &str) -> i64 {
+    let db = rusqlite::Connection::open(data.join("stigmer.db")).expect("open db");
+    db.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))
+        .expect("count rows")
+}
+
+/// Makes every security log insert in the database in `data` fail.
+fn refuse_security_log_writes(data: &Path) {
+    let db = rusqlite::Connection::open(data.join("stigmer.db")).expect("open db");
+    db.execute_batch(
+        "CREATE TRIGGER refuse_audit BEFORE INSERT ON security_log
+         BEGIN SELECT RAISE(ABORT, 'injected audit failure'); END;",
+    )
+    .expect("create trigger");
 }
 
 /// The secret after the label on the line that starts with `label`.
@@ -123,8 +153,8 @@ fn enable_auth_twice_refuses_and_prints_no_token() {
     assert!(!stderr(&out).contains("stg1_") && !stderr(&out).contains("stgi1_"));
 }
 
-/// The failure is injected with a trigger that refuses every invite insert, so minting the main
-/// admin invite fails in the store (step b), before the mode switch (step c).
+/// The failure is injected with a trigger that refuses every invite insert, so storing the main
+/// admin invite fails inside the one enable-network transaction: nothing of it may remain.
 #[test]
 fn enable_auth_failure_before_the_mode_switch_leaves_local_mode_and_a_retry_succeeds() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -157,6 +187,8 @@ fn enable_auth_failure_before_the_mode_switch_leaves_local_mode_and_a_retry_succ
             "nothing may be logged"
         );
     });
+    assert_eq!(count_rows(&data, "credentials"), 0, "no credential stored");
+    assert_eq!(count_rows(&data, "invites"), 0, "no invite stored");
 
     let retry = admin(&data, &["enable-auth", "--no-main-invite"]);
     assert_eq!(retry.status.code(), Some(0), "stderr: {}", stderr(&retry));
@@ -164,6 +196,89 @@ fn enable_auth_failure_before_the_mode_switch_leaves_local_mode_and_a_retry_succ
     with_store(&data, |store| async move {
         assert_eq!(store.mode().await, Ok(Mode::Network));
     });
+}
+
+/// A security log that cannot be written fails enable-auth as a whole: the switch, the token and
+/// the invite all roll back, so no secret is shown and a retry works.
+#[test]
+fn enable_auth_audit_failure_leaves_local_mode_and_nothing_stored() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let data = dir.path().join("data");
+    with_store(&data_dir_ready(&data), |_store| async move {});
+    refuse_security_log_writes(&data);
+
+    let failed = admin(&data, &["enable-auth"]);
+    assert_eq!(failed.status.code(), Some(1), "stderr: {}", stderr(&failed));
+    assert!(failed.stdout.is_empty(), "stdout: {}", stdout(&failed));
+    with_store(&data, |store| async move {
+        assert_eq!(store.mode().await, Ok(Mode::Local), "still local");
+    });
+    assert_eq!(count_rows(&data, "credentials"), 0, "no credential stored");
+    assert_eq!(count_rows(&data, "invites"), 0, "no invite stored");
+    assert_eq!(count_rows(&data, "security_log"), 0, "no row");
+}
+
+/// With the security log refusing writes, every token command fails without changing anything:
+/// its audit row is part of its transaction.
+#[test]
+fn admin_commands_fail_and_change_nothing_when_their_audit_row_cannot_be_written() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let data = dir.path().join("data");
+    network_with_members(&data, false);
+    let first = stdout(&admin(&data, &["new-instance-token"]));
+    let instance = labelled(&first, "instance token: ").to_owned();
+    let credentials = count_rows(&data, "credentials");
+    let rows = count_rows(&data, "security_log");
+    refuse_security_log_writes(&data);
+
+    for args in [
+        vec!["new-instance-token"],
+        vec!["new-instance-token", "--revoke-others"],
+        vec!["issue-member-token", "--board", "main", "--member", "alice"],
+        vec!["revoke-token", &token_id_of(&instance)],
+    ] {
+        let out = admin(&data, &args);
+        assert_eq!(out.status.code(), Some(1), "{args:?}: {}", stderr(&out));
+        assert!(out.stdout.is_empty(), "{args:?}: {}", stdout(&out));
+    }
+    assert_eq!(count_rows(&data, "credentials"), credentials, "none stored");
+    assert_eq!(count_rows(&data, "security_log"), rows, "no row");
+    let (id, _) = parse_secret(SecretKind::Token, &instance).expect("token shape");
+    with_store(&data, |store| async move {
+        let kept = store.find_credential(&id).await.expect("find");
+        assert_eq!(kept.and_then(|c| c.revoked_at_ms), None, "not revoked");
+    });
+}
+
+/// A refused command writes no security log row.
+#[test]
+fn refused_admin_commands_write_no_security_log_rows() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let data = dir.path().join("data");
+    network_with_members(&data, true);
+    let rows = count_rows(&data, "security_log");
+    for args in [
+        vec!["enable-auth"],
+        vec!["revoke-token", "0123456789abcdef"],
+        vec![
+            "issue-member-token",
+            "--board",
+            "main",
+            "--member",
+            "nobody",
+        ],
+        vec!["issue-member-token", "--board", "ops", "--member", "bob"],
+    ] {
+        let out = admin(&data, &args);
+        assert_ne!(out.status.code(), Some(0), "{args:?} must be refused");
+    }
+    assert_eq!(count_rows(&data, "security_log"), rows, "no row");
+
+    let local = dir.path().join("local");
+    with_store(&data_dir_ready(&local), |_store| async move {});
+    let out = admin(&local, &["new-instance-token"]);
+    assert_eq!(out.status.code(), Some(1), "local mode refuses");
+    assert_eq!(count_rows(&local, "security_log"), 0, "no row");
 }
 
 #[cfg(unix)]
@@ -544,15 +659,16 @@ fn new_instance_token_revoke_others_leaves_only_the_new_token_valid() {
         "stderr: {}",
         stderr(&out)
     );
+    let newest_id = token_id_of(&newest);
     with_store(&data, |store| async move {
-        let log = store.security_log(2).await.expect("log");
-        let kinds: Vec<_> = log.iter().map(|e| e.kind).collect();
+        // One row, written in the replacing transaction, says what happened.
+        let log = store.security_log(1).await.expect("log");
+        assert_eq!(log[0].kind, SecurityEventKind::InstanceTokenIssued);
         assert_eq!(
-            kinds,
-            [
-                SecurityEventKind::TokenRevoked,
-                SecurityEventKind::InstanceTokenIssued
-            ]
+            log[0].detail,
+            format!(
+                "credential {newest_id} expires in 90 days, every other instance credential revoked"
+            )
         );
     });
 
@@ -575,7 +691,15 @@ fn network_with_members(data: &Path, archive_ops: bool) {
     assert_eq!(out.status.code(), Some(0), "stderr: {}", stderr(&out));
     with_store(data, |store| async move {
         let ops = BoardId::new("ops").expect("board");
-        store.create_board(&ops, None).await.expect("create ops");
+        store
+            .create_board(
+                &ops,
+                None,
+                now_ms(),
+                row(SecurityEventKind::BoardCreated, now_ms()),
+            )
+            .await
+            .expect("create ops");
         for (board, name) in [(BoardId::main(), "alice"), (ops.clone(), "bob")] {
             store
                 .add_member(
@@ -589,7 +713,14 @@ fn network_with_members(data: &Path, archive_ops: bool) {
                 .expect("add member");
         }
         if archive_ops {
-            store.archive_board(&ops).await.expect("archive ops");
+            store
+                .archive_board(
+                    &ops,
+                    now_ms(),
+                    row(SecurityEventKind::BoardArchived, now_ms()),
+                )
+                .await
+                .expect("archive ops");
         }
     });
 }

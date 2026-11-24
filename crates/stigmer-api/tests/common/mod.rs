@@ -20,7 +20,8 @@ use stigmer_core::{
     generate_secret, BoardId, ChannelPath, NewMessage, Principal, PrincipalKind, Role, SecretKind,
     Target, TokenId,
 };
-use stigmer_store::{CredentialScope, IdentityStore, NewCredential, Store};
+pub use stigmer_store::SecurityEventKind;
+use stigmer_store::{CredentialScope, IdentityStore, NewCredential, SecurityEvent, Store};
 use stigmer_store_sqlite::SqliteStore;
 use tokio::sync::watch;
 use tower::ServiceExt;
@@ -39,7 +40,10 @@ pub struct Net {
 /// A network-mode router over a fresh store, with a clock the test controls.
 pub async fn network_with<A: Authorize>(authz: A, adjust: impl FnOnce(&mut ApiConfig)) -> Net {
     let store = Arc::new(SqliteStore::open_memory().await.unwrap());
-    store.enable_network_mode().await.unwrap();
+    store
+        .enable_network_mode(audit(SecurityEventKind::ModeEnabled, NOW))
+        .await
+        .unwrap();
     let now = Arc::new(AtomicI64::new(NOW));
     let clock = Arc::clone(&now);
     let mut config = ApiConfig::network();
@@ -61,6 +65,17 @@ pub async fn network() -> Net {
         c.limits.join_per_minute = 10_000;
     })
     .await
+}
+
+/// The security log row a test hands to a store mutation it makes directly, at `at_ms`.
+pub fn audit(kind: SecurityEventKind, at_ms: i64) -> SecurityEvent {
+    SecurityEvent {
+        at_ms,
+        kind,
+        board: None,
+        principal: Some("test".to_owned()),
+        detail: format!("{kind} by the test"),
+    }
 }
 
 pub fn board(name: &str) -> BoardId {
@@ -102,6 +117,7 @@ pub async fn credential(
                 expires_at_ms: expires,
             },
             NOW,
+            audit(SecurityEventKind::MemberTokenIssued, NOW),
         )
         .await
         .unwrap();

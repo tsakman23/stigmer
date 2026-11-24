@@ -1,4 +1,5 @@
-//! Archiving a board leaves no live non-admin credential, even when a join races it.
+//! Archiving a board leaves no live non-admin credential, even when a join races it: the store
+//! archives and revokes in one transaction.
 
 mod common;
 
@@ -25,9 +26,15 @@ struct Rig {
 /// A network router over a store with board `ops`, its admin `oda` and the instance admin.
 async fn rig() -> Rig {
     let inner = SqliteStore::open_memory().await.unwrap();
-    inner.enable_network_mode().await.unwrap();
+    inner
+        .enable_network_mode(audit(SecurityEventKind::ModeEnabled, NOW))
+        .await
+        .unwrap();
     let ops = board("ops");
-    inner.create_board(&ops, None).await.unwrap();
+    inner
+        .create_board(&ops, None, NOW, audit(SecurityEventKind::BoardCreated, NOW))
+        .await
+        .unwrap();
     let root = credential(&inner, CredentialScope::Instance, "root", NOW + DAY).await;
     let admin = member_token(&inner, &ops, "oda", Role::Admin).await;
     let store = Arc::new(LogFailingStore::new(inner));
@@ -70,7 +77,7 @@ async fn live_non_admin_credentials(store: &SqliteStore) -> Vec<String> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn archive_then_revoke_leaves_no_live_member_credential_even_when_joins_race() {
+async fn archive_leaves_no_live_member_credential_even_when_joins_race() {
     for round in 0..30 {
         let rig = rig().await;
         let invite = mint_invite(&rig.app, &rig.admin, "ops", "agent", "member").await;
@@ -86,7 +93,7 @@ async fn archive_then_revoke_leaves_no_live_member_credential_even_when_joins_ra
             "round {round}: right after the archive response"
         );
         let joined = joiner.await.unwrap();
-        // Either refused like any bad invite, or the archive's revoke step revoked its token.
+        // Either refused like any bad invite, or it joined before the archive, which revoked it.
         assert!(
             joined.status == StatusCode::CREATED || joined.body == UNAUTHORIZED_BODY,
             "round {round}: {} {}",
@@ -106,14 +113,14 @@ async fn archive_then_revoke_leaves_no_live_member_credential_even_when_joins_ra
 }
 
 /// The interleaving the loop above only hits by luck, forced: a join lands right after the
-/// archive's revoke step, before the archive route returns.
+/// archive transaction, before the archive route returns.
 #[tokio::test]
-async fn join_right_after_the_revoke_step_cannot_get_a_live_credential() {
+async fn join_right_after_the_archive_cannot_get_a_live_credential() {
     let rig = rig().await;
     let invite = mint_invite(&rig.app, &rig.admin, "ops", "agent", "member").await;
     let (id, secret) = parse_secret(SecretKind::Invite, &invite).unwrap();
     let token = generate_secret(SecretKind::Token).unwrap();
-    *rig.store.join_after_revoke.lock().unwrap() = Some(JoinAttempt {
+    *rig.store.join_after_archive.lock().unwrap() = Some(JoinAttempt {
         id,
         secret_hash: hash_secret(&secret),
         name: Principal::new("bot").unwrap(),
@@ -133,11 +140,11 @@ async fn join_right_after_the_revoke_step_cannot_get_a_live_credential() {
 }
 
 #[tokio::test]
-async fn archive_when_revoke_fails_is_retryable() {
+async fn a_failed_archive_changes_nothing_and_a_retry_succeeds() {
     let rig = rig().await;
     let ops = board("ops");
     let member = member_token(&rig.store.inner, &ops, "mo", Role::Member).await;
-    rig.store.fail_revoke_once.store(true, Ordering::SeqCst);
+    rig.store.fail_mutations.store(true, Ordering::SeqCst);
 
     let first = archive(&rig, &rig.root).await;
     assert_eq!(
@@ -146,15 +153,15 @@ async fn archive_when_revoke_fails_is_retryable() {
         "{}",
         first.body
     );
-    assert!(rig
-        .store
-        .inner
-        .get_board(&ops)
-        .await
-        .unwrap()
-        .archived_at_ms
-        .is_some());
+    let info = rig.store.inner.get_board(&ops).await.unwrap();
+    assert_eq!(info.archived_at_ms, None, "the board is not archived");
+    assert_eq!(
+        whoami(&rig, &member).await,
+        StatusCode::OK,
+        "nothing revoked"
+    );
 
+    rig.store.fail_mutations.store(false, Ordering::SeqCst);
     let retry = archive(&rig, &rig.root).await;
     assert_eq!(retry.status, StatusCode::OK, "{}", retry.body);
     assert_eq!(retry.json()["archived"], true);

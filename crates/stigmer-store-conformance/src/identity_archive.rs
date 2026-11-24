@@ -7,6 +7,7 @@ use stigmer_store::{
 
 use crate::identity::{credential, invite, join_credential, not_found, token_id, NOW};
 use crate::support::{board, new_thread_on, ok, post_ok, principal};
+use crate::support::{board_archived, board_created, invite_created, member_removed, token_issued};
 
 const ARCHIVED: StoreError = StoreError::Conflict(ConflictKind::BoardArchived);
 
@@ -15,8 +16,18 @@ pub(crate) async fn add_member_on_archived_board_is_board_archived<S: Store + Id
 ) {
     const SCENARIO: &str = "add_member_on_archived_board_is_board_archived";
     let old = board("old");
-    ok(store.create_board(&old, None).await, SCENARIO);
-    ok(store.archive_board(&old).await, SCENARIO);
+    ok(
+        store
+            .create_board(&old, None, NOW, board_created(&old, NOW))
+            .await,
+        SCENARIO,
+    );
+    ok(
+        store
+            .archive_board(&old, NOW, board_archived(&old, NOW))
+            .await,
+        SCENARIO,
+    );
     let added = store
         .add_member(
             &old,
@@ -39,12 +50,22 @@ pub(crate) async fn create_invite_on_archived_board_is_board_archived<S: Store +
 ) {
     const SCENARIO: &str = "create_invite_on_archived_board_is_board_archived";
     let old = board("old");
-    ok(store.create_board(&old, None).await, SCENARIO);
-    ok(store.archive_board(&old).await, SCENARIO);
+    ok(
+        store
+            .create_board(&old, None, NOW, board_created(&old, NOW))
+            .await,
+        SCENARIO,
+    );
+    ok(
+        store
+            .archive_board(&old, NOW, board_archived(&old, NOW))
+            .await,
+        SCENARIO,
+    );
     let new = invite(1, &old, Role::Member, PrincipalKind::Agent);
     let hash = new.secret_hash;
     assert_eq!(
-        store.create_invite(new, NOW).await,
+        store.create_invite(new, NOW, invite_created(NOW)).await,
         Err(ARCHIVED),
         "{SCENARIO}"
     );
@@ -70,9 +91,19 @@ pub(crate) async fn adopt_local_authors_on_archived_board_is_board_archived<
 ) {
     const SCENARIO: &str = "adopt_local_authors_on_archived_board_is_board_archived";
     let old = board("old");
-    ok(store.create_board(&old, None).await, SCENARIO);
+    ok(
+        store
+            .create_board(&old, None, NOW, board_created(&old, NOW))
+            .await,
+        SCENARIO,
+    );
     post_ok(&store, new_thread_on(&old, "eng", "alice", "hi"), SCENARIO).await;
-    ok(store.archive_board(&old).await, SCENARIO);
+    ok(
+        store
+            .archive_board(&old, NOW, board_archived(&old, NOW))
+            .await,
+        SCENARIO,
+    );
     let adoptions = [Adoption {
         name: principal("alice"),
         kind: PrincipalKind::Human,
@@ -102,11 +133,24 @@ pub(crate) async fn consume_invite_for_archived_board_is_the_generic_not_found<
 ) {
     const SCENARIO: &str = "consume_invite_for_archived_board_is_the_generic_not_found";
     let old = board("old");
-    ok(store.create_board(&old, None).await, SCENARIO);
+    ok(
+        store
+            .create_board(&old, None, NOW, board_created(&old, NOW))
+            .await,
+        SCENARIO,
+    );
     let new = invite(1, &old, Role::Member, PrincipalKind::Agent);
     let hash = new.secret_hash;
-    ok(store.create_invite(new, NOW).await, SCENARIO);
-    ok(store.archive_board(&old).await, SCENARIO);
+    ok(
+        store.create_invite(new, NOW, invite_created(NOW)).await,
+        SCENARIO,
+    );
+    ok(
+        store
+            .archive_board(&old, NOW, board_archived(&old, NOW))
+            .await,
+        SCENARIO,
+    );
     for name in ["dave", "erin"] {
         assert_eq!(
             store
@@ -136,7 +180,12 @@ pub(crate) async fn remove_member_and_revoke_still_work_on_archived_board<
 ) {
     const SCENARIO: &str = "remove_member_and_revoke_still_work_on_archived_board";
     let old = board("old");
-    ok(store.create_board(&old, None).await, SCENARIO);
+    ok(
+        store
+            .create_board(&old, None, NOW, board_created(&old, NOW))
+            .await,
+        SCENARIO,
+    );
     for (name, role) in [
         ("ann", Role::Admin),
         ("bob", Role::Member),
@@ -149,9 +198,17 @@ pub(crate) async fn remove_member_and_revoke_still_work_on_archived_board<
     }
     for (n, name) in [(1, "ann"), (2, "bob"), (3, "cat")] {
         let c = credential(n, CredentialScope::Board(old.clone()), name);
-        ok(store.create_credential(c, NOW).await, SCENARIO);
+        ok(
+            store.create_credential(c, NOW, token_issued(NOW)).await,
+            SCENARIO,
+        );
     }
-    ok(store.archive_board(&old).await, SCENARIO);
+    ok(
+        store
+            .archive_board(&old, NOW, board_archived(&old, NOW))
+            .await,
+        SCENARIO,
+    );
 
     assert_eq!(
         store.revoke_board_credentials(&old, true, NOW + 1).await,
@@ -159,7 +216,14 @@ pub(crate) async fn remove_member_and_revoke_still_work_on_archived_board<
         "{SCENARIO}: revoke all but the admin"
     );
     assert_eq!(
-        store.remove_member(&old, &principal("ann"), NOW + 2).await,
+        store
+            .remove_member(
+                &old,
+                &principal("ann"),
+                NOW + 2,
+                member_removed(&old, NOW + 2)
+            )
+            .await,
         Ok(()),
         "{SCENARIO}: remove the admin"
     );

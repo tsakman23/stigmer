@@ -19,6 +19,17 @@ fn join_credential() -> NewJoinCredential {
     }
 }
 
+/// An audit row for a mutation made at `at_ms`.
+fn audit(kind: SecurityEventKind, at_ms: i64) -> SecurityEvent {
+    SecurityEvent {
+        at_ms,
+        kind,
+        board: None,
+        principal: Some("root".to_owned()),
+        detail: format!("{kind} at {at_ms}"),
+    }
+}
+
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
@@ -60,6 +71,7 @@ async fn secret_hashes_not_stored_in_plain_text() {
                 expires_at_ms: NOW + 1,
             },
             NOW,
+            audit(SecurityEventKind::MemberTokenIssued, NOW),
         )
         .await
         .unwrap();
@@ -75,6 +87,7 @@ async fn secret_hashes_not_stored_in_plain_text() {
                 expires_at_ms: NOW + 1,
             },
             NOW,
+            audit(SecurityEventKind::InviteCreated, NOW),
         )
         .await
         .unwrap();
@@ -146,6 +159,7 @@ async fn unknown_invite_id_is_refused_exactly_like_a_wrong_secret() {
                 expires_at_ms: NOW + 1,
             },
             NOW,
+            audit(SecurityEventKind::InviteCreated, NOW),
         )
         .await
         .unwrap();
@@ -195,7 +209,10 @@ async fn refused_join_leaves_no_credential_member_or_join_row_in_the_file() {
         created_by: alice.clone(),
         expires_at_ms: NOW + 1,
     };
-    store.create_invite(new, NOW).await.unwrap();
+    store
+        .create_invite(new, NOW, audit(SecurityEventKind::InviteCreated, NOW))
+        .await
+        .unwrap();
 
     let refused = store
         .consume_invite(&invite.id, &invite.hash, &alice, NOW, join_credential())
@@ -235,7 +252,10 @@ async fn join_row_holds_public_ids_but_no_secret_bytes() {
         created_by: stigmer_core::Principal::new("root").unwrap(),
         expires_at_ms: NOW + 1,
     };
-    store.create_invite(new, NOW).await.unwrap();
+    store
+        .create_invite(new, NOW, audit(SecurityEventKind::InviteCreated, NOW))
+        .await
+        .unwrap();
     let join = NewJoinCredential {
         id: token.id.clone(),
         secret_hash: token.hash,

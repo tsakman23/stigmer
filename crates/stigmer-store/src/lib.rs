@@ -11,8 +11,8 @@ use stigmer_core::{BoardId, ChannelPath, Cursor, Event, MessageId, NewMessage, P
 mod identity;
 
 pub use identity::{
-    Adoption, Consumed, Credential, CredentialScope, IdentityStore, Member, Mode, NewCredential,
-    NewInvite, NewJoinCredential, SecurityEvent, SecurityEventKind,
+    Adoption, Consumed, Credential, CredentialScope, EnableAudits, IdentityStore, Member, Mode,
+    NewCredential, NewInvite, NewJoinCredential, SecurityEvent, SecurityEventKind,
 };
 
 pub use stigmer_core::{BoardInfo, EventFilter, Message, Page, Posted, Thread, ThreadSummary};
@@ -105,14 +105,22 @@ pub struct ChainReport {
 /// that takes a board reports an unknown board as `NotFound` with `Entity::Board`, except
 /// `read_thread`, which reports the thread.
 ///
+/// The two board mutations take the security log row that records them (`audit`) and write it
+/// in the same transaction, stamped `audit.at_ms`, as the `IdentityStore` mutations do (see
+/// there): a mutation that fails or changes nothing writes no row, and a row that cannot be
+/// written fails the mutation.
+///
 /// Not object-safe on purpose: callers are generic over `S: Store`.
 pub trait Store: Send + Sync + 'static {
-    /// Creates an empty board, stamped with the store's clock (the same clock `post` uses).
-    /// An id that already exists, archived or not, is `Conflict(ConflictKind::BoardExists)`.
+    /// Creates an empty board created at `now_ms` and writes `audit`, in one transaction.
+    /// An id that already exists, archived or not, is `Conflict(ConflictKind::BoardExists)` and
+    /// writes nothing.
     fn create_board(
         &self,
         id: &BoardId,
         created_by: Option<&Principal>,
+        now_ms: i64,
+        audit: SecurityEvent,
     ) -> impl Future<Output = Result<BoardInfo, StoreError>> + Send;
 
     /// The board `id`, archived or not. An unknown board is `NotFound` with `Entity::Board`.
@@ -122,15 +130,17 @@ pub trait Store: Send + Sync + 'static {
     /// Every board, archived ones included, oldest first (ties by id).
     fn list_boards(&self) -> impl Future<Output = Result<Vec<BoardInfo>, StoreError>> + Send;
 
-    /// Archives the board: from then on `post` refuses it with
-    /// `Conflict(ConflictKind::BoardArchived)`, while reads, `events_after`, `head`,
-    /// `wait_past` and `verify_chain` keep working. Archiving an archived board changes nothing
-    /// and returns it as it is, first archive time kept. An unknown board is `NotFound` with
-    /// `Entity::Board`. The board `main` is never archived: it is
-    /// `Conflict(ConflictKind::BoardProtected)` and changes nothing.
+    /// Archives the board at `now_ms` and writes `audit`, in one transaction: from then on
+    /// `post` refuses it with `Conflict(ConflictKind::BoardArchived)`, while reads,
+    /// `events_after`, `head`, `wait_past` and `verify_chain` keep working. Archiving an
+    /// archived board changes nothing, writes no row and returns it as it is, first archive time
+    /// kept. An unknown board is `NotFound` with `Entity::Board`. The board `main` is never
+    /// archived: it is `Conflict(ConflictKind::BoardProtected)` and changes nothing.
     fn archive_board(
         &self,
         id: &BoardId,
+        now_ms: i64,
+        audit: SecurityEvent,
     ) -> impl Future<Output = Result<BoardInfo, StoreError>> + Send;
 
     /// Stores a new thread or a reply and appends its event to the board's chain, atomically.
@@ -296,12 +306,17 @@ mod tests {
 
     // Compile-time check: generic callers get futures they can hand to a multi-thread runtime.
     #[allow(dead_code)]
-    fn store_futures_are_send<S: Store>(store: &S, msg: NewMessage, board: &BoardId) {
+    fn store_futures_are_send<S: Store>(
+        store: &S,
+        msg: NewMessage,
+        board: &BoardId,
+        event: SecurityEvent,
+    ) {
         fn assert_send<T: Send>(_: T) {}
-        assert_send(store.create_board(board, None));
+        assert_send(store.create_board(board, None, 0, event.clone()));
         assert_send(store.get_board(board));
         assert_send(store.list_boards());
-        assert_send(store.archive_board(board));
+        assert_send(store.archive_board(board, 0, event));
         assert_send(store.post(msg));
         assert_send(store.verify_chain(board));
         let (prefix, thread) = (
@@ -334,23 +349,31 @@ mod tests {
     ) {
         use stigmer_core::{PrincipalKind, Role};
         fn assert_send<T: Send>(_: T) {}
+        let e = || event.clone();
+        let audits = EnableAudits {
+            mode: e(),
+            token: e(),
+            invite: Some(e()),
+        };
         assert_send(store.mode());
-        assert_send(store.enable_network_mode());
+        assert_send(store.enable_network_mode(e()));
+        assert_send(store.enable_network(credential.clone(), Some(invite.clone()), 0, audits));
         assert_send(store.add_member(board, name, PrincipalKind::Human, Role::Admin, 0));
         assert_send(store.get_member(board, name));
         assert_send(store.list_members(board));
-        assert_send(store.remove_member(board, name, 0));
+        assert_send(store.remove_member(board, name, 0, e()));
         assert_send(store.list_local_authors(board));
         assert_send(store.adopt_local_authors(board, &[], 0));
-        assert_send(store.create_credential(credential.clone(), 0));
+        assert_send(store.create_credential(credential.clone(), 0, e()));
         assert_send(store.find_credential(id));
         assert_send(store.touch_credential(id, 0));
         assert_send(store.list_credentials(board));
-        assert_send(store.revoke_credential(id, 0));
+        assert_send(store.revoke_credential(id, 0, e()));
         assert_send(store.revoke_board_credentials(board, true, 0));
+        assert_send(store.archive_board_revoking(board, 0, e()));
         assert_send(store.revoke_instance_credentials_except(id, 0));
-        assert_send(store.replace_instance_credential(credential, 0));
-        assert_send(store.create_invite(invite, 0));
+        assert_send(store.replace_instance_credential(credential, 0, e()));
+        assert_send(store.create_invite(invite, 0, e()));
         assert_send(store.consume_invite(id, &[0; 32], name, 0, join));
         assert_send(store.log_security(event));
         assert_send(store.security_log(10));

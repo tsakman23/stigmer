@@ -290,7 +290,15 @@ mod tests {
         assert_eq!(store.list_boards().await.unwrap(), vec![main]);
 
         let other = BoardId::new("other").unwrap();
-        let created = store.create_board(&other, None).await.unwrap();
+        let created = store
+            .create_board(
+                &other,
+                None,
+                1,
+                crate::tests::audit(stigmer_store::SecurityEventKind::BoardCreated, 1),
+            )
+            .await
+            .unwrap();
         assert!(created.created_at_ms > 0);
         let report = store.verify_chain(&BoardId::main()).await.unwrap();
         assert!(report.valid);

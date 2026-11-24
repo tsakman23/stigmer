@@ -400,7 +400,14 @@ mod tests {
     #[tokio::test]
     async fn each_connection_is_rate_limited_as_its_own_source() {
         let store = Arc::new(SqliteStore::open_memory().await.unwrap());
-        store.enable_network_mode().await.unwrap();
+        let enabled = stigmer_store::SecurityEvent {
+            at_ms: 0,
+            kind: stigmer_store::SecurityEventKind::ModeEnabled,
+            board: None,
+            principal: None,
+            detail: String::new(),
+        };
+        store.enable_network_mode(enabled).await.unwrap();
         let (_tx, rx) = watch::channel(false);
         let config = ApiConfig::network();
         let budget = config.limits.auth_failures_per_minute;

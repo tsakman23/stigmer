@@ -15,6 +15,7 @@ mod idempotency;
 mod identity;
 mod identity_adoption;
 mod identity_archive;
+mod identity_audit;
 mod identity_credentials;
 mod identity_invites;
 mod identity_join;

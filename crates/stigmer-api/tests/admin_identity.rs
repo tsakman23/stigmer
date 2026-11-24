@@ -335,6 +335,8 @@ async fn every_mutation_writes_a_security_log_row_without_secrets() {
 
     let mut log = net.store.security_log(50).await.unwrap();
     log.reverse();
+    // Leave out the rows of the test's own setup, written straight through the store.
+    log.retain(|e| e.principal.as_deref() != Some("test"));
     let kinds: Vec<_> = log.iter().map(|e| e.kind).collect();
     assert_eq!(
         kinds,

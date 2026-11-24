@@ -3,11 +3,12 @@
 use rusqlite::{Connection, Row, Transaction, TransactionBehavior};
 use stigmer_core::{BoardId, Principal, PrincipalKind, Role};
 use stigmer_store::{
-    Adoption, ConflictKind, Entity, Member, Mode, SecurityEvent, SecurityEventKind, StoreError,
+    Adoption, ConflictKind, EnableAudits, Entity, Member, Mode, NewCredential, NewInvite,
+    SecurityEvent, SecurityEventKind, StoreError,
 };
 
 use crate::boards::{require, require_writable};
-use crate::credentials::log_security;
+use crate::credentials::{insert_credential, insert_invite, log_in_tx, require_instance_scope};
 use crate::posts::{LOCAL_AUTHOR_KIND, PRINCIPAL_AUTHOR_KIND};
 use crate::{backend, not_found};
 
@@ -33,15 +34,60 @@ pub(crate) fn mode(conn: &Connection) -> Result<Mode, StoreError> {
     }
 }
 
-/// Moves a local instance to network mode; `AlreadyNetwork` if it is there already.
-pub(crate) fn enable_network_mode(conn: &mut Connection) -> Result<(), StoreError> {
+/// Moves a local instance to network mode and writes the audit row; `AlreadyNetwork` if it is
+/// there already.
+pub(crate) fn enable_network_mode(
+    conn: &mut Connection,
+    audit: &SecurityEvent,
+) -> Result<(), StoreError> {
     let tx = immediate(conn)?;
-    if mode(&tx)? == Mode::Network {
+    switch_to_network(&tx)?;
+    log_in_tx(&tx, audit)?;
+    tx.commit().map_err(backend)
+}
+
+/// Stores the instance credential and the optional invite, moves a local instance to network
+/// mode and writes the audit rows, all in one transaction.
+pub(crate) fn enable_network(
+    conn: &mut Connection,
+    credential: &NewCredential,
+    invite: Option<&NewInvite>,
+    now_ms: i64,
+    audits: &EnableAudits,
+) -> Result<(), StoreError> {
+    require_instance_scope(credential)?;
+    if invite.is_some() != audits.invite.is_some() {
+        return Err(StoreError::Backend(
+            "an invite and its audit row go together".into(),
+        ));
+    }
+    let tx = immediate(conn)?;
+    switch_to_network(&tx)?;
+    insert_credential(&tx, credential, None, now_ms)?;
+    if let Some(invite) = invite {
+        insert_invite(&tx, invite, now_ms)?;
+    }
+    for row in [
+        Some(&audits.mode),
+        Some(&audits.token),
+        audits.invite.as_ref(),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        log_in_tx(&tx, row)?;
+    }
+    tx.commit().map_err(backend)
+}
+
+/// Sets network mode inside `tx`; `AlreadyNetwork` if the instance is not local.
+fn switch_to_network(tx: &Transaction<'_>) -> Result<(), StoreError> {
+    if mode(tx)? == Mode::Network {
         return Err(StoreError::Conflict(ConflictKind::AlreadyNetwork));
     }
     tx.execute("UPDATE instance SET mode = 'network' WHERE id = 1", [])
         .map_err(backend)?;
-    tx.commit().map_err(backend)
+    Ok(())
 }
 
 /// Adds a member to an existing board.
@@ -123,12 +169,14 @@ pub(crate) fn list(conn: &mut Connection, board: &BoardId) -> Result<Vec<Member>
     Ok(members)
 }
 
-/// Removes a member and revokes their live credentials on that board, in one transaction.
+/// Removes a member, revokes their live credentials on that board and writes the audit row, in
+/// one transaction.
 pub(crate) fn remove(
     conn: &mut Connection,
     board: &BoardId,
     name: &Principal,
     now_ms: i64,
+    audit: &SecurityEvent,
 ) -> Result<(), StoreError> {
     let tx = immediate(conn)?;
     require(&tx, board)?;
@@ -147,6 +195,7 @@ pub(crate) fn remove(
         (board.as_str(), name.as_str(), now_ms),
     )
     .map_err(backend)?;
+    log_in_tx(&tx, audit)?;
     tx.commit().map_err(backend)
 }
 
@@ -209,9 +258,9 @@ pub(crate) fn adopt(
             .map_err(backend)?;
         marked += u64::try_from(changed).map_err(backend)?;
     }
-    log_security(
+    log_in_tx(
         &tx,
-        SecurityEvent {
+        &SecurityEvent {
             at_ms: now_ms,
             kind: SecurityEventKind::PrincipalsAdopted,
             board: Some(board.clone()),

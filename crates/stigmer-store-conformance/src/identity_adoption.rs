@@ -6,6 +6,7 @@ use stigmer_store::{
 };
 
 use crate::identity::{member, NOW};
+use crate::support::board_created;
 use crate::support::{board, new_thread_on, ok, post_ok, principal, reply_on, valid_chain};
 
 fn adoption(name: &str, kind: PrincipalKind, role: Role) -> Adoption {
@@ -38,7 +39,12 @@ pub(crate) async fn list_local_authors_returns_distinct_sorted_authors<S: Store 
     const SCENARIO: &str = "list_local_authors_returns_distinct_sorted_authors";
     let (main, other, empty) = (BoardId::main(), board("other"), board("empty"));
     for b in [&other, &empty] {
-        ok(store.create_board(b, None).await, SCENARIO);
+        ok(
+            store
+                .create_board(b, None, NOW, board_created(b, NOW))
+                .await,
+            SCENARIO,
+        );
     }
     post_as(&store, &main, &["carol", "alice", "bob", "alice"], SCENARIO).await;
     post_as(&store, &other, &["zed"], SCENARIO).await;
@@ -67,7 +73,12 @@ pub(crate) async fn members_posts_are_not_listed_as_local_authors<S: Store + Ide
 ) {
     const SCENARIO: &str = "members_posts_are_not_listed_as_local_authors";
     let (main, other) = (BoardId::main(), board("other"));
-    ok(store.create_board(&other, None).await, SCENARIO);
+    ok(
+        store
+            .create_board(&other, None, NOW, board_created(&other, NOW))
+            .await,
+        SCENARIO,
+    );
     ok(
         store
             .add_member(
@@ -107,7 +118,12 @@ pub(crate) async fn adopt_local_authors_creates_members_and_flips_author_kind_at
 ) {
     const SCENARIO: &str = "adopt_local_authors_creates_members_and_flips_author_kind_atomically";
     let (main, research) = (BoardId::main(), board("research"));
-    ok(store.create_board(&research, None).await, SCENARIO);
+    ok(
+        store
+            .create_board(&research, None, NOW, board_created(&research, NOW))
+            .await,
+        SCENARIO,
+    );
     post_as(&store, &main, &["alice", "bob", "alice", "carol"], SCENARIO).await;
     post_as(&store, &research, &["alice"], SCENARIO).await;
     let erin = ok(

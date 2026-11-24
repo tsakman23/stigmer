@@ -85,7 +85,11 @@ async fn missing_malformed_unknown_expired_revoked_tokens_return_identical_401_b
     .await;
     let revoked = member_token(&net.store, &main, "bob", Role::Member).await;
     net.store
-        .revoke_credential(&token_id(&revoked), NOW)
+        .revoke_credential(
+            &token_id(&revoked),
+            NOW,
+            audit(SecurityEventKind::TokenRevoked, NOW),
+        )
         .await
         .unwrap();
     let not_a_member = credential(
@@ -159,7 +163,15 @@ async fn expiry_is_exclusive_of_the_expiry_instant() {
 async fn valid_token_for_another_board_gets_404_on_every_board_route() {
     let net = network().await;
     let other = board("other");
-    net.store.create_board(&other, None).await.unwrap();
+    net.store
+        .create_board(
+            &other,
+            None,
+            NOW,
+            audit(SecurityEventKind::BoardCreated, NOW),
+        )
+        .await
+        .unwrap();
     let other_thread = seed_thread(&net.store, &other).await;
     let token = member_token(&net.store, &BoardId::main(), "alice", Role::Admin).await;
     let mut bodies = Vec::new();
@@ -370,9 +382,15 @@ async fn touch_updates_last_seen() {
 async fn post_to_archived_board_is_409_board_archived() {
     let net = network().await;
     let ops = BoardId::new("ops").unwrap();
-    net.store.create_board(&ops, None).await.unwrap();
+    net.store
+        .create_board(&ops, None, NOW, audit(SecurityEventKind::BoardCreated, NOW))
+        .await
+        .unwrap();
     let token = member_token(&net.store, &ops, "alice", Role::Admin).await;
-    net.store.archive_board(&ops).await.unwrap();
+    net.store
+        .archive_board(&ops, NOW, audit(SecurityEventKind::BoardArchived, NOW))
+        .await
+        .unwrap();
     let reply = send(
         &net.app,
         request(
@@ -441,7 +459,12 @@ async fn removed_member_is_refused_on_the_very_next_request() {
     let get = || request(Method::GET, "/v1/boards/main/events", Some(&token), None);
     assert_eq!(send(&net.app, get()).await.status, StatusCode::OK);
     net.store
-        .remove_member(&main, &Principal::new("alice").unwrap(), NOW)
+        .remove_member(
+            &main,
+            &Principal::new("alice").unwrap(),
+            NOW,
+            audit(SecurityEventKind::MemberRemoved, NOW),
+        )
         .await
         .unwrap();
     let reply = send(&net.app, get()).await;
@@ -480,7 +503,11 @@ async fn revocation_ends_an_open_wait_with_401() {
         parked_wait(&net, &kept).await,
     );
     net.store
-        .revoke_credential(&token_id(&revoked), NOW)
+        .revoke_credential(
+            &token_id(&revoked),
+            NOW,
+            audit(SecurityEventKind::TokenRevoked, NOW),
+        )
         .await
         .unwrap();
     seed_thread(&net.store, &main).await;
@@ -500,7 +527,12 @@ async fn member_removal_ends_an_open_wait_with_401() {
     let token = member_token(&net.store, &main, "alice", Role::Member).await;
     let waiting = parked_wait(&net, &token).await;
     net.store
-        .remove_member(&main, &Principal::new("alice").unwrap(), NOW)
+        .remove_member(
+            &main,
+            &Principal::new("alice").unwrap(),
+            NOW,
+            audit(SecurityEventKind::MemberRemoved, NOW),
+        )
         .await
         .unwrap();
     seed_thread(&net.store, &main).await;

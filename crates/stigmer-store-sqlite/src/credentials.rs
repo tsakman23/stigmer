@@ -14,11 +14,13 @@ use crate::{backend, not_found};
 const CREDENTIAL_COLUMNS: &str = "SELECT id, secret_hash, board_id, principal, expires_at_ms,
     revoked_at_ms, last_seen_ms FROM credentials";
 
-/// Stores a credential; a board-scoped one needs an existing, unarchived board.
+/// Stores a credential and writes its audit row; a board-scoped one needs an existing,
+/// unarchived board.
 pub(crate) fn create(
     conn: &mut Connection,
     credential: NewCredential,
     now_ms: i64,
+    audit: &SecurityEvent,
 ) -> Result<(), StoreError> {
     let tx = immediate(conn)?;
     let board = match &credential.scope {
@@ -29,11 +31,12 @@ pub(crate) fn create(
         }
     };
     insert_credential(&tx, &credential, board, now_ms)?;
+    log_in_tx(&tx, audit)?;
     tx.commit().map_err(backend)
 }
 
 /// Inserts a credential row inside the caller's transaction.
-fn insert_credential(
+pub(crate) fn insert_credential(
     tx: &Transaction<'_>,
     credential: &NewCredential,
     board: Option<&BoardId>,
@@ -99,18 +102,36 @@ pub(crate) fn list(conn: &mut Connection, board: &BoardId) -> Result<Vec<Credent
     Ok(credentials)
 }
 
-/// Revokes a credential, keeping the first revocation time.
-pub(crate) fn revoke(conn: &Connection, id: &TokenId, now_ms: i64) -> Result<(), StoreError> {
-    let changed = conn
-        .execute(
-            "UPDATE credentials SET revoked_at_ms = COALESCE(revoked_at_ms, ?2) WHERE id = ?1",
-            (id.as_str(), now_ms),
+/// Revokes a live credential and writes its audit row. A revoked one keeps its first revocation
+/// time and gets no new row.
+pub(crate) fn revoke(
+    conn: &mut Connection,
+    id: &TokenId,
+    now_ms: i64,
+    audit: &SecurityEvent,
+) -> Result<(), StoreError> {
+    let tx = immediate(conn)?;
+    let revoked_at: Option<Option<i64>> = tx
+        .query_row(
+            "SELECT revoked_at_ms FROM credentials WHERE id = ?1",
+            [id.as_str()],
+            |row| row.get(0),
         )
+        .optional()
         .map_err(backend)?;
-    if changed == 0 {
-        return Err(not_found(Entity::Credential, id));
+    match revoked_at {
+        None => Err(not_found(Entity::Credential, id)),
+        Some(Some(_)) => Ok(()),
+        Some(None) => {
+            tx.execute(
+                "UPDATE credentials SET revoked_at_ms = ?2 WHERE id = ?1",
+                (id.as_str(), now_ms),
+            )
+            .map_err(backend)?;
+            log_in_tx(&tx, audit)?;
+            tx.commit().map_err(backend)
+        }
     }
-    Ok(())
 }
 
 /// Revokes the board's live credentials, optionally sparing those of the board's admins.
@@ -122,6 +143,19 @@ pub(crate) fn revoke_board(
 ) -> Result<u64, StoreError> {
     let tx = immediate(conn)?;
     require(&tx, board)?;
+    let changed = revoke_board_in_tx(&tx, board, keep_admins, now_ms)?;
+    tx.commit().map_err(backend)?;
+    Ok(changed)
+}
+
+/// Revokes, inside the caller's transaction, the board's live credentials, optionally sparing
+/// those of the board's admins. Returns the number revoked.
+pub(crate) fn revoke_board_in_tx(
+    tx: &Transaction<'_>,
+    board: &BoardId,
+    keep_admins: bool,
+    now_ms: i64,
+) -> Result<u64, StoreError> {
     let changed = tx
         .execute(
             "UPDATE credentials SET revoked_at_ms = ?2
@@ -134,7 +168,6 @@ pub(crate) fn revoke_board(
             (board.as_str(), now_ms, keep_admins, Role::Admin.as_str()),
         )
         .map_err(backend)?;
-    tx.commit().map_err(backend)?;
     u64::try_from(changed).map_err(backend)
 }
 
@@ -150,22 +183,31 @@ pub(crate) fn revoke_instance_except(
     Ok(revoked)
 }
 
-/// Stores a new instance credential and revokes every other live one, in one transaction.
+/// Stores a new instance credential, revokes every other live one and writes the audit row, in
+/// one transaction.
 pub(crate) fn replace_instance(
     conn: &mut Connection,
     credential: NewCredential,
     now_ms: i64,
+    audit: &SecurityEvent,
 ) -> Result<u64, StoreError> {
-    if credential.scope != CredentialScope::Instance {
-        return Err(StoreError::Backend(
-            "a replacement instance credential must have the instance scope".into(),
-        ));
-    }
+    require_instance_scope(&credential)?;
     let tx = immediate(conn)?;
     insert_credential(&tx, &credential, None, now_ms)?;
     let revoked = revoke_other_instance(&tx, &credential.id, now_ms)?;
+    log_in_tx(&tx, audit)?;
     tx.commit().map_err(backend)?;
     Ok(revoked)
+}
+
+/// Refuses a credential that should be the instance credential but is scoped to a board.
+pub(crate) fn require_instance_scope(credential: &NewCredential) -> Result<(), StoreError> {
+    if credential.scope != CredentialScope::Instance {
+        return Err(StoreError::Backend(
+            "an instance credential must have the instance scope".into(),
+        ));
+    }
+    Ok(())
 }
 
 /// Revokes, inside the caller's transaction, every live instance credential but `keep`.
@@ -198,14 +240,26 @@ struct StoredInvite {
     board_archived: bool,
 }
 
-/// Stores an invite into an existing, unarchived board.
+/// Stores an invite into an existing, unarchived board and writes its audit row.
 pub(crate) fn create_invite(
     conn: &mut Connection,
     invite: NewInvite,
     now_ms: i64,
+    audit: &SecurityEvent,
 ) -> Result<(), StoreError> {
     let tx = immediate(conn)?;
-    require_writable(&tx, &invite.board)?;
+    insert_invite(&tx, &invite, now_ms)?;
+    log_in_tx(&tx, audit)?;
+    tx.commit().map_err(backend)
+}
+
+/// Inserts an invite inside the caller's transaction; the board must exist and be unarchived.
+pub(crate) fn insert_invite(
+    tx: &Transaction<'_>,
+    invite: &NewInvite,
+    now_ms: i64,
+) -> Result<(), StoreError> {
+    require_writable(tx, &invite.board)?;
     tx.execute(
         "INSERT INTO invites
              (id, secret_hash, board_id, role, kind, created_by, created_at_ms, expires_at_ms)
@@ -222,7 +276,7 @@ pub(crate) fn create_invite(
         ),
     )
     .map_err(backend)?;
-    tx.commit().map_err(backend)
+    Ok(())
 }
 
 /// Checks and uses an invite in one `BEGIN IMMEDIATE` transaction: lookup, constant-time hash
@@ -289,9 +343,9 @@ pub(crate) fn consume_invite(
         (id.as_str(), now_ms),
     )
     .map_err(backend)?;
-    log_security(
+    log_in_tx(
         &tx,
-        SecurityEvent {
+        &SecurityEvent {
             at_ms: now_ms,
             kind: SecurityEventKind::Join,
             board: Some(board.clone()),
@@ -312,8 +366,9 @@ pub(crate) fn consume_invite(
     })
 }
 
-/// Appends a security log entry.
-pub(crate) fn log_security(conn: &Connection, event: SecurityEvent) -> Result<(), StoreError> {
+/// Appends a security log entry on `conn`: inside the caller's transaction for a mutation's
+/// audit row, so a failed write rolls the mutation back, or on its own for `log_security`.
+pub(crate) fn log_in_tx(conn: &Connection, event: &SecurityEvent) -> Result<(), StoreError> {
     conn.execute(
         "INSERT INTO security_log (at_ms, kind, board_id, principal, detail)
          VALUES (?1, ?2, ?3, ?4, ?5)",
