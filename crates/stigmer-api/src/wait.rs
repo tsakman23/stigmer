@@ -54,10 +54,14 @@ where
         timeout,
     } = request;
     let deadline = Instant::now() + timeout;
+    // Where the next scan starts: the request's cursor, then the head read by the last pass that
+    // found nothing, so a long wait woken by non-matching events does not rescan them every time.
+    let mut scan_from = after.clone();
     loop {
         // Read the head first: everything up to it is examined by the query below, so if the
-        // query comes back empty the wait can start from here. Waiting from `after` instead
-        // would return at once for every non-matching event already in the log.
+        // query comes back empty the wait can start from here, and so can the next scan.
+        // Waiting from `after` instead would return at once for every non-matching event
+        // already in the log.
         //
         // Invariant: a cursor returned without events (`after.or(head)` below) never lets a
         // resume skip a matching event. `after` was the request's own start. `head` is read
@@ -65,10 +69,11 @@ where
         // matched. An event committed after this read has a higher sequence number: it is
         // either seen by the next pass of this loop (`wait_past` returns at once because the
         // head has moved) or returned to the request that resumes from `head`. Reading the head
-        // after the scan instead would let an event that lands between the two be skipped.
+        // after the scan instead would let an event that lands between the two be skipped. The
+        // same holds for the next pass, which scans from this `head` (`scan_from`).
         let head = store.head(board).await?;
         let events = store
-            .events_after(board, after.as_ref(), filter, limit)
+            .events_after(board, scan_from.as_ref(), filter, limit)
             .await?;
         if let Some(last) = events.last() {
             let cursor = Some(last.cursor.clone());
@@ -87,6 +92,9 @@ where
                 timed_out: give_up,
             }));
         }
+        if head.is_some() {
+            scan_from.clone_from(&head);
+        }
         tokio::select! {
             woke = store.wait_past(board, head.as_ref(), remaining) => { woke?; }
             _ = shutdown_changed(&mut shutdown) => {}
@@ -103,3 +111,6 @@ async fn shutdown_changed(shutdown: &mut watch::Receiver<bool>) {
         pending::<()>().await;
     }
 }
+
+#[cfg(test)]
+mod tests;

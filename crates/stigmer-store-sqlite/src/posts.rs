@@ -8,6 +8,7 @@ use stigmer_core::{
 use stigmer_store::{ChainReport, ConflictKind, Entity, Posted, StoreError};
 
 use crate::boards::writable_head;
+use crate::threads::{insert_thread, record_reply};
 use crate::{backend, not_found};
 
 /// `messages.author_kind` of a post whose author is not a member of the board: a self-declared
@@ -124,6 +125,12 @@ pub(crate) fn post(conn: &mut Connection, msg: NewMessage) -> Result<Posted, Sto
         ),
     )
     .map_err(backend)?;
+    match kind {
+        EventKind::ThreadCreated => insert_thread(
+            &tx, &msg.board, &thread_id, &channel, &msg.text, seq_sql, at_ms,
+        )?,
+        _ => record_reply(&tx, &msg.board, &thread_id, seq_sql, at_ms)?,
+    }
     tx.execute(
         "UPDATE boards SET head_seq = ?1, head_hash = ?2 WHERE id = ?3",
         (seq_sql, &hash, msg.board.as_str()),

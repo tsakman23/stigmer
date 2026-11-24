@@ -111,6 +111,41 @@ pub(crate) const MIGRATIONS: &[&str] = &[
     // 7: indexes for the per-board credential and member lookups.
     "CREATE INDEX credentials_board ON credentials (board_id);
     CREATE INDEX principals_board ON principals (board_id);",
+    // 8: thread summaries (ADR 0015), one row per thread root, maintained by the post
+    // transaction. The backfill gives every existing thread exactly the row the write path would
+    // have produced: replies counted from messages, first_seq the root's event, last_seq the
+    // thread's latest event, last_at_ms the time of that latest message (by sequence, not the
+    // largest time), preview the first 200 characters of the root text. A root without an event
+    // leaves a NULL and fails the migration rather than dropping the thread from listings.
+    "CREATE TABLE threads (
+        board_id TEXT NOT NULL REFERENCES boards(id),
+        thread_id TEXT NOT NULL,
+        channel TEXT NOT NULL,
+        preview TEXT NOT NULL,
+        reply_count INTEGER NOT NULL,
+        first_seq INTEGER NOT NULL,
+        last_seq INTEGER NOT NULL,
+        last_at_ms INTEGER NOT NULL,
+        PRIMARY KEY (board_id, thread_id)
+    );
+    CREATE INDEX threads_activity ON threads (board_id, last_seq DESC, thread_id DESC);
+    INSERT INTO threads
+        (board_id, thread_id, channel, preview, reply_count, first_seq, last_seq, last_at_ms)
+    SELECT r.board_id, r.id, r.channel, substr(r.text, 1, 200), counted.messages - 1,
+           root_event.seq, latest.seq, latest_message.at_ms
+      FROM messages r
+      JOIN (SELECT board_id, thread_id, COUNT(*) AS messages
+              FROM messages GROUP BY board_id, thread_id) counted
+        ON counted.board_id = r.board_id AND counted.thread_id = r.id
+      LEFT JOIN events root_event
+        ON root_event.board_id = r.board_id AND root_event.message_id = r.id
+      LEFT JOIN (SELECT board_id, thread_id, MAX(seq) AS seq
+                   FROM events GROUP BY board_id, thread_id) latest
+        ON latest.board_id = r.board_id AND latest.thread_id = r.id
+      LEFT JOIN events latest_event
+        ON latest_event.board_id = latest.board_id AND latest_event.seq = latest.seq
+      LEFT JOIN messages latest_message ON latest_message.id = latest_event.message_id
+     WHERE r.thread_id = r.id;",
 ];
 
 /// Brings the database up to the latest schema and makes sure board `main` exists.
@@ -369,7 +404,7 @@ mod tests {
         let version: i64 = conn
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 7);
+        assert_eq!(version, MIGRATIONS.len() as i64);
         let mode: String = conn
             .query_row("SELECT mode FROM instance", [], |row| row.get(0))
             .unwrap();
