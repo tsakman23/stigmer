@@ -50,7 +50,9 @@ test("wait_chunk_loop_carries_cursor_and_never_resends_from_now", async () => {
 
 test("wait_chunk_seconds_are_rounded_up_and_capped_at_300", async () => {
   const short = scriptedFetch(idle("ev_1"));
-  await client(short.fetch).wait({ after: "ev_1", timeoutMs: 1 });
+  // 500 ms (not 1 ms): the deadline starts before the request is built, so a slow runner can burn
+  // a 1 ms deadline first and the SDK would then correctly send timeout_s=0.
+  await client(short.fetch).wait({ after: "ev_1", timeoutMs: 500 });
   assert.equal(short.seen[0]!.url.searchParams.get("timeout_s"), "1");
   const long = scriptedFetch(json({ events: [event(2)], cursor: "ev_2", timed_out: false }));
   await client(long.fetch).wait({ timeoutMs: 90_500 });
