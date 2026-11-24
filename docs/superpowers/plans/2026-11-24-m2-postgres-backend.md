@@ -223,6 +223,6 @@ Behaviour (design 6.3): post takes `SELECT ... FROM boards WHERE id = $1 FOR UPD
 
 ## Self-review notes
 
-- Coverage of the spec: G1 (Tasks 4, 5), G2 (Task 1), G3 (Task 6), G4 (Task 2), G5 (Task 2), G6 (Tasks 4, 7), G7 (Task 3), G8 (Task 8); backend selection and password handling (Task 7); archive+revoke atomic and clock parameters (Task 1); conformance sleeps and concurrent board creation (Task 3); ADRs 0012 to 0015 (Tasks 7, 6, 1, 2).
+- Coverage of the spec: G1 (Tasks 4, 5), G2 (Task 1), G3 (Task 6), G4 (Task 2), G5 (Task 2), G6 (Tasks 4, 7), G7 (Task 3), G8 (Task 8); backend selection and password handling (Task 7); archive+revoke atomic and audited mutations taking their instant from the audit event (Task 1); conformance sleeps and concurrent board creation (Task 3); ADRs 0012 to 0015 (Tasks 7, 6, 1, 2).
 - Deliberate ordering: audit parameters first because every later store method (both backends) is written against the final signatures; Task 2 before Task 3 because ordering by sequence lets the sleeps go; the Postgres store before LISTEN/NOTIFY (polling wait keeps its PR green); wiring and CI last.
 - Soft spots a reviewer should press: the combined archive method (it crosses both traits), the polling wait that Task 4 ships and Task 6 replaces, and the fixture split in Task 4 that Task 5 undoes.

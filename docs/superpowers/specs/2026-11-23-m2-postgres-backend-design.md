@@ -61,7 +61,7 @@ Wait rescans: (a) leave, (b) advance the scan position inside the wait loop. Cho
 - Time: every store method that stamps a time takes it from the caller (the API's injected clock). For an audited mutation the caller's instant is the audit event's `at_ms`: `create_board` and `archive_board` (which read their own clock in M1) and the other audited methods take no separate `now_ms`, so the state and its row cannot disagree. Event ordering never depends on wall clocks: it is the per-board sequence.
 
 ### 6.4 Audit rows in the transaction (both backends)
-- Mutating methods that M1 audits through `log_security` take the event to write: `create_board`, `archive_board` (including its revocation), `create_invite`, `revoke_credential`, `remove_member`, `replace_instance_credential`, `enable_network_mode`, and the admin-command paths. The store writes the row in the same transaction, and the time it stamps comes from the caller's audit event (`audit.at_ms`). `adopt_local_authors` and `consume_invite` already do.
+- Mutating methods that M1 audits through `log_security` take the event to write: `create_board`, `archive_board` (including its revocation), `create_invite`, `revoke_credential`, `remove_member`, `replace_instance_credential`, `enable_network_mode`, and the admin-command paths. The store writes the row in the same transaction, and every time it stamps (the state and the row) comes from the caller's audit event (`audit.at_ms`). `adopt_local_authors` and `consume_invite` already write their own rows in their transactions; they keep taking `now_ms` because they have no separate audit argument.
 - `log_security` stays for events that are not part of a mutation (auth failures, rate limits, join-rate-limited), which remain best-effort. SecurityEvent keeps its typed constructors in stigmer-api; the free-text fields stay but are only built by those constructors.
 - The API deletes the admin-mutation best-effort path and its warning sink for those routes; a failed audit write now fails the request and rolls back the mutation (the client may retry safely: the mutation did not happen).
 
@@ -95,7 +95,7 @@ Postgres lock ordering (board row vs invite/credential rows) and deadlocks under
 Crate names inside the workspace beyond `stigmer-store-postgres`, pool sizing internals, exact SQL, listener task structure, migration file layout, CI service container version (pin one currently supported Postgres major), test schema naming.
 
 ## 10. Task breakdown (one PR each, merged before the next starts)
-1. Audit rows in the mutation transaction (trait changes, SQLite, API, conformance) and clock parameters for board create/archive.
+1. Audit rows in the mutation transaction (trait changes, SQLite, API, conformance); audited mutations take their instant from the audit event, and board create/archive no longer read their own clock.
 2. Thread summaries (`threads` migration with backfill, `read_channel` rewrite, conformance) and wait scan advance.
 3. Conformance hardening: two-handle fixture, cross_instance module, sleep removal, concurrent board creation.
 4. Postgres store, part 1: crate, schema and migrations, boards, posts, reads, events (Store trait), conformance green.
