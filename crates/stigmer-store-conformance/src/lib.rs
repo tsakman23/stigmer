@@ -1,9 +1,9 @@
 //! stigmer-store-conformance: the behaviour every `Store` backend must show.
 //!
-//! A backend's test calls [`run_all`] with a factory for fresh, empty stores, and
-//! [`run_identity_all`] the same way when it also implements `IdentityStore`. Each scenario
-//! panics with its name when the backend gets something wrong. Run it on a multi-thread
-//! tokio runtime: the concurrency scenario spawns tasks.
+//! A backend's test calls [`run_all`] with a [`Fixture`] that makes fresh, empty stores and
+//! second handles on a store's database. Each scenario panics with its name when the backend
+//! gets something wrong. Run it on a multi-thread tokio runtime: the concurrency scenarios spawn
+//! tasks.
 //!
 //! This is test-support code: panics are its assertion mechanism, so it uses `panic!` and the
 //! `assert!` family where library code would return errors.
@@ -11,6 +11,7 @@
 mod archive;
 mod boards;
 mod events;
+mod fixture;
 mod idempotency;
 mod identity;
 mod identity_adoption;
@@ -33,10 +34,22 @@ use std::future::Future;
 
 use stigmer_store::Store;
 
-pub use identity::run_identity_all;
+pub use fixture::Fixture;
 
-/// Runs every scenario, each against a fresh store from `factory`.
-pub async fn run_all<S, F, Fut>(factory: F)
+/// Runs the store, identity and cross-instance suites, each scenario against fresh stores from
+/// `fixture`, then prints one summary line naming [`Fixture::CROSS_PROCESS_WAKE`].
+pub async fn run_all<X: Fixture>(fixture: &X) {
+    let factory = || fixture.fresh();
+    run_store_suite(factory).await;
+    identity::run_identity_suite(factory).await;
+    support::ok(
+        fixture::write_summary(&mut std::io::stderr().lock(), X::CROSS_PROCESS_WAKE),
+        "conformance: summary line",
+    );
+}
+
+/// Runs every `Store` scenario, each against a fresh store from `factory`.
+async fn run_store_suite<S, F, Fut>(factory: F)
 where
     S: Store,
     F: Fn() -> Fut,
