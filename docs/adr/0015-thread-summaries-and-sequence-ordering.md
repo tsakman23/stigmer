@@ -24,9 +24,10 @@ invisible in the code that posts); or a summary table written by the post transa
 - Each backend keeps a `threads` table, one row per thread root: board, thread id, channel,
   preview (the first 200 characters, not bytes, of the root text), reply count, the sequence
   of the thread's first event (the root's) and of its latest event, and the time of its latest
-  message. The post transaction writes it, together with the message, labels, event and head: a new thread inserts its row (no replies, first and last sequence the new event's,
-  the message time); a reply adds one to the count and sets the last sequence and time to its
-  own. An idempotent replay and a refused post (archived board, unknown thread) write nothing.
+  message. The post transaction writes it, together with the message, labels, event and head:
+  a new thread inserts its row (no replies, first and last sequence the new event's, the
+  message time); a reply adds one to the count and sets the last sequence and time to its own.
+  An idempotent replay and a refused post (archived board, unknown thread) write nothing.
 - `read_channel` reads only this table: whole-segment prefix match as before (no `LIKE`),
   ordered by the last event sequence, descending, then by thread id, descending, with keyset
   pagination on that pair. `Page.before` stays a thread id; its last sequence is looked up in
