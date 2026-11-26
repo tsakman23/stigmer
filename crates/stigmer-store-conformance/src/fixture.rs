@@ -4,6 +4,7 @@
 use std::future::Future;
 use std::io::{self, Write};
 
+use stigmer_core::BoardId;
 use stigmer_store::{IdentityStore, Store};
 
 /// How a backend makes stores for the conformance suites.
@@ -21,6 +22,10 @@ pub trait Fixture {
 
     /// Another handle on the SAME database as `store`.
     fn second_handle(&self, store: &Self::Store) -> impl Future<Output = Self::Store> + Send;
+
+    /// The number of `wait_past` callers currently subscribed to `board`'s wake-up channel on
+    /// `store`'s handle. Lets a scenario post only once a waiter is known to be blocked.
+    fn waiters(&self, store: &Self::Store, board: &BoardId) -> usize;
 }
 
 /// The one line [`run_all`](crate::run_all) prints when every suite has passed.

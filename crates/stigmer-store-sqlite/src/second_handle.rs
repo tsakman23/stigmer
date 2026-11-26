@@ -1,8 +1,10 @@
-//! A second handle on a store's database file, for the conformance suites.
+//! Test support for the conformance suites: a second handle on a store's database file, and
+//! the number of waiters subscribed to a board.
 
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use stigmer_core::BoardId;
 use stigmer_store::StoreError;
 
 use crate::SqliteStore;
@@ -27,6 +29,14 @@ impl SqliteStore {
         let mut second = Self::open(&path).await?;
         second.notifier = Arc::clone(&self.notifier);
         Ok(second)
+    }
+
+    /// Test support, not API: the number of `wait_past` callers currently subscribed to
+    /// `board`'s wake-up channel through this handle's notifier (shared with its second
+    /// handles); 0 when the board has no entry.
+    #[doc(hidden)]
+    pub fn waiters_for_tests(&self, board: &BoardId) -> usize {
+        self.notifier.receiver_count(board)
     }
 }
 

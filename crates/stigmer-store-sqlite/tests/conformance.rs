@@ -2,6 +2,7 @@
 
 use std::sync::{Mutex, PoisonError};
 
+use stigmer_core::BoardId;
 use stigmer_store_conformance::Fixture;
 use stigmer_store_sqlite::SqliteStore;
 use tempfile::TempDir;
@@ -35,6 +36,10 @@ impl Fixture for SqliteFixture {
             .second_handle_for_tests()
             .await
             .expect("second handle opens")
+    }
+
+    fn waiters(&self, store: &SqliteStore, board: &BoardId) -> usize {
+        store.waiters_for_tests(board)
     }
 }
 

@@ -5,6 +5,7 @@
 //! read as proof of cross-process wakes.
 
 use std::sync::Arc;
+use std::time::Instant;
 
 use stigmer_core::{BoardId, Cursor};
 use stigmer_store::Store;
@@ -15,7 +16,7 @@ use crate::cross_instance_identity::{
 };
 use crate::fixture::Fixture;
 use crate::support::{
-    create_board_race, new_thread, ok, post_ok, spawn_across, valid_chain, verify_main,
+    create_board_race, fail, new_thread, ok, post_ok, spawn_across, valid_chain, verify_main,
     yield_times, LONG, YIELDS,
 };
 
@@ -23,6 +24,8 @@ use crate::support::{
 pub(crate) async fn run_cross_instance_suite<X: Fixture>(fixture: &X) {
     let (a, b) = pair(fixture).await;
     wake_across_handles(a, b).await;
+    let (a, b) = pair(fixture).await;
+    wake_reaches_a_blocked_waiter_on_the_other_handle(fixture, a, b).await;
     let (a, b) = pair(fixture).await;
     credential_issued_on_one_handle_is_valid_on_the_other_and_revocable_from_either(a, b).await;
     let (a, b) = pair(fixture).await;
@@ -66,6 +69,53 @@ async fn wake_across_handles<S: Store>(a: S, b: S) {
         );
         cursor = posted.event.cursor;
     }
+}
+
+/// The blocked-then-woken path, forced: the post goes through `b` only once the waiter on
+/// `a` is subscribed and still pending. (`wake_across_handles` covers the other orders.)
+async fn wake_reaches_a_blocked_waiter_on_the_other_handle<X: Fixture>(
+    fixture: &X,
+    a: X::Store,
+    b: X::Store,
+) {
+    const SCENARIO: &str = "wake_reaches_a_blocked_waiter_on_the_other_handle";
+    let main = BoardId::main();
+    let (a, b) = (Arc::new(a), Arc::new(b));
+    let head = post_ok(&*b, new_thread("eng", "alice", "start"), SCENARIO).await;
+    let waiter = {
+        let (a, cursor) = (Arc::clone(&a), head.event.cursor);
+        tokio::spawn(async move { a.wait_past(&BoardId::main(), Some(&cursor), LONG).await })
+    };
+
+    // A condition wait, not a sleep: LONG is only an upper bound.
+    let blocked = tokio::time::timeout(LONG, async {
+        while fixture.waiters(&a, &main) == 0 {
+            if waiter.is_finished() {
+                fail(format_args!("{SCENARIO}: the waiter ended before any post"));
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await;
+    assert!(blocked.is_ok(), "{SCENARIO}: the waiter on a subscribed");
+    assert!(
+        !waiter.is_finished(),
+        "{SCENARIO}: the waiter is blocked before the post"
+    );
+
+    let posted_at = Instant::now();
+    post_ok(&*b, new_thread("eng", "bob", "wake"), SCENARIO).await;
+    let result = ok(waiter.await, format_args!("{SCENARIO}: waiter task failed"));
+    let woke_after = posted_at.elapsed();
+    assert_eq!(
+        result,
+        Ok(true),
+        "{SCENARIO}: a post through b wakes the blocked waiter on a"
+    );
+    assert!(
+        woke_after < LONG / 2,
+        "{SCENARIO}: woken well before the timeout, after {woke_after:?}"
+    );
 }
 
 async fn concurrent_create_board_across_handles_has_one_winner_and_one_board_exists<S: Store>(
