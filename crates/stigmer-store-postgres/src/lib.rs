@@ -1,5 +1,7 @@
 //! stigmer-store-postgres: the Postgres backend for `Store`.
-
+//!
+//! `IdentityStore` is not implemented yet (Task 5 of the M2 plan). `wait_past` polls the board
+//! head every 100 ms for now; Task 6 replaces the polling with LISTEN/NOTIFY wake-ups.
 //!
 //! A pool of connections (deadpool) to one database, shared by every replica of the server.
 //! Writes to one board serialise on that board's row (`SELECT ... FOR UPDATE`), so its event
@@ -9,28 +11,28 @@
 //! A connection string's password never appears in an error, a log line or `Debug` output:
 //! errors name the host, port and database only.
 
-// Reached only from tests until the `Store` implementation arrives.
-#[allow(dead_code)]
 mod audit;
-#[allow(dead_code)]
 mod boards;
-#[allow(dead_code)]
 mod chain;
 mod error;
+mod events;
 mod hash;
 mod migrate;
 mod pool;
-#[allow(dead_code)]
 mod posts;
+mod reads;
 mod schema;
-#[allow(dead_code)]
+mod second_handle;
+mod store;
 mod threads;
 mod tls;
+mod wait;
 
 #[doc(hidden)]
 pub mod testing;
 
 use std::fmt;
+use std::sync::Arc;
 
 use deadpool_postgres::Pool;
 use stigmer_store::StoreError;
@@ -61,11 +63,11 @@ pub struct PgOptions {
 /// A `Store` backed by a Postgres database.
 pub struct PgStore {
     pool: Pool,
-    /// Kept for second handles in tests; never printed (its `Debug` would be safe but long).
-    #[allow(dead_code)]
+    /// Kept for second handles in tests; never printed.
     config: tokio_postgres::Config,
     options: PgOptions,
     target: String,
+    waiters: Arc<wait::Waiters>,
 }
 
 impl fmt::Debug for PgStore {
@@ -89,6 +91,7 @@ impl PgStore {
             config: connected.config,
             options,
             target: connected.target,
+            waiters: Arc::default(),
         })
     }
 
