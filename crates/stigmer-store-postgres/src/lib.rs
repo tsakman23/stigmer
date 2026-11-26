@@ -56,7 +56,8 @@ pub enum PgTls {
 pub struct PgOptions {
     /// The most connections the pool opens (at least 1).
     pub max_connections: usize,
-    /// How connections are secured; this, not the URL's `sslmode`, decides.
+    /// How connections are secured. A connection string's `sslmode` may only repeat it
+    /// (`disable` or `require`); one that disagrees is refused by [`PgStore::connect`].
     pub tls: PgTls,
 }
 

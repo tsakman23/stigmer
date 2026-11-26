@@ -32,11 +32,20 @@ pub(crate) struct Connected {
 pub(crate) async fn connect(url: &str, options: PgOptions) -> Result<Connected, StoreError> {
     let mut secrets = Redactor::from_url(url);
     let mut config: Config = url.parse().map_err(|e| {
-        StoreError::Backend(secrets.redact(&format!("invalid Postgres connection string: {e}")))
+        let hint = if url.contains("sslmode=verify") {
+            " (sslmode verify-ca and verify-full are not read from the connection string: \
+             remove sslmode and choose the TLS mode in the options)"
+        } else {
+            ""
+        };
+        StoreError::Backend(
+            secrets.redact(&format!("invalid Postgres connection string: {e}{hint}")),
+        )
     })?;
     if let Some(password) = config.get_password() {
         secrets.add(String::from_utf8_lossy(password).into_owned());
     }
+    check_ssl_mode(config.get_ssl_mode(), options.tls)?;
     config.ssl_mode(match options.tls {
         PgTls::Disable => SslMode::Disable,
         PgTls::Require | PgTls::VerifyFull => SslMode::Require,
@@ -52,6 +61,29 @@ pub(crate) async fn connect(url: &str, options: PgOptions) -> Result<Connected, 
         config,
         target,
     })
+}
+
+/// Refuses a connection string whose `sslmode` disagrees with `tls`, rather than letting one
+/// silently override the other (a `require` in the URL must never become a plain connection).
+/// `prefer`, which is also what an absent `sslmode` parses to, defers to `tls`.
+fn check_ssl_mode(in_url: SslMode, tls: PgTls) -> Result<(), StoreError> {
+    let agrees = match in_url {
+        SslMode::Disable => tls == PgTls::Disable,
+        SslMode::Require => tls != PgTls::Disable,
+        _ => true,
+    };
+    if agrees {
+        return Ok(());
+    }
+    let named = if in_url == SslMode::Disable {
+        "disable"
+    } else {
+        "require"
+    };
+    Err(StoreError::Backend(format!(
+        "the connection string's sslmode={named} conflicts with the TLS option ({tls:?}): \
+         remove sslmode from the connection string or choose a matching TLS option"
+    )))
 }
 
 /// A pool of up to `options.max_connections` connections made from `config`.
@@ -188,6 +220,56 @@ mod tests {
     fn target_names_host_port_and_database_only() {
         let config: Config = "postgres://bob:secret@db.example:5433/app".parse().unwrap();
         assert_eq!(target(&config), "database app on db.example:5433");
+    }
+
+    #[test]
+    fn a_url_sslmode_that_conflicts_with_the_tls_option_is_refused() {
+        use PgTls::{Disable, Require, VerifyFull};
+        for (mode, tls) in [
+            (SslMode::Require, Disable),
+            (SslMode::Disable, Require),
+            (SslMode::Disable, VerifyFull),
+        ] {
+            let err = check_ssl_mode(mode, tls).unwrap_err();
+            assert!(
+                err.to_string().contains("conflicts with the TLS option"),
+                "{err}"
+            );
+        }
+        for (mode, tls) in [
+            (SslMode::Require, Require),
+            (SslMode::Require, VerifyFull),
+            (SslMode::Disable, Disable),
+            (SslMode::Prefer, Disable),
+            (SslMode::Prefer, VerifyFull),
+        ] {
+            assert_eq!(check_ssl_mode(mode, tls), Ok(()), "{mode:?} with {tls:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn connect_refuses_a_conflicting_sslmode_before_connecting() {
+        let options = PgOptions {
+            max_connections: 1,
+            tls: PgTls::Disable,
+        };
+        // Port 1: were the conflict not caught first, this would be a refused connection.
+        let url = "postgres://u:hunter2@127.0.0.1:1/db?sslmode=require";
+        let Err(StoreError::Backend(text)) = connect(url, options).await else {
+            panic!("a conflicting sslmode is refused");
+        };
+        assert!(text.contains("sslmode=require conflicts"), "{text}");
+        assert!(!text.contains("hunter2"), "{text}");
+
+        let url = "postgres://u:hunter2@127.0.0.1:1/db?sslmode=verify-full";
+        let Err(StoreError::Backend(text)) = connect(url, options).await else {
+            panic!("verify-full in the URL is refused");
+        };
+        assert!(
+            text.contains("choose the TLS mode in the options"),
+            "{text}"
+        );
+        assert!(!text.contains("hunter2"), "{text}");
     }
 
     #[test]
