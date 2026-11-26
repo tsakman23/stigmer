@@ -21,6 +21,9 @@ pub enum CoreError {
     BadId(String),
     #[error("invalid board name {0}: a name made only of dots is not allowed")]
     DotsOnlyBoard(String),
+    /// Postgres cannot store U+0000 in text, so no backend accepts it (both must agree).
+    #[error("{0} must not contain a NUL character")]
+    NulCharacter(&'static str),
     #[error("invalid idempotency key: {0}")]
     BadIdempotencyKey(String),
     #[error("invalid cursor: {0}")]

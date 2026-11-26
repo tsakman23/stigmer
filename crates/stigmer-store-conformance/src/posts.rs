@@ -3,7 +3,8 @@
 use std::sync::Arc;
 
 use stigmer_core::{
-    event_hash, BoardId, Cursor, EventKind, HashInput, MessageId, Target, GENESIS_HASH,
+    event_hash, BoardId, CoreError, Cursor, EventKind, HashInput, Label, MessageId, NewMessage,
+    Page, Target, GENESIS_HASH,
 };
 use stigmer_store::{Entity, Posted, Store, StoreError};
 
@@ -273,4 +274,65 @@ pub(crate) async fn concurrent_posts_keep_summaries_equal_to_messages<S: Store>(
     );
     let replies: u32 = listed.iter().map(|t| t.reply_count).sum();
     assert_eq!(replies, 15, "{SCENARIO}: every reply counted once");
+}
+
+/// NUL (U+0000) is refused by validation before any store sees it, so every backend agrees
+/// (Postgres cannot store it): nothing is written and no sequence number is used.
+pub(crate) async fn post_with_nul_text_or_label_is_refused_and_stores_nothing<S: Store>(store: S) {
+    const SCENARIO: &str = "post_with_nul_text_or_label_is_refused_and_stores_nothing";
+    let first = post_ok(&store, new_thread("eng", "alice", "before"), SCENARIO).await;
+    let attempt = |text: &str, labels: Vec<Label>| {
+        NewMessage::new(
+            BoardId::main(),
+            Target::NewThread {
+                channel: channel("eng"),
+            },
+            principal("alice"),
+            text.to_owned(),
+            labels,
+            None,
+        )
+    };
+    assert_eq!(
+        attempt("a\0b", vec![]),
+        Err(CoreError::NulCharacter("message text")),
+        "{SCENARIO}: NUL in text"
+    );
+    assert_eq!(
+        Label::new("kind", "a\0b"),
+        Err(CoreError::NulCharacter("label value")),
+        "{SCENARIO}: NUL in a label value"
+    );
+    let hand_built = Label {
+        key: "kind".to_owned(),
+        value: "a\0b".to_owned(),
+    };
+    assert_eq!(
+        attempt("ok", vec![hand_built]),
+        Err(CoreError::NulCharacter("label value")),
+        "{SCENARIO}: NUL in a hand-built label"
+    );
+
+    let main = BoardId::main();
+    assert_eq!(
+        store.head(&main).await,
+        Ok(Some(first.event.cursor.clone())),
+        "{SCENARIO}: the head did not move"
+    );
+    let page = Page {
+        limit: 200,
+        before: None,
+    };
+    let threads = ok(
+        store.read_channel(&main, &channel("eng"), page).await,
+        SCENARIO,
+    );
+    assert_eq!(threads.len(), 1, "{SCENARIO}: nothing stored");
+    let next = post_ok(&store, new_thread("eng", "alice", "after"), SCENARIO).await;
+    assert_eq!(next.event.seq, 2, "{SCENARIO}: no sequence number used");
+    assert_eq!(
+        verify_main(&store, SCENARIO).await,
+        valid_chain(2),
+        "{SCENARIO}: chain"
+    );
 }

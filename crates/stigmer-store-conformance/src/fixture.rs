@@ -5,12 +5,12 @@ use std::future::Future;
 use std::io::{self, Write};
 
 use stigmer_core::BoardId;
-use stigmer_store::{IdentityStore, Store};
+use stigmer_store::Store;
 
 /// How a backend makes stores for the conformance suites.
 pub trait Fixture {
     /// The backend under test.
-    type Store: Store + IdentityStore;
+    type Store: Store;
 
     /// Informational: true when separate handles are separate PROCESS-level notifiers
     /// (Postgres). [`run_all`](crate::run_all) prints it in its summary line, so a green run on
@@ -28,26 +28,45 @@ pub trait Fixture {
     fn waiters(&self, store: &Self::Store, board: &BoardId) -> usize;
 }
 
-/// The one line [`run_all`](crate::run_all) prints when every suite has passed.
-pub(crate) fn summary_line(cross_process_wake: bool) -> String {
-    format!(
-        "conformance: store+identity+cross_instance scenarios passed; \
-         cross_process_wake={cross_process_wake}"
-    )
+/// Which suites a run covered, as its summary line names them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Suites {
+    /// [`run_all`](crate::run_all): every suite.
+    All,
+    /// [`run_store_suites`](crate::run_store_suites): the `Store` half only.
+    StoreOnly,
+}
+
+/// The one line [`run_all`](crate::run_all) or [`run_store_suites`](crate::run_store_suites)
+/// prints when every suite it ran has passed.
+pub(crate) fn summary_line(suites: Suites, cross_process_wake: bool) -> String {
+    let ran = match suites {
+        Suites::All => "store+identity+cross_instance",
+        Suites::StoreOnly => "store+cross_instance(store half; identity not run)",
+    };
+    format!("conformance: {ran} scenarios passed; cross_process_wake={cross_process_wake}")
 }
 
 /// Writes [`summary_line`] and a newline to `out`.
-pub(crate) fn write_summary(out: &mut impl Write, cross_process_wake: bool) -> io::Result<()> {
-    writeln!(out, "{}", summary_line(cross_process_wake))
+pub(crate) fn write_summary(
+    out: &mut impl Write,
+    suites: Suites,
+    cross_process_wake: bool,
+) -> io::Result<()> {
+    writeln!(out, "{}", summary_line(suites, cross_process_wake))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::write_summary;
+    use super::{write_summary, Suites};
 
     fn captured(cross_process_wake: bool) -> String {
+        captured_for(Suites::All, cross_process_wake)
+    }
+
+    fn captured_for(suites: Suites, cross_process_wake: bool) -> String {
         let mut out = Vec::new();
-        write_summary(&mut out, cross_process_wake).unwrap();
+        write_summary(&mut out, suites, cross_process_wake).unwrap();
         String::from_utf8(out).unwrap()
     }
 
@@ -60,6 +79,15 @@ mod tests {
         assert_eq!(
             captured(true),
             "conformance: store+identity+cross_instance scenarios passed; cross_process_wake=true\n"
+        );
+    }
+
+    #[test]
+    fn store_only_summary_line_says_identity_did_not_run() {
+        assert_eq!(
+            captured_for(Suites::StoreOnly, true),
+            "conformance: store+cross_instance(store half; identity not run) scenarios passed; \
+             cross_process_wake=true\n"
         );
     }
 }

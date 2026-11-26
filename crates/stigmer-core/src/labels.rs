@@ -10,7 +10,8 @@ pub const MAX_LABELS: usize = 32;
 const MAX_KEY_CHARS: usize = 64;
 const MAX_VALUE_CHARS: usize = 256;
 
-/// A `key=value` label. Keys are `[a-z0-9._-]{1,64}`; values are 1 to 256 chars.
+/// A `key=value` label. Keys are `[a-z0-9._-]{1,64}`; values are 1 to 256 chars, none of them
+/// NUL.
 ///
 /// Fields are public for reading; build values with [`Label::new`] so the rules hold.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -37,6 +38,12 @@ impl TryFrom<RawLabel> for Label {
 impl Label {
     /// Validates and builds a label.
     pub fn new(key: &str, value: &str) -> Result<Self, CoreError> {
+        if key.contains('\0') {
+            return Err(CoreError::NulCharacter("label key"));
+        }
+        if value.contains('\0') {
+            return Err(CoreError::NulCharacter("label value"));
+        }
         let key_ok =
             (1..=MAX_KEY_CHARS).contains(&key.chars().count()) && key.chars().all(is_slug_char);
         if !key_ok {
@@ -115,6 +122,21 @@ mod tests {
                 "{bad}"
             );
         }
+    }
+
+    #[test]
+    fn labels_with_a_nul_character_are_rejected() {
+        assert_eq!(
+            Label::new("kind", "a\0b").unwrap_err(),
+            CoreError::NulCharacter("label value")
+        );
+        assert_eq!(
+            Label::new("ki\0nd", "bug").unwrap_err(),
+            CoreError::NulCharacter("label key")
+        );
+        let json = r#"{"key":"kind","value":"a\u0000b"}"#;
+        assert!(serde_json::from_str::<Label>(json).is_err());
+        assert!(parse_labels(&raw(&["kind=a\0b"])).is_err());
     }
 
     #[test]

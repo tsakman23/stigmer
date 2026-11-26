@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use stigmer_core::{BoardId, Cursor};
-use stigmer_store::Store;
+use stigmer_store::{IdentityStore, Store};
 
 use crate::cross_instance_identity::{
     credential_issued_on_one_handle_is_valid_on_the_other_and_revocable_from_either,
@@ -20,20 +20,29 @@ use crate::support::{
     yield_times, LONG, YIELDS,
 };
 
-/// Runs every cross-instance scenario, each against a fresh store and a second handle on it.
+/// Runs every cross-instance scenario that needs only `Store`, each against a fresh store and a
+/// second handle on it.
 pub(crate) async fn run_cross_instance_suite<X: Fixture>(fixture: &X) {
     let (a, b) = pair(fixture).await;
     wake_across_handles(a, b).await;
     let (a, b) = pair(fixture).await;
     wake_reaches_a_blocked_waiter_on_the_other_handle(fixture, a, b).await;
     let (a, b) = pair(fixture).await;
-    credential_issued_on_one_handle_is_valid_on_the_other_and_revocable_from_either(a, b).await;
-    let (a, b) = pair(fixture).await;
     concurrent_create_board_across_handles_has_one_winner_and_one_board_exists(a, b).await;
     let (a, b) = pair(fixture).await;
-    invite_redeemed_once_across_handles(a, b).await;
-    let (a, b) = pair(fixture).await;
     sequence_is_gapless_with_concurrent_posts_from_both_handles(a, b).await;
+}
+
+/// Runs the cross-instance scenarios that need `IdentityStore`, likewise.
+pub(crate) async fn run_cross_instance_identity_suite<X>(fixture: &X)
+where
+    X: Fixture,
+    X::Store: IdentityStore,
+{
+    let (a, b) = pair(fixture).await;
+    credential_issued_on_one_handle_is_valid_on_the_other_and_revocable_from_either(a, b).await;
+    let (a, b) = pair(fixture).await;
+    invite_redeemed_once_across_handles(a, b).await;
 }
 
 async fn pair<X: Fixture>(fixture: &X) -> (X::Store, X::Store) {

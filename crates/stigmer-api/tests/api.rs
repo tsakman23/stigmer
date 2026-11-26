@@ -186,6 +186,8 @@ async fn malformed_or_ambiguous_post_bodies_are_400_invalid_input() {
         json!({"channel": "Bad//Path", "text": "x"}),
         json!({"channel": "eng", "text": "x", "extra": 1}),
         json!({"channel": "eng", "text": ""}),
+        json!({"channel": "eng", "text": "a\0b"}),
+        json!({"channel": "eng", "text": "x", "labels": [{"key": "kind", "value": "a\0b"}]}),
     ];
     for b in bodies {
         let (status, body) = call_json(&h.app, post_req(Some("alice"), None, b.clone())).await;

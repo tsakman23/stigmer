@@ -1,0 +1,27 @@
+[package]
+name = "stigmer-store-postgres"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+deadpool-postgres = { version = "0.14.2", default-features = false, features = ["rt_tokio_1"] }
+# TLS through rustls with the ring provider only: no aws-lc, no OpenSSL.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+rustls-native-certs = "0.8.5"
+stigmer-core = { path = "../stigmer-core", version = "0.0.0" }
+stigmer-store = { path = "../stigmer-store", version = "0.0.0" }
+tokio = { version = "1.54.1", features = ["rt", "sync", "time"] }
+tokio-postgres = "0.7.18"
+tokio-postgres-rustls = { version = "0.14.0", default-features = false, features = ["ring"] }
+
+[dev-dependencies]
+rusqlite = { version = "0.43.0", features = ["bundled"] }
+stigmer-store-conformance = { path = "../stigmer-store-conformance", version = "0.0.0" }
+stigmer-store-sqlite = { path = "../stigmer-store-sqlite", version = "0.0.0" }
+tempfile = "3.27.0"
+tokio = { version = "1.54.1", features = ["macros", "rt-multi-thread"] }
