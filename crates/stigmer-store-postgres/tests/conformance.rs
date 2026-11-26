@@ -1,8 +1,5 @@
-//! Runs the shared `Store` conformance suites against Postgres, each store in a schema of its
-//! own on the test database (`STIGMER_TEST_DATABASE_URL`).
-//!
-//! Only the `Store` half runs: `PgStore` does not implement `IdentityStore` yet (Task 5 adds it
-//! and switches this test to `run_all`).
+//! Runs the shared conformance suites (store, identity and cross-instance) against Postgres,
+//! each store in a schema of its own on the test database (`STIGMER_TEST_DATABASE_URL`).
 
 use std::sync::{Mutex, PoisonError};
 
@@ -51,8 +48,8 @@ impl Fixture for PgFixture {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn postgres_store_passes_store_conformance_suites() {
-    const TEST: &str = "postgres_store_passes_store_conformance_suites";
+async fn postgres_store_passes_conformance_suite() {
+    const TEST: &str = "postgres_store_passes_conformance_suite";
     let Some(url) = database_url(TEST).unwrap() else {
         return;
     };
@@ -60,5 +57,5 @@ async fn postgres_store_passes_store_conformance_suites() {
         url,
         schemas: Mutex::default(),
     };
-    stigmer_store_conformance::run_store_suites(&fixture).await;
+    stigmer_store_conformance::run_all(&fixture).await;
 }
