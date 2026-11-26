@@ -2,6 +2,10 @@
 
 This is the working agreement for the repo. It is short on purpose.
 
+## Reporting issues
+
+Open an issue with the bug report or feature request form. For a bug, include the version or commit, the commands you ran and the output; remove any tokens or invites first. Check [docs/roadmap.md](docs/roadmap.md) before asking for a feature: it may already be planned. Security problems go through [SECURITY.md](SECURITY.md), never a public issue.
+
 ## Branches
 
 | Branch | Purpose | Lifetime |
@@ -24,6 +28,10 @@ scripts/dev/tidy --apply                      # prune them
 ## Pull requests: one per task
 
 Each task is pushed on its own branch and opened as its own small pull request; the next task starts when the previous PR is merged. A PR description says what the one task does, how it was tested, which rulings were made and the review result. A milestone's design and plan are not PRs of their own: they ride in the first task's PR. After a PR merges, run `scripts/dev/tidy --apply`.
+
+## Review and merge
+
+Every pull request needs one approving review before it merges, and the CI checks must pass. [.github/CODEOWNERS](.github/CODEOWNERS) names the reviewer for every file; once branch protection requires code-owner review, GitHub requests that review automatically and blocks the merge until it is given. The pull request template asks for what changed and why, how it was tested, and the rulings and review result.
 
 Run `scripts/dev/tidy --apply` after every merged PR. It only removes branches that are fully merged and worktrees that are clean, and it never touches `main`.
 
@@ -50,3 +58,20 @@ Run `scripts/dev/tidy --apply` after every merged PR. It only removes branches t
 - **No I/O in `stigmer-core`.** Pure logic is unit-tested without a runtime. The only I/O in core is `stigmer_core::now_ms`; everything else takes time as a parameter.
 - **Decisions are written down.** Anything that changes the design goes in `docs/adr/NNNN-title.md` (context, decision, consequences) in the same branch that makes the change. See [docs/adr/](docs/adr/README.md) for the index and the template.
 - **Small public surface.** Items are private unless another crate needs them.
+
+## Getting a local Postgres for tests
+
+The `stigmer-store-postgres` tests need a Postgres 17 database they may create schemas in. On macOS with Homebrew:
+
+```sh
+brew install postgresql@17
+```
+
+Start it as the install output describes (as a background service, or in a terminal), then create the test database and run the tests:
+
+```sh
+createdb stigmer_test
+STIGMER_TEST_DATABASE_URL=postgres://localhost/stigmer_test cargo test -p stigmer-store-postgres
+```
+
+Each test creates its own schema and drops it afterwards. Without `STIGMER_TEST_DATABASE_URL` the Postgres tests print `SKIPPED` and pass locally, but fail when the `CI` variable is set: that is deliberate, so CI never goes green without running them. CI provides its own Postgres 17 container (see the `postgres` job in `.github/workflows/ci.yml`).
