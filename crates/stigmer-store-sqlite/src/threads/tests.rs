@@ -416,5 +416,18 @@ fn migration_8_is_appended_not_edited() {
     assert!(MIGRATIONS[7].contains("CREATE TABLE threads"));
 }
 
+#[test]
+fn migration_files_are_byte_identical_to_the_shipped_sql() {
+    assert_eq!(
+        fingerprint(MIGRATIONS),
+        SHIPPED_V8_FINGERPRINT,
+        "migrations 1 to 8 are frozen; add a numbered file instead of editing one"
+    );
+}
+
 /// `fingerprint(&MIGRATIONS[..7])` as of v0.2.0.
 const SHIPPED_V7_FINGERPRINT: u64 = 12_864_702_251_451_237_187;
+
+/// `fingerprint(MIGRATIONS)` when migration 8 was still an inline string; the move to
+/// `migrations/*.sql` files left every byte unchanged.
+const SHIPPED_V8_FINGERPRINT: u64 = 13_089_949_527_898_416_318;
