@@ -7,10 +7,14 @@
 use std::fmt::Display;
 use std::future::Future;
 use std::panic::Location;
+use std::sync::Arc;
 use std::time::Duration;
 
 use stigmer_core::{BoardId, ChannelPath, Label, MessageId, NewMessage, Page, Principal, Target};
-use stigmer_store::{ChainReport, IdentityStore, Posted, SecurityEvent, SecurityEventKind, Store};
+use stigmer_store::{
+    ChainReport, ConflictKind, IdentityStore, Posted, SecurityEvent, SecurityEventKind, Store,
+    StoreError,
+};
 
 /// The scenarios' fixed "now", in milliseconds since the Unix epoch.
 pub(crate) const NOW: i64 = 1_700_000_000_000;
@@ -265,9 +269,19 @@ impl Rng {
     }
 }
 
-/// Waits long enough that the next post gets a later millisecond timestamp.
-pub(crate) async fn tick() {
-    tokio::time::sleep(Duration::from_millis(3)).await;
+/// Generous upper bound for waits that must end early; scenarios assert on the outcome, not
+/// the time.
+pub(crate) const LONG: Duration = Duration::from_secs(10);
+
+/// The most yields an interleaving-exhaustive scenario tries between starting a waiter and
+/// posting: it repeats for every count in `0..=YIELDS`.
+pub(crate) const YIELDS: usize = 20;
+
+/// Yields to the runtime `n` times: one interleaving of a spawned task with this one.
+pub(crate) async fn yield_times(n: usize) {
+    for _ in 0..n {
+        tokio::task::yield_now().await;
+    }
 }
 
 /// The whole security log, oldest first.
@@ -278,4 +292,68 @@ pub(crate) async fn log_of<S: IdentityStore>(store: &S, scenario: &str) -> Vec<S
     );
     rows.reverse();
     rows
+}
+
+/// Spawns `n` tasks at once, task `i` running `work(handle, i)` on the handles in turn, and
+/// returns their outputs in task order. A task that panics fails `scenario`.
+pub(crate) async fn spawn_across<S, F, Fut>(
+    handles: &[Arc<S>],
+    n: usize,
+    scenario: &str,
+    work: F,
+) -> Vec<Fut::Output>
+where
+    F: Fn(Arc<S>, usize) -> Fut,
+    Fut: Future + Send + 'static,
+    Fut::Output: Send + 'static,
+{
+    let tasks: Vec<_> = handles
+        .iter()
+        .cycle()
+        .take(n)
+        .enumerate()
+        .map(|(i, store)| tokio::spawn(work(Arc::clone(store), i)))
+        .collect();
+    let mut outputs = Vec::with_capacity(n);
+    for task in tasks {
+        outputs.push(ok(task.await, format_args!("{scenario}: task failed")));
+    }
+    outputs
+}
+
+/// Twenty tasks, spread over `handles` in turn, create the same board at once: exactly one
+/// wins, the rest are `BoardExists`, and every handle lists the board once.
+pub(crate) async fn create_board_race<S: Store>(handles: &[Arc<S>], scenario: &str) {
+    const TASKS: usize = 20;
+    let research = board("research");
+    let results = spawn_across(handles, TASKS, scenario, |store, _| {
+        let research = research.clone();
+        async move {
+            store
+                .create_board(&research, None, board_created(&research, NOW))
+                .await
+        }
+    })
+    .await;
+
+    let mut winners = 0;
+    for result in results {
+        match result {
+            Ok(info) => {
+                winners += 1;
+                assert_eq!(info.id, research, "{scenario}: the winner's board");
+            }
+            Err(e) => assert_eq!(
+                e,
+                StoreError::Conflict(ConflictKind::BoardExists),
+                "{scenario}: a losing create"
+            ),
+        }
+    }
+    assert_eq!(winners, 1, "{scenario}: exactly one winner");
+    for (n, store) in handles.iter().enumerate() {
+        let listed = ok(store.list_boards().await, format_args!("{scenario}: list"));
+        let found = listed.iter().filter(|info| info.id == research).count();
+        assert_eq!(found, 1, "{scenario}: listed once through handle {n}");
+    }
 }

@@ -251,7 +251,7 @@ const REDACTED: &str = "<redacted>";
 
 /// Storage for the instance mode, board members, credentials, invites and the security log.
 ///
-/// Implemented by the same backend as `Store`; verified by `run_identity_all` in
+/// Implemented by the same backend as `Store`; verified by `run_all` in
 /// `stigmer-store-conformance`. Every method that takes a board reports an unknown board as
 /// `NotFound` with `Entity::Board`.
 ///

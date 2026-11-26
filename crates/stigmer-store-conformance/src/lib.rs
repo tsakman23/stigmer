@@ -1,16 +1,19 @@
 //! stigmer-store-conformance: the behaviour every `Store` backend must show.
 //!
-//! A backend's test calls [`run_all`] with a factory for fresh, empty stores, and
-//! [`run_identity_all`] the same way when it also implements `IdentityStore`. Each scenario
-//! panics with its name when the backend gets something wrong. Run it on a multi-thread
-//! tokio runtime: the concurrency scenario spawns tasks.
+//! A backend's test calls [`run_all`] with a [`Fixture`] that makes fresh, empty stores and
+//! second handles on a store's database. Each scenario panics with its name when the backend
+//! gets something wrong. Run it on a multi-thread tokio runtime: the concurrency scenarios spawn
+//! tasks.
 //!
 //! This is test-support code: panics are its assertion mechanism, so it uses `panic!` and the
 //! `assert!` family where library code would return errors.
 
 mod archive;
 mod boards;
+mod cross_instance;
+mod cross_instance_identity;
 mod events;
+mod fixture;
 mod idempotency;
 mod identity;
 mod identity_adoption;
@@ -33,10 +36,23 @@ use std::future::Future;
 
 use stigmer_store::Store;
 
-pub use identity::run_identity_all;
+pub use fixture::Fixture;
 
-/// Runs every scenario, each against a fresh store from `factory`.
-pub async fn run_all<S, F, Fut>(factory: F)
+/// Runs the store, identity and cross-instance suites, each scenario against fresh stores from
+/// `fixture`, then prints one summary line naming [`Fixture::CROSS_PROCESS_WAKE`].
+pub async fn run_all<X: Fixture>(fixture: &X) {
+    let factory = || fixture.fresh();
+    run_store_suite(factory).await;
+    identity::run_identity_suite(factory).await;
+    cross_instance::run_cross_instance_suite(fixture).await;
+    support::ok(
+        fixture::write_summary(&mut std::io::stderr().lock(), X::CROSS_PROCESS_WAKE),
+        "conformance: summary line",
+    );
+}
+
+/// Runs every `Store` scenario, each against a fresh store from `factory`.
+async fn run_store_suite<S, F, Fut>(factory: F)
 where
     S: Store,
     F: Fn() -> Fut,
@@ -59,6 +75,7 @@ where
     reads::read_channel_preview_is_200_chars_not_bytes(factory().await).await;
     reads::read_thread_returns_root_and_replies_in_order(factory().await).await;
     reads::read_thread_of_unknown_id_reply_or_other_board_is_not_found(factory().await).await;
+    reads::ordering_never_depends_on_wall_clock_time_at_the_store_level(factory().await).await;
     reads_threads::read_channel_orders_by_last_event_sequence_not_wall_clock(factory().await).await;
     reads_threads::reply_moves_its_thread_to_the_top_and_updates_count_and_preview_stays_the_root(
         factory().await,
@@ -84,6 +101,7 @@ where
     wait::wait_past_is_not_woken_by_an_idempotent_replay(factory().await).await;
     boards::create_board_then_get_and_list(factory().await).await;
     boards::create_duplicate_board_is_board_exists(factory().await).await;
+    boards::concurrent_create_board_has_one_winner(factory().await).await;
     boards::main_exists_on_a_fresh_store(factory().await).await;
     boards::boards_are_isolated_sequences_start_at_1_per_board(factory().await).await;
     boards::unknown_board_is_not_found_from_every_method(factory().await).await;

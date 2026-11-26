@@ -12,6 +12,7 @@ mod notify;
 mod posts;
 mod reads;
 mod schema;
+mod second_handle;
 mod threads;
 
 use std::fmt::Display;
@@ -207,9 +208,11 @@ impl Store for SqliteStore {
         // Lazy: the database read starts only when polled, after the cursor has been decoded.
         let read_and_subscribe = self.run(move |conn| {
             let (head, archived) = events::head_state(conn, &board)?;
-            // Still holding the connection: `post` commits and bumps under the same lock, so no
-            // commit can land between this read and the subscription. Only a live board gets an
-            // entry: an unknown board failed above, and an archived board's head cannot move.
+            // Correctness does not depend on holding this connection's lock: another handle sharing
+            // the notifier can commit and bump between this read and the subscription. The watch
+            // channel keeps the latest head sequence, so such a bump is still seen by
+            // `borrow_and_update` below. Only a live board gets an entry: an unknown board failed
+            // above, and an archived board's head cannot move.
             let head_rx = (!archived).then(|| notifier.subscribe(&board));
             Ok((head, head_rx))
         });
@@ -341,7 +344,14 @@ mod tests {
                     .await
             })
         };
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        // Wait for the subscription itself, not for a fixed time; 10 s is only an upper bound.
+        let subscribed = tokio::time::timeout(Duration::from_secs(10), async {
+            while store.notifier.entry_count() != 1 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await;
+        assert!(subscribed.is_ok(), "the waiter subscribed");
         assert_eq!(store.notifier.entry_count(), 1, "the waiter subscribed");
 
         store

@@ -8,7 +8,7 @@ use crate::support::{board, ok, principal};
 use crate::support::{board_created, instance_token_issued, token_issued, token_revoked};
 
 /// The credential `new` as freshly stored: never revoked or seen.
-fn stored(new: &NewCredential) -> Credential {
+pub(crate) fn stored(new: &NewCredential) -> Credential {
     Credential {
         id: new.id.clone(),
         secret_hash: new.secret_hash,

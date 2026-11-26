@@ -44,6 +44,13 @@ impl Notifier {
         self.lock().remove(board.as_str());
     }
 
+    /// Number of receivers subscribed to `board`, 0 when it has no entry. Creates no entry.
+    pub(crate) fn receiver_count(&self, board: &BoardId) -> usize {
+        self.lock()
+            .get(board.as_str())
+            .map_or(0, watch::Sender::receiver_count)
+    }
+
     /// Number of boards with an entry.
     #[cfg(test)]
     pub(crate) fn entry_count(&self) -> usize {
@@ -93,6 +100,21 @@ mod tests {
         assert!(rx.has_changed().is_err(), "the sender is gone");
         notifier.forget(&BoardId::main());
         assert_eq!(notifier.entry_count(), 1, "forgetting twice is harmless");
+    }
+
+    #[test]
+    fn receiver_count_counts_live_receivers_and_creates_no_entry() {
+        let notifier = Notifier::default();
+        let main = BoardId::main();
+        assert_eq!(notifier.receiver_count(&main), 0);
+        assert_eq!(notifier.entry_count(), 0, "counting creates no entry");
+        let first = notifier.subscribe(&main);
+        let second = notifier.subscribe(&main);
+        assert_eq!(notifier.receiver_count(&main), 2);
+        drop(first);
+        assert_eq!(notifier.receiver_count(&main), 1);
+        drop(second);
+        assert_eq!(notifier.receiver_count(&main), 0);
     }
 
     #[test]

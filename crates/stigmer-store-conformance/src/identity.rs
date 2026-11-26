@@ -23,9 +23,8 @@ use crate::{
 pub(crate) use crate::support::NOW;
 pub(crate) const HOUR: i64 = 3_600_000;
 
-/// Runs every identity scenario, each against a fresh store from `factory`. Run it on a
-/// multi-thread tokio runtime: the concurrent invite scenario spawns tasks.
-pub async fn run_identity_all<S, F, Fut>(factory: F)
+/// Runs every identity scenario, each against a fresh store from `factory`.
+pub(crate) async fn run_identity_suite<S, F, Fut>(factory: F)
 where
     S: Store + IdentityStore,
     F: Fn() -> Fut,
