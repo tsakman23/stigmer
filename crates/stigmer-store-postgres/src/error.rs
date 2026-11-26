@@ -8,8 +8,16 @@
 
 use std::fmt::Display;
 
-use stigmer_store::{ConflictKind, StoreError};
+use stigmer_store::{ConflictKind, Entity, StoreError};
 use tokio_postgres::error::SqlState;
+
+/// A `NotFound` error for the `entity` named by `id`.
+pub(crate) fn not_found(entity: Entity, id: impl Display) -> StoreError {
+    StoreError::NotFound {
+        entity,
+        id: id.to_string(),
+    }
+}
 
 /// Wraps a failure that is not a database error (a pool, runtime or decoding failure).
 pub(crate) fn backend(err: impl Display) -> StoreError {

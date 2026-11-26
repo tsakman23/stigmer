@@ -1,4 +1,5 @@
 //! stigmer-store-postgres: the Postgres backend for `Store`.
+
 //!
 //! A pool of connections (deadpool) to one database, shared by every replica of the server.
 //! Writes to one board serialise on that board's row (`SELECT ... FOR UPDATE`), so its event
@@ -8,11 +9,22 @@
 //! A connection string's password never appears in an error, a log line or `Debug` output:
 //! errors name the host, port and database only.
 
+// Reached only from tests until the `Store` implementation arrives.
+#[allow(dead_code)]
+mod audit;
+#[allow(dead_code)]
+mod boards;
+#[allow(dead_code)]
+mod chain;
 mod error;
 mod hash;
 mod migrate;
 mod pool;
+#[allow(dead_code)]
+mod posts;
 mod schema;
+#[allow(dead_code)]
+mod threads;
 mod tls;
 
 #[doc(hidden)]

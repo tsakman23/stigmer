@@ -21,6 +21,20 @@ pub(crate) fn to_bytes(hex: &str) -> Result<Vec<u8>, StoreError> {
         .ok_or_else(invalid)
 }
 
+/// The lowercase hex of a stored hash, or `None` when it is not 32 bytes long.
+pub(crate) fn to_hex(bytes: &[u8]) -> Option<String> {
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
+    if bytes.len() != HASH_BYTES {
+        return None;
+    }
+    let mut hex = String::with_capacity(HASH_BYTES * 2);
+    for byte in bytes {
+        hex.push(char::from(DIGITS[usize::from(byte >> 4)]));
+        hex.push(char::from(DIGITS[usize::from(byte & 0x0f)]));
+    }
+    Some(hex)
+}
+
 fn nibble(digit: u8) -> Option<u8> {
     match digit {
         b'0'..=b'9' => Some(digit - b'0'),
@@ -35,11 +49,12 @@ mod tests {
     use stigmer_core::GENESIS_HASH;
 
     #[test]
-    fn hashes_decode_to_their_bytes() {
+    fn hashes_round_trip_through_their_bytes() {
         let hash = "00ff10a9".repeat(8);
         let bytes = to_bytes(&hash).unwrap();
         assert_eq!(bytes.len(), HASH_BYTES);
         assert_eq!(&bytes[..4], &[0x00, 0xff, 0x10, 0xa9]);
+        assert_eq!(to_hex(&bytes).as_deref(), Some(hash.as_str()));
         assert_eq!(to_bytes(GENESIS_HASH).unwrap(), vec![0; HASH_BYTES]);
     }
 
@@ -48,5 +63,6 @@ mod tests {
         assert!(to_bytes("abc").is_err());
         assert!(to_bytes(&"AB".repeat(32)).is_err(), "uppercase");
         assert!(to_bytes(&"zz".repeat(32)).is_err());
+        assert_eq!(to_hex(&[0; 31]), None);
     }
 }
