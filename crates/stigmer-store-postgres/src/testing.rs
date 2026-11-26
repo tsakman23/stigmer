@@ -158,6 +158,15 @@ fn unique_name() -> String {
 
 /// `url` with `options=-c search_path=<schema>` added to its query string.
 fn with_search_path(url: &str, schema: &str) -> String {
+    // The name is spliced into the URL and into SQL without escaping or percent-encoding, which
+    // is safe only for a plain lowercase identifier (what `unique_name` makes).
+    assert!(
+        !schema.is_empty()
+            && schema
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_'),
+        "test schema name must match [a-z0-9_]+: {schema:?}"
+    );
     let separator = if url.contains('?') { '&' } else { '?' };
     format!("{url}{separator}options=-c%20search_path%3D{schema}")
 }
