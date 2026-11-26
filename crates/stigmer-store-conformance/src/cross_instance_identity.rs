@@ -8,7 +8,9 @@ use stigmer_store::{CredentialScope, Entity, IdentityStore};
 use crate::identity::{credential, invite, join_credential, not_found, token_id};
 use crate::identity_credentials::stored;
 use crate::support::NOW;
-use crate::support::{fail, invite_created, log_of, ok, principal, token_issued, token_revoked};
+use crate::support::{
+    fail, invite_created, log_of, ok, principal, spawn_across, token_issued, token_revoked,
+};
 
 pub(crate) async fn credential_issued_on_one_handle_is_valid_on_the_other_and_revocable_from_either<
     S: IdentityStore,
@@ -63,28 +65,23 @@ pub(crate) async fn invite_redeemed_once_across_handles<S: IdentityStore>(a: S, 
     let hash = new.secret_hash;
     ok(a.create_invite(new, invite_created(NOW)).await, SCENARIO);
     let handles = [Arc::new(a), Arc::new(b)];
-    let tasks: Vec<_> = (0..TASKS)
-        .zip(handles.iter().cycle())
-        .map(|(i, store)| {
-            let store = Arc::clone(store);
-            tokio::spawn(async move {
-                let name = principal(&format!("agent-{i}"));
-                store
-                    .consume_invite(
-                        &token_id(1),
-                        &hash,
-                        &name,
-                        NOW,
-                        join_credential(100 + i as u8),
-                    )
-                    .await
-            })
-        })
-        .collect();
+    let results = spawn_across(&handles, TASKS, SCENARIO, |store, i| async move {
+        let name = principal(&format!("agent-{i}"));
+        store
+            .consume_invite(
+                &token_id(1),
+                &hash,
+                &name,
+                NOW,
+                join_credential(100 + i as u8),
+            )
+            .await
+    })
+    .await;
 
     let mut joined = Vec::new();
-    for task in tasks {
-        match ok(task.await, format_args!("{SCENARIO}: task failed")) {
+    for result in results {
+        match result {
             Ok(consumed) => joined.push(consumed.member),
             Err(e) => assert_eq!(
                 e,

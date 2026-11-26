@@ -7,7 +7,7 @@
 use std::sync::Arc;
 
 use stigmer_core::{BoardId, Cursor};
-use stigmer_store::{ConflictKind, Store, StoreError};
+use stigmer_store::Store;
 
 use crate::cross_instance_identity::{
     credential_issued_on_one_handle_is_valid_on_the_other_and_revocable_from_either,
@@ -15,8 +15,8 @@ use crate::cross_instance_identity::{
 };
 use crate::fixture::Fixture;
 use crate::support::{
-    board, board_created, new_thread, ok, post_ok, valid_chain, verify_main, yield_times, LONG,
-    NOW, YIELDS,
+    create_board_race, new_thread, ok, post_ok, spawn_across, valid_chain, verify_main,
+    yield_times, LONG, YIELDS,
 };
 
 /// Runs every cross-instance scenario, each against a fresh store and a second handle on it.
@@ -77,67 +77,20 @@ async fn concurrent_create_board_across_handles_has_one_winner_and_one_board_exi
     create_board_race(&[Arc::new(a), Arc::new(b)], SCENARIO).await;
 }
 
-/// Twenty tasks, spread over `handles` in turn, create the same board at once: exactly one
-/// wins, the rest are `BoardExists`, and every handle lists the board once.
-pub(crate) async fn create_board_race<S: Store>(handles: &[Arc<S>], scenario: &str) {
-    const TASKS: usize = 20;
-    let research = board("research");
-    let tasks: Vec<_> = handles
-        .iter()
-        .cycle()
-        .take(TASKS)
-        .map(|store| {
-            let (store, research) = (Arc::clone(store), research.clone());
-            tokio::spawn(async move {
-                store
-                    .create_board(&research, None, board_created(&research, NOW))
-                    .await
-            })
-        })
-        .collect();
-
-    let mut winners = 0;
-    for task in tasks {
-        match ok(task.await, format_args!("{scenario}: task failed")) {
-            Ok(info) => {
-                winners += 1;
-                assert_eq!(info.id, research, "{scenario}: the winner's board");
-            }
-            Err(e) => assert_eq!(
-                e,
-                StoreError::Conflict(ConflictKind::BoardExists),
-                "{scenario}: a losing create"
-            ),
-        }
-    }
-    assert_eq!(winners, 1, "{scenario}: exactly one winner");
-    for (n, store) in handles.iter().enumerate() {
-        let listed = ok(store.list_boards().await, format_args!("{scenario}: list"));
-        let found = listed.iter().filter(|info| info.id == research).count();
-        assert_eq!(found, 1, "{scenario}: listed once through handle {n}");
-    }
-}
-
 async fn sequence_is_gapless_with_concurrent_posts_from_both_handles<S: Store>(a: S, b: S) {
     const SCENARIO: &str = "sequence_is_gapless_with_concurrent_posts_from_both_handles";
     const POSTS: u64 = 50;
     let handles = [Arc::new(a), Arc::new(b)];
-    let tasks: Vec<_> = (0..POSTS)
-        .zip(handles.iter().cycle())
-        .map(|(i, store)| {
-            let store = Arc::clone(store);
-            tokio::spawn(async move {
-                store
-                    .post(new_thread("load", "agent", &format!("post {i}")))
-                    .await
-            })
-        })
-        .collect();
+    let results = spawn_across(&handles, POSTS as usize, SCENARIO, |store, i| async move {
+        store
+            .post(new_thread("load", "agent", &format!("post {i}")))
+            .await
+    })
+    .await;
 
     let mut seqs = Vec::new();
-    for task in tasks {
-        let joined = ok(task.await, format_args!("{SCENARIO}: task failed"));
-        let posted = ok(joined, format_args!("{SCENARIO}: post failed"));
+    for result in results {
+        let posted = ok(result, format_args!("{SCENARIO}: post failed"));
         seqs.push(posted.event.seq);
     }
     seqs.sort_unstable();

@@ -6,11 +6,10 @@ use std::time::Duration;
 use stigmer_core::{BoardId, BoardInfo, Cursor, EventFilter, MessageId};
 use stigmer_store::{ConflictKind, Entity, Store, StoreError};
 
-use crate::cross_instance::create_board_race;
 use crate::support::{
     all_channels, board, channel, new_thread_on, ok, post_ok, principal, reply_on, valid_chain,
 };
-use crate::support::{board_archived, board_created, NOW};
+use crate::support::{board_archived, board_created, create_board_race, NOW};
 
 fn ids(boards: &[BoardInfo]) -> Vec<&str> {
     boards.iter().map(|b| b.id.as_str()).collect()
