@@ -20,10 +20,10 @@ use crate::threads::{insert_thread, record_reply};
 use crate::{hash, pool};
 
 /// `messages.author_kind` of a post whose author is not a member of the board.
-const LOCAL_AUTHOR_KIND: &str = "local";
+pub(crate) const LOCAL_AUTHOR_KIND: &str = "local";
 
 /// `messages.author_kind` of a post whose author is a member of the board.
-const PRINCIPAL_AUTHOR_KIND: &str = "principal";
+pub(crate) const PRINCIPAL_AUTHOR_KIND: &str = "principal";
 
 /// Stores `msg` and appends its event in one transaction under the board's row lock.
 ///

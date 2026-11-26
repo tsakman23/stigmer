@@ -1,7 +1,9 @@
 //! Board lifecycle: creating, reading, listing and archiving boards.
 //!
 //! Every write takes the board's row lock, the same lock a post takes, so an archive and a post
-//! on one board are ordered and never interleave.
+//! on one board are ordered and never interleave. The lock order everywhere is the board row
+//! first, then its dependent rows (members, credentials, invites, messages): two writers on one
+//! board queue on the board row and cannot deadlock on the rows behind it.
 
 use deadpool_postgres::Pool;
 use stigmer_core::{BoardId, BoardInfo, Principal, GENESIS_HASH};
@@ -90,6 +92,25 @@ pub(crate) async fn archive(
     }
     tx.commit().await.map_err(db)?;
     Ok(info)
+}
+
+/// Locks board `id`, archived or not, before a write to its dependent rows: `NotFound` for an
+/// unknown board.
+pub(crate) async fn lock_board(tx: &Transaction<'_>, id: &BoardId) -> Result<(), StoreError> {
+    tx.query_opt(
+        "SELECT 1 FROM boards WHERE id = $1 FOR UPDATE",
+        &[&id.as_str()],
+    )
+    .await
+    .map_err(db)?
+    .map(drop)
+    .ok_or_else(|| not_found(Entity::Board, id))
+}
+
+/// Locks board `id` before a write to its dependent rows, as [`lock_writable_head`]: `NotFound`
+/// for an unknown board, `Conflict(BoardArchived)` for an archived one.
+pub(crate) async fn lock_writable(tx: &Transaction<'_>, id: &BoardId) -> Result<(), StoreError> {
+    lock_writable_head(tx, id).await.map(drop)
 }
 
 /// Locks board `id` and sets its archive time unless it is archived already. Returns the board

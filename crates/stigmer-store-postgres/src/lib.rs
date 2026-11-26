@@ -17,6 +17,11 @@ mod chain;
 mod error;
 mod events;
 mod hash;
+// Wired into `IdentityStore` with invites and the security log in the next commit.
+#[allow(dead_code)]
+mod identity_credentials;
+#[allow(dead_code)]
+mod identity_members;
 mod migrate;
 mod pool;
 mod posts;
