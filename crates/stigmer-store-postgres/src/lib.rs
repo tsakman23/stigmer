@@ -1,12 +1,14 @@
-//! stigmer-store-postgres: the Postgres backend for `Store`.
+//! stigmer-store-postgres: the Postgres backend for `Store` and `IdentityStore`.
 //!
-//! `IdentityStore` is not implemented yet (Task 5 of the M2 plan). `wait_past` polls the board
-//! head every 100 ms for now; Task 6 replaces the polling with LISTEN/NOTIFY wake-ups.
+//! `wait_past` polls the board head every 100 ms for now; Task 6 replaces the polling with
+//! LISTEN/NOTIFY wake-ups.
 //!
 //! A pool of connections (deadpool) to one database, shared by every replica of the server.
 //! Writes to one board serialise on that board's row (`SELECT ... FOR UPDATE`), so its event
-//! sequence stays gapless across processes; different boards proceed in parallel. The schema is
-//! migrated explicitly ([`PgStore::migrate`]), never on connect.
+//! sequence stays gapless across processes; different boards proceed in parallel. Identity
+//! writes on a board take the same row lock before touching its members, credentials or
+//! invites, so the lock order is always the board row, then the rows that depend on it. The
+//! schema is migrated explicitly ([`PgStore::migrate`]), never on connect.
 //!
 //! A connection string's password never appears in an error, a log line or `Debug` output:
 //! errors name the host, port and database only.
@@ -17,11 +19,11 @@ mod chain;
 mod error;
 mod events;
 mod hash;
-// Wired into `IdentityStore` with invites and the security log in the next commit.
-#[allow(dead_code)]
+mod identity;
 mod identity_credentials;
-#[allow(dead_code)]
+mod identity_invites;
 mod identity_members;
+mod identity_security;
 mod migrate;
 mod pool;
 mod posts;

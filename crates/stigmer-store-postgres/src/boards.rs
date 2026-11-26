@@ -12,6 +12,7 @@ use tokio_postgres::{Row, Transaction};
 
 use crate::audit::log_in_tx;
 use crate::error::{backend, db, not_found};
+use crate::identity_credentials::revoke_board_in_tx;
 use crate::{hash, pool};
 
 const BOARD_COLUMNS: &str = "SELECT id, created_at_ms, created_by, archived_at_ms FROM boards";
@@ -91,6 +92,33 @@ pub(crate) async fn archive(
         log_in_tx(&tx, audit).await?;
     }
     tx.commit().await.map_err(db)?;
+    Ok(info)
+}
+
+/// Archives the board and revokes every live non-admin credential on it in one transaction,
+/// writing the audit row when anything changed. The board's row lock comes first, as in every
+/// write on a board, so a join or a credential issue on the board either commits before the
+/// archive (and is revoked by it) or waits and then finds the board archived: nothing escapes
+/// the revocation.
+pub(crate) async fn archive_revoking(
+    pool: &Pool,
+    id: &BoardId,
+    audit: &SecurityEvent,
+) -> Result<BoardInfo, StoreError> {
+    if *id == BoardId::main() {
+        return Err(StoreError::Conflict(ConflictKind::BoardProtected));
+    }
+    let mut client = pool::client(pool).await?;
+    let tx = client.transaction().await.map_err(db)?;
+    let (info, archived) = set_archived(&tx, id, audit.at_ms).await?;
+    let revoked = revoke_board_in_tx(&tx, id, true, audit.at_ms).await?;
+    if archived || revoked > 0 {
+        log_in_tx(&tx, audit).await?;
+        tx.commit().await.map_err(db)?;
+    } else {
+        // Archived already and nothing left to revoke: no change, so no row.
+        tx.rollback().await.map_err(db)?;
+    }
     Ok(info)
 }
 
