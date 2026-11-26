@@ -1,0 +1,1 @@
+ALTER TABLE messages ADD COLUMN author_kind TEXT NOT NULL DEFAULT 'local';
