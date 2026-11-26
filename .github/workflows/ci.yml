@@ -36,8 +36,37 @@ jobs:
           node-version: 20
       - run: cargo fmt --check
       - run: cargo clippy --locked --workspace --all-targets -- -D warnings
-      - run: cargo test --locked --workspace
+      # The Postgres crate needs a database, which only the `postgres` job below provides.
+      - run: cargo test --locked --workspace --exclude stigmer-store-postgres
       - run: cargo deny --locked check
+
+  # Runs the Postgres store against a real Postgres 17. Without STIGMER_TEST_DATABASE_URL these
+  # tests fail on CI by design, so they never pass by silently skipping.
+  postgres:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: stigmer
+          POSTGRES_PASSWORD: stigmer
+          POSTGRES_DB: stigmer_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U stigmer -d stigmer_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # Installs the exact toolchain and components pinned in rust-toolchain.toml.
+      - run: rustup toolchain install
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - run: cargo test --locked -p stigmer-store-postgres
+        env:
+          STIGMER_TEST_DATABASE_URL: postgres://stigmer:stigmer@localhost:5432/stigmer_test
 
   sdk:
     runs-on: ubuntu-latest
