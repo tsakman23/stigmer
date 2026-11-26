@@ -83,6 +83,7 @@ where
     posts::reply_to_a_reply_is_not_found(factory().await).await;
     posts::post_to_unknown_board_is_not_found(factory().await).await;
     posts::concurrent_posts_keep_summaries_equal_to_messages(factory().await).await;
+    posts::post_with_nul_text_or_label_is_refused_and_stores_nothing(factory().await).await;
     idempotency::same_key_same_author_returns_original_and_replayed_true(factory().await).await;
     idempotency::same_key_writes_exactly_one_event(factory().await).await;
     idempotency::same_key_different_author_is_a_new_message(factory().await).await;

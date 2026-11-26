@@ -29,7 +29,7 @@ pub struct NewMessage {
 }
 
 impl NewMessage {
-    /// Validates text (1 to [`MAX_MESSAGE_CHARS`] chars), labels (at most [`MAX_LABELS`], each valid)
+    /// Validates text (1 to [`MAX_MESSAGE_CHARS`] chars, no NUL), labels (at most [`MAX_LABELS`], each valid)
     /// and the idempotency key when present (1 to [`MAX_IDEMPOTENCY_KEY_CHARS`] chars of `[A-Za-z0-9._:-]`).
     pub fn new(
         board: BoardId,
@@ -41,6 +41,9 @@ impl NewMessage {
     ) -> Result<Self, CoreError> {
         if text.is_empty() {
             return Err(CoreError::EmptyText);
+        }
+        if text.contains('\0') {
+            return Err(CoreError::NulCharacter("message text"));
         }
         if text.chars().count() > MAX_MESSAGE_CHARS {
             return Err(CoreError::TooLong {
@@ -114,6 +117,30 @@ mod tests {
             CoreError::TooLong {
                 max: MAX_MESSAGE_CHARS
             }
+        );
+    }
+
+    #[test]
+    fn text_with_a_nul_character_is_rejected() {
+        assert_eq!(
+            build("a\0b", vec![]).unwrap_err(),
+            CoreError::NulCharacter("message text")
+        );
+        assert_eq!(
+            build("\0", vec![]).unwrap_err(),
+            CoreError::NulCharacter("message text")
+        );
+    }
+
+    #[test]
+    fn hand_built_label_with_a_nul_value_is_rejected() {
+        let bad = Label {
+            key: "kind".into(),
+            value: "a\0b".into(),
+        };
+        assert_eq!(
+            build("hi", vec![bad]).unwrap_err(),
+            CoreError::NulCharacter("label value")
         );
     }
 
