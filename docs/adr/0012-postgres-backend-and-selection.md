@@ -38,15 +38,20 @@ redacts the driver's parse errors.
 
 **TLS rules.** The connection is secured as `--db-tls` or the URL's `sslmode` says: `disable`,
 `require` (encrypted, certificate not checked, as libpq's `require`) or `verify-full` (chain and
-host name checked). Other `sslmode` values are refused, `prefer` and `allow` because they fall
-back to plain text silently. The flag and the URL must agree. Without either, the mode is
-`verify-full` when a CA bundle is given, `disable` when every host is this machine (a loopback
-address, `localhost` or a Unix socket) and `require` otherwise: a plain connection leaves the
-machine only when `disable` was asked for by name. A CA bundle (`--db-tls-ca` or the URL's
-`sslrootcert`, PEM) replaces the platform's roots for `verify-full`, for servers with a
-certificate from a private CA; with any other mode it is refused. `stigmerd` reads `sslmode`
-and `sslrootcert` out of the URL and passes the rest to the driver, which cannot parse
-`verify-full`. TLS is rustls with the ring provider, as everywhere else.
+host name checked). Without either, the mode is `verify-full` when a CA bundle is given,
+`disable` when every host is this machine, and `require` for any other host. "This machine"
+means a loopback address, `localhost` or a Unix socket directory (a socket never leaves the
+machine). So a connection to another host is plain only when `disable` is given by name
+(`--db-tls disable` or `sslmode=disable`); otherwise it gets TLS by default, and there is no
+separate refusal for that case. A CA bundle (`--db-tls-ca` or the URL's `sslrootcert`, PEM)
+replaces the platform's roots for `verify-full`, for servers with a certificate from a private
+CA. These settings exit 2 before anything is opened: `--db-tls` and `sslmode` naming different
+modes; `--db-tls-ca` and `sslrootcert` naming different files; `sslmode` or `sslrootcert` given
+twice in the URL; a CA bundle with a mode other than `verify-full`; and `sslmode=prefer`,
+`allow` or `verify-ca` (the first two can fall back to plain text silently, the last is not
+supported). `stigmerd` reads `sslmode` and `sslrootcert` out of the URL and passes the rest to
+the driver, which cannot parse `verify-full`. TLS is rustls with the ring provider, as
+everywhere else.
 
 **Migrations run on request.** `stigmerd admin migrate` applies all pending Postgres migrations
 in one transaction under an advisory lock and is safe to repeat; on SQLite it is a no-op that
