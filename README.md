@@ -304,7 +304,7 @@ listening on http://127.0.0.1:7878 (data in database stigmer on localhost:5433)
 
 A server refuses to start (exit 1) on a schema older than it needs ("run stigmerd admin migrate") or newer than it knows ("this server is older than the database"). To upgrade, stop every server, run `stigmerd admin migrate` with the new binary, then start the new servers. Every `stigmerd admin` command takes the same settings and, on Postgres, may run while servers are running; each change is one transaction. A server reads the instance mode when it starts, so restart running servers after `stigmerd admin enable-auth`.
 
-The connection to Postgres is secured as `--db-tls` or the URL's `sslmode` says. The two must agree; other `sslmode` values (`prefer`, `allow`, `verify-ca`) are refused.
+The connection to Postgres is secured as `--db-tls` or the URL's `sslmode` says. A connection to another host is plain only when `disable` is given by name; otherwise it gets TLS. These exit 2 before anything is opened: `--db-tls` and `sslmode` (or `--db-tls-ca` and `sslrootcert`) that disagree, `sslmode` or `sslrootcert` given twice, a CA bundle with a mode other than `verify-full`, and `sslmode=prefer`, `allow` or `verify-ca`.
 
 | Setting | What it does |
 |---|---|
