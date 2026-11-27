@@ -320,7 +320,7 @@ For example, a URL in a file only you can read, with the server's certificate ch
 stigmerd serve --database-url-file db-url --db-tls-ca ca.pem
 ```
 
-`--db-max-connections` (default 16, 1 to 500) bounds each server's connection pool; each server also holds one more connection to hear about posts made through the others, so the database's connection limit must cover every server. The limits in the table above apply per server process.
+`--db-max-connections` (default 16, 1 to 500) bounds each server's connection pool; once a request first waits, each server also holds one more connection (named `stigmer-listener`) to hear about posts made through the others, so the database's connection limit must cover every server. Admin commands open no such connection. The limits in the table above apply per server process.
 
 ## Exit codes
 
