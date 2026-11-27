@@ -1,7 +1,10 @@
 //! Board lifecycle: creating, reading, listing and archiving boards.
 //!
-//! Every write takes the board's row lock, the same lock a post takes, so an archive and a post
-//! on one board are ordered and never interleave.
+//! Every board write here takes the board's row lock, the same lock a post takes, so an archive
+//! and a post on one board are ordered and never interleave. Multi-row writes on a board lock
+//! the board row first, then its dependent rows (members, credentials, invites, messages), so
+//! they queue on the board row instead of deadlocking on the rows behind it; the exceptions
+//! that lock a single row are listed in the crate documentation.
 
 use deadpool_postgres::Pool;
 use stigmer_core::{BoardId, BoardInfo, Principal, GENESIS_HASH};
@@ -10,6 +13,7 @@ use tokio_postgres::{Row, Transaction};
 
 use crate::audit::log_in_tx;
 use crate::error::{backend, db, not_found};
+use crate::identity_credentials::revoke_board_in_tx;
 use crate::{hash, pool};
 
 const BOARD_COLUMNS: &str = "SELECT id, created_at_ms, created_by, archived_at_ms FROM boards";
@@ -90,6 +94,52 @@ pub(crate) async fn archive(
     }
     tx.commit().await.map_err(db)?;
     Ok(info)
+}
+
+/// Archives the board and revokes every live non-admin credential on it in one transaction,
+/// writing the audit row when anything changed. The board's row lock comes first, as in every
+/// multi-row write on a board, so a join or a credential issue on the board either commits before the
+/// archive (and is revoked by it) or waits and then finds the board archived: nothing escapes
+/// the revocation.
+pub(crate) async fn archive_revoking(
+    pool: &Pool,
+    id: &BoardId,
+    audit: &SecurityEvent,
+) -> Result<BoardInfo, StoreError> {
+    if *id == BoardId::main() {
+        return Err(StoreError::Conflict(ConflictKind::BoardProtected));
+    }
+    let mut client = pool::client(pool).await?;
+    let tx = client.transaction().await.map_err(db)?;
+    let (info, archived) = set_archived(&tx, id, audit.at_ms).await?;
+    let revoked = revoke_board_in_tx(&tx, id, true, audit.at_ms).await?;
+    if archived || revoked > 0 {
+        log_in_tx(&tx, audit).await?;
+        tx.commit().await.map_err(db)?;
+    } else {
+        // Archived already and nothing left to revoke: no change, so no row.
+        tx.rollback().await.map_err(db)?;
+    }
+    Ok(info)
+}
+
+/// Locks board `id`, archived or not, before a write to its dependent rows: `NotFound` for an
+/// unknown board.
+pub(crate) async fn lock_board(tx: &Transaction<'_>, id: &BoardId) -> Result<(), StoreError> {
+    tx.query_opt(
+        "SELECT 1 FROM boards WHERE id = $1 FOR UPDATE",
+        &[&id.as_str()],
+    )
+    .await
+    .map_err(db)?
+    .map(drop)
+    .ok_or_else(|| not_found(Entity::Board, id))
+}
+
+/// Locks board `id` before a write to its dependent rows, as [`lock_writable_head`]: `NotFound`
+/// for an unknown board, `Conflict(BoardArchived)` for an archived one.
+pub(crate) async fn lock_writable(tx: &Transaction<'_>, id: &BoardId) -> Result<(), StoreError> {
+    lock_writable_head(tx, id).await.map(drop)
 }
 
 /// Locks board `id` and sets its archive time unless it is archived already. Returns the board

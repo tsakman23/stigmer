@@ -50,21 +50,8 @@ where
     identity::run_identity_suite(factory).await;
     cross_instance::run_cross_instance_suite(fixture).await;
     cross_instance::run_cross_instance_identity_suite(fixture).await;
-    summarise(fixture::Suites::All, X::CROSS_PROCESS_WAKE);
-}
-
-/// Runs only the `Store` half: the store suite and the cross-instance scenarios that need no
-/// `IdentityStore`, then prints a summary line that names the half it ran. For a backend that
-/// does not implement `IdentityStore` yet; [`run_all`] is the definition of a complete backend.
-pub async fn run_store_suites<X: Fixture>(fixture: &X) {
-    run_store_suite(|| fixture.fresh()).await;
-    cross_instance::run_cross_instance_suite(fixture).await;
-    summarise(fixture::Suites::StoreOnly, X::CROSS_PROCESS_WAKE);
-}
-
-fn summarise(suites: fixture::Suites, cross_process_wake: bool) {
     support::ok(
-        fixture::write_summary(&mut std::io::stderr().lock(), suites, cross_process_wake),
+        fixture::write_summary(&mut std::io::stderr().lock(), X::CROSS_PROCESS_WAKE),
         "conformance: summary line",
     );
 }
