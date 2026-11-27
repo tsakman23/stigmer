@@ -40,14 +40,21 @@ reads the head through the pool (one statement, connection returned at once), th
 subscription. An entry exists only while a wait holds a receiver on it; a notification or poll
 updates existing entries and never creates one, so notifications for unknown boards, archived
 boards and boards nobody waits on leave nothing behind. Archiving a board through a handle drops
-that handle's entry for it; on other handles the safety poll does (it sees the board archived).
+that handle's entry for it; on other handles the safety poll or a reconnect re-read does (it
+sees the board archived). Either way the board's final head, read under the archive's row lock
+or by the re-read, is delivered to the entry before it is dropped, so a wait for a post that
+committed just before the archive, whose notification had not arrived yet, still wakes.
 `PgStore::connect` fails if the listener cannot connect and LISTEN, as it fails for a wrong
 address or password.
 
 **Reconnect, then re-read.** When the listener connection fails it reconnects with exponential
-backoff from 100 ms doubling to 10 s. Every (re)connect runs LISTEN first and then re-reads the
-heads of the boards that have waiters: a post that committed before LISTEN took effect is seen by
-the read, any later one is notified, so the gap in which the listener was down loses no wake.
+backoff from 100 ms doubling to 10 s; the backoff goes back to 100 ms only after a session has
+stayed up for 10 s, so a connection that drops straight after LISTEN does not reconnect in a
+tight loop. Opening the listener (connect, LISTEN, re-read) is bounded by a 10 s timeout, so an
+address that swallows packets cannot stall the reconnect loop. Every (re)connect runs LISTEN
+first and then re-reads the heads of the boards that have waiters: a post that committed before
+LISTEN took effect is seen by the read, any later one is notified, so the gap in which the
+listener was down loses no wake.
 
 **A slow safety poll.** Every poll interval (default 2 s, accepted from 100 ms to 60 s, an
 option of `PgStore::connect`; the hidden `--db-poll-interval-ms` server flag that sets it comes
@@ -69,11 +76,15 @@ late by at most the interval, never lost, and a dead listener never wedges a wai
   direct or session-mode connection.
 - A wait never holds a pooled connection or a transaction while it sleeps, so many waits cannot
   starve writers of connections (tested with twenty waits on a pool of two).
-- While the listener is down, wakes are late by up to the poll interval plus the reconnect
-  backoff. A half-open TCP connection is noticed only by TCP keepalives; the safety poll bounds
-  the delay meanwhile.
-- NOTIFY payloads are queued in the database until every listener has read them; a listener that
-  stops reading without disconnecting would let that queue grow. The listener reads continuously
-  and forwards to an in-process channel, so this needs a stuck process, not slow waiters.
+- While the listener is down, a wake is late by at most the poll interval: the safety poll runs
+  through the pool and does not depend on the listener or its reconnect backoff. A half-open TCP
+  connection is noticed only by TCP keepalives; the safety poll bounds the delay meanwhile.
+- NOTIFY payloads are queued in the database (8 GB by default) until every listening session
+  has read them. A session that LISTENs but stops reading without disconnecting holds the queue
+  back; when the queue is full, every post fails at commit with "too many notifications in the
+  NOTIFY queue" and rolls back, so no post is lost but none can be made. The listener reads
+  continuously into an in-process channel, so this takes a stuck process, not slow waiters.
+  Operators monitor it: `pg_notification_queue_usage()` reports how full the queue is, and
+  once it is half full Postgres logs warnings naming the session that holds it back.
 - Tests can set the safety poll to an hour (a hidden constructor for tests only) to prove a wake
   came through NOTIFY, and terminate the listener's backend to prove a reconnect loses nothing.
