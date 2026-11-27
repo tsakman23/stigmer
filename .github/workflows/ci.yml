@@ -71,6 +71,8 @@ jobs:
       # stigmerd's TLS tests start a throwaway Postgres of their own with TLS on, so they need the
       # server binaries (initdb, pg_ctl) on the runner: the image's newest Postgres, or the distro
       # package installed without a cluster (which would clash with the service on port 5432).
+      # That server is whatever major version the runner has (not pinned, unlike the service
+      # container): those tests check the TLS handshake, which every supported major speaks alike.
       - name: Provide Postgres server binaries
         run: |
           bin=$(ls -d /usr/lib/postgresql/*/bin 2>/dev/null | sort -V | tail -n 1)
@@ -84,7 +86,8 @@ jobs:
           test -x "$bin/initdb" && test -x "$bin/pg_ctl"
           echo "STIGMER_TEST_PG_BIN=$bin" >> "$GITHUB_ENV"
       - run: cargo test --locked -p stigmer-store-postgres
-      - run: "cargo test --locked -p stigmerd -- with_postgres::"
+      # Every crate's with_postgres tests (the check job skips them), so a new one anywhere runs here.
+      - run: "cargo test --locked --workspace --exclude stigmer-store-postgres -- with_postgres::"
 
   sdk:
     runs-on: ubuntu-latest
