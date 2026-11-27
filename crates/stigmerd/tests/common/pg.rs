@@ -85,6 +85,11 @@ impl PgDb {
         })
     }
 
+    /// The login role stigmerd connects as.
+    pub fn role(&self) -> &str {
+        &self.role
+    }
+
     /// The URL of this schema, logging in as the role with its password.
     pub fn url(&self) -> String {
         self.url_on_port(self.port)

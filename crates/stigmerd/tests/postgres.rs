@@ -366,6 +366,79 @@ mod with_postgres {
         assert_eq!(out.code, Some(0), "{}", out.stderr);
     }
 
+    /// Returns once `reached` holds, failing the test if it does not within 10 s.
+    fn until(what: &str, mut reached: impl FnMut() -> bool) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !reached() {
+            assert!(std::time::Instant::now() < deadline, "never: {what}");
+            thread::sleep(std::time::Duration::from_millis(20));
+        }
+    }
+
+    #[test]
+    fn a_listener_connection_opens_only_when_a_request_waits() {
+        let Some(db) = PgDb::create("a_listener_connection_opens_only_when_a_request_waits") else {
+            return;
+        };
+        migrated(&db);
+        let count = |condition: &str| {
+            db.query_i64(&format!(
+                "SELECT count(*) FROM pg_stat_activity WHERE usename = '{}' AND {condition}",
+                db.role()
+            ))
+        };
+        let listeners = || count("application_name = 'stigmer-listener'");
+
+        // An admin command, caught mid-run: it blocks on a lock the test holds.
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let holder = rt.block_on(db.schema.client()).unwrap();
+        rt.block_on(
+            holder.batch_execute("BEGIN; LOCK TABLE security_log IN ACCESS EXCLUSIVE MODE"),
+        )
+        .unwrap();
+        let url = db.url();
+        let admin = thread::spawn(move || run_with_url(&["admin", "security-log"], &url));
+        until("the admin command waits on the lock", || {
+            count("wait_event_type = 'Lock'") >= 1
+        });
+        assert_eq!(
+            listeners(),
+            0,
+            "an admin command opens no listener connection"
+        );
+        rt.block_on(holder.batch_execute("COMMIT")).unwrap();
+        let out = admin.join().unwrap();
+        assert_eq!(out.code, Some(0), "{}", out.stderr);
+
+        // A server opens none until a request waits, then exactly one.
+        let (server, _stderr) = spawn_capturing(serve(&db.url()));
+        let (status, _) = http(&server.addr, "GET", "/healthz", &[], "");
+        assert_eq!(status, 200);
+        assert_eq!(
+            listeners(),
+            0,
+            "a server that has not waited holds no listener"
+        );
+        let mut wait = std::net::TcpStream::connect(&server.addr).unwrap();
+        std::io::Write::write_all(
+            &mut wait,
+            format!(
+                "GET /v1/boards/main/events?timeout_s=30 HTTP/1.1\r\nHost: {}\r\n\r\n",
+                server.addr
+            )
+            .as_bytes(),
+        )
+        .unwrap();
+        until("the waiting request starts the listener", || {
+            listeners() == 1
+        });
+        drop(wait);
+        drop(server);
+    }
+
     #[test]
     fn serve_refuses_a_behind_schema_and_names_migrate() {
         let Some(db) = PgDb::create("serve_refuses_a_behind_schema_and_names_migrate") else {

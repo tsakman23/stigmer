@@ -76,5 +76,14 @@ mod with_postgres {
         let served = spawn_guarded(cmd, STARTUP_TIMEOUT);
         let (status, _) = http(&served.addr, "GET", "/healthz", &[], "");
         assert_eq!(status, 200);
+        // A request that waits starts the listener, which must connect with the same CA bundle.
+        let (status, body) = http(
+            &served.addr,
+            "GET",
+            "/v1/boards/main/events?timeout_s=1",
+            &[],
+            "",
+        );
+        assert_eq!(status, 200, "{body}");
     }
 }
