@@ -44,8 +44,18 @@ that handle's entry for it; on other handles the safety poll or a reconnect re-r
 sees the board archived). Either way the board's final head, read under the archive's row lock
 or by the re-read, is delivered to the entry before it is dropped, so a wait for a post that
 committed just before the archive, whose notification had not arrived yet, still wakes.
-`PgStore::connect` fails if the listener cannot connect and LISTEN, as it fails for a wrong
-address or password.
+
+**Started by the first wait that sleeps.** `PgStore::connect` opens no listener connection and
+starts no safety poll. The first wait that has to sleep starts both, after it has subscribed and
+read the head; the listener's first re-read covers any commit in between. A wait that returns at
+once (the head is already past its cursor, the cursor or board is invalid, the board is
+archived) starts nothing, so one-shot users such as `stigmerd` admin commands, and stores that
+never wait, open no connection beyond their pool. Concurrent first waits start exactly one
+listener. If the listener cannot be started (say, behind a transaction-mode pooler), that wait
+fails with a backend error naming the target and the need for a direct or session-pooled
+connection; waits within the listener's backoff then fail at once with the same error, and the
+first wait after it tries again. Each listener connection carries `application_name`
+`stigmer-listener`.
 
 **Reconnect, then re-read.** When the listener connection fails it reconnects with exponential
 backoff from 100 ms doubling to 10 s; the backoff goes back to 100 ms only after a session has
@@ -56,10 +66,10 @@ first and then re-reads the heads of the boards that have waiters: a post that c
 LISTEN took effect is seen by the read, any later one is notified, so the gap in which the
 listener was down loses no wake.
 
-**A slow safety poll.** Every poll interval (default 2 s, accepted from 100 ms to 60 s, an
-option of `PgStore::connect`; the hidden `--db-poll-interval-ms` server flag that sets it comes
-with backend selection in `stigmerd`) each handle re-reads, through the pool and in one statement, the heads of the
-boards that have waiters. It covers a listener that is down or silently cut off: such a wake is
+**A slow safety poll.** From the listener's start on, every poll interval (default 2 s, accepted
+from 100 ms to 60 s, an option of `PgStore::connect`; the hidden `--db-poll-interval-ms` server
+flag that sets it comes with backend selection in `stigmerd`), while any board has waiters, each
+handle re-reads through the pool, in one statement, the heads of the boards that have waiters. It covers a listener that is down or silently cut off: such a wake is
 late by at most the interval, never lost, and a dead listener never wedges a wait.
 
 ## Consequences
@@ -70,10 +80,12 @@ late by at most the interval, never lost, and a dead listener never wedges a wai
   cross-handle wake scenarios pass only because NOTIFY works.
 - Idle waits cost nothing on the database; a board with waiters costs one indexed read per handle
   per poll interval, whatever the number of waiters on it.
-- Each server process holds one extra database connection outside its pool. Connection budgets
-  (`max_connections` on the server, a pooler's limits) must allow for it. A transaction-mode
+- Each server process that has served a wait holds one extra database connection outside its
+  pool; a process that never waits holds none. Connection budgets (`max_connections` on the
+  server, a pooler's limits) must allow for it. A transaction-mode
   pooler such as PgBouncer in transaction mode does not support LISTEN; the listener needs a
-  direct or session-mode connection.
+  direct or session-mode connection. Because the listener starts lazily, such a setup shows up
+  as waits failing with that backend error, not as a server that will not start.
 - A wait never holds a pooled connection or a transaction while it sleeps, so many waits cannot
   starve writers of connections (tested with twenty waits on a pool of two).
 - While the listener is down, a wake is late by at most the poll interval: the safety poll runs
@@ -88,3 +100,5 @@ late by at most the interval, never lost, and a dead listener never wedges a wai
   once it is half full Postgres logs warnings naming the session that holds it back.
 - Tests can set the safety poll to an hour (a hidden constructor for tests only) to prove a wake
   came through NOTIFY, and terminate the listener's backend to prove a reconnect loses nothing.
+  The wake-time assertion in those tests is a generous 5 s: the hourly poll, not the bound, is
+  what proves NOTIFY delivered the wake.
