@@ -2,7 +2,7 @@
 //! processes, each with its own listener and notifier. The safety poll is set to an hour where a
 //! wake must come through NOTIFY.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use stigmer_core::BoardId;
@@ -171,6 +171,8 @@ async fn poll_interval_bounds_are_validated() {
         max_connections: 1,
         tls: PgTls::Disable,
         poll_interval: Duration::from_millis(ms),
+        ca_bundle: None,
+        on_poll_error: None,
     };
     for ms in [0, 99, 60_001, 3_600_000] {
         let Err(StoreError::Backend(text)) = PgStore::connect(closed, options(ms)).await else {
@@ -192,4 +194,59 @@ async fn poll_interval_bounds_are_validated() {
         );
         assert!(text.contains("cannot connect"), "{ms} ms: {text}");
     }
+}
+
+/// The safety poll starts lazily, with the listener, on the first wait that sleeps; a failed
+/// round must still reach the hook given in the options.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_failed_safety_poll_round_is_reported() {
+    let Some(url) = database_url("a_failed_safety_poll_round_is_reported").unwrap() else {
+        return;
+    };
+    let schema = TestSchema::create(&url).await.unwrap();
+    let seen = Arc::new(Mutex::new(Vec::<String>::new()));
+    let sink = Arc::clone(&seen);
+    let options = PgOptions {
+        poll_interval: MIN_POLL_INTERVAL,
+        on_poll_error: Some(Arc::new(move |e: &StoreError| {
+            sink.lock().unwrap().push(e.to_string());
+        })),
+        ..schema.options()
+    };
+    let a = Arc::new(PgStore::connect(schema.url(), options).await.unwrap());
+    a.migrate().await.unwrap();
+    let main = BoardId::main();
+    let head = a
+        .post(new_thread("start").unwrap())
+        .await
+        .unwrap()
+        .event
+        .cursor;
+    let waiter = spawn_wait(&a, &main, Some(&head), WAIT_TIMEOUT);
+    assert!(
+        until(|| a.waiters_for_tests(&main) == 1 && a.listener_pid_for_tests().is_some()).await,
+        "the wait subscribes and starts the listener"
+    );
+    assert!(seen.lock().unwrap().is_empty(), "no round failed yet");
+
+    // The poll reads the boards table; without it every round fails.
+    let client = schema.client().await.unwrap();
+    client
+        .batch_execute("ALTER TABLE boards RENAME TO boards_away")
+        .await
+        .unwrap();
+    assert!(
+        until(|| !seen.lock().unwrap().is_empty()).await,
+        "a failed round is reported"
+    );
+    let first = seen.lock().unwrap()[0].clone();
+    assert!(first.contains("boards"), "{first}");
+    client
+        .batch_execute("ALTER TABLE boards_away RENAME TO boards")
+        .await
+        .unwrap();
+
+    // The store still works and the wait still wakes.
+    a.post(new_thread("after").unwrap()).await.unwrap();
+    assert_eq!(waiter.await.unwrap(), Ok(true));
 }

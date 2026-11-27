@@ -14,16 +14,18 @@ impl PgStore {
     /// Opens one connection to check it, as [`PgStore::connect`] does.
     #[doc(hidden)]
     pub async fn second_handle_for_tests(&self) -> Result<PgStore, StoreError> {
-        let pool = pool::build(&self.wakeups.setup().config, self.options)?;
+        let pool = pool::build(&self.wakeups.setup().config, &self.options)?;
         drop(pool.get().await.map_err(backend)?);
         let setup = listener::ListenerSetup {
             config: self.wakeups.setup().config.clone(),
             tls: self.wakeups.setup().tls,
+            ca_bundle: self.wakeups.setup().ca_bundle.clone(),
             target: self.wakeups.setup().target.clone(),
             pool: pool.clone(),
             poll_interval: self.wakeups.setup().poll_interval,
+            on_poll_error: self.wakeups.setup().on_poll_error.clone(),
         };
-        Ok(PgStore::with_setup(pool, self.options, setup))
+        Ok(PgStore::with_setup(pool, self.options.clone(), setup))
     }
 
     /// Test support, not API: the number of `wait_past` callers currently subscribed to
