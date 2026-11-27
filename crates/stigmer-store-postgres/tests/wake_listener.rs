@@ -1,17 +1,17 @@
 //! The listener's edges: an uncommitted post never wakes anyone, a dropped listener connection
 //! loses no wake, and the notifier keeps entries only for live boards that have waiters.
 
-mod support;
-
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use stigmer_core::BoardId;
 use stigmer_store::{Entity, IdentityStore, SecurityEvent, SecurityEventKind, Store, StoreError};
-use stigmer_store_postgres::testing::{database_url, TestSchema};
 use stigmer_store_postgres::PgStore;
 
-use support::{flush_notifications, new_thread, spawn_wait, store, until, HOUR, LONG};
+use stigmer_store_postgres::testing::{
+    database_url, flush_notifications, listening_store, new_thread, new_thread_on, spawn_wait,
+    store_with_poll, until, TestSchema, HOURLY_POLL, WAIT_TIMEOUT,
+};
 
 fn audit(kind: SecurityEventKind) -> SecurityEvent {
     SecurityEvent {
@@ -40,11 +40,16 @@ async fn notification_for_an_uncommitted_post_is_never_delivered() {
         return;
     };
     let schema = TestSchema::create(&url).await.unwrap();
-    let a = Arc::new(store(&schema, HOUR).await);
+    let a = Arc::new(listening_store(&schema, HOURLY_POLL).await.unwrap());
     let b = a.second_handle_for_tests().await.unwrap();
     let client = schema.client().await.unwrap();
     let main = BoardId::main();
-    let head = b.post(new_thread("start")).await.unwrap().event.cursor;
+    let head = b
+        .post(new_thread("start").unwrap())
+        .await
+        .unwrap()
+        .event
+        .cursor;
 
     // Fails every post at COMMIT, after everything in it, the notification included, has run.
     client
@@ -56,9 +61,12 @@ async fn notification_for_an_uncommitted_post_is_never_delivered() {
         )
         .await
         .unwrap();
-    let waiter = spawn_wait(&a, &main, Some(&head), LONG);
-    until("the waiter subscribed", || a.waiters_for_tests(&main) == 1).await;
-    let failed = b.post(new_thread("never committed")).await;
+    let waiter = spawn_wait(&a, &main, Some(&head), WAIT_TIMEOUT);
+    assert!(
+        until(|| a.waiters_for_tests(&main) == 1).await,
+        "never reached: the waiter subscribed"
+    );
+    let failed = b.post(new_thread("never committed").unwrap()).await;
     let Err(StoreError::Backend(text)) = failed else {
         panic!("the injected failure fails the post: {failed:?}");
     };
@@ -66,7 +74,10 @@ async fn notification_for_an_uncommitted_post_is_never_delivered() {
 
     // Handled: the first post and the marker; a notification from the rolled-back post would
     // have been delivered before the marker.
-    flush_notifications(&a, &client, 2).await;
+    assert!(
+        flush_notifications(&a, &client, 2).await.unwrap(),
+        "the marker notification is handled"
+    );
     // A bounded negative check on top of the flush; the positive path below needs no timer.
     let quiet = tokio::time::timeout(Duration::from_millis(300), async {
         while !waiter.is_finished() {
@@ -85,7 +96,7 @@ async fn notification_for_an_uncommitted_post_is_never_delivered() {
         .batch_execute("DROP TRIGGER refuse_commit ON events")
         .await
         .unwrap();
-    let posted = b.post(new_thread("committed")).await.unwrap();
+    let posted = b.post(new_thread("committed").unwrap()).await.unwrap();
     assert_eq!(posted.event.seq, 2, "the failed post used no number");
     assert_eq!(
         waiter.await.unwrap(),
@@ -115,27 +126,35 @@ async fn listener_reconnect_does_not_lose_a_wake() {
         return;
     };
     let schema = TestSchema::create(&url).await.unwrap();
-    let a = Arc::new(store(&schema, POLL).await);
+    let a = Arc::new(listening_store(&schema, POLL).await.unwrap());
     let b = a.second_handle_for_tests().await.unwrap();
     let client = schema.client().await.unwrap();
     let main = BoardId::main();
-    let head = b.post(new_thread("start")).await.unwrap().event.cursor;
+    let head = b
+        .post(new_thread("start").unwrap())
+        .await
+        .unwrap()
+        .event
+        .cursor;
 
-    let waiter = spawn_wait(&a, &main, Some(&head), LONG);
-    until("the waiter subscribed", || a.waiters_for_tests(&main) == 1).await;
+    let waiter = spawn_wait(&a, &main, Some(&head), WAIT_TIMEOUT);
+    assert!(
+        until(|| a.waiters_for_tests(&main) == 1).await,
+        "never reached: the waiter subscribed"
+    );
     let old = kill_listener(&a, &client).await;
     let posted_at = Instant::now();
-    b.post(new_thread("while the listener is down"))
+    b.post(new_thread("while the listener is down").unwrap())
         .await
         .unwrap();
     assert_eq!(waiter.await.unwrap(), Ok(true), "the wake is not lost");
     let took = posted_at.elapsed();
     // Within the poll interval, which does not depend on the listener; room for a slow machine.
     assert!(took < POLL + Duration::from_secs(2), "woken after {took:?}");
-    until("the listener reconnected on a new backend", || {
-        a.listener_pid_for_tests().is_some_and(|pid| pid != old)
-    })
-    .await;
+    assert!(
+        until(|| { a.listener_pid_for_tests().is_some_and(|pid| pid != old) }).await,
+        "never reached: the listener reconnected on a new backend"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -148,16 +167,24 @@ async fn listener_reconnect_rereads_the_heads_of_boards_with_waiters() {
     let schema = TestSchema::create(&url).await.unwrap();
     // No safety poll within the test: only the reconnect (its re-read, or NOTIFY once it
     // listens again) can wake the waiter.
-    let a = Arc::new(store(&schema, HOUR).await);
+    let a = Arc::new(listening_store(&schema, HOURLY_POLL).await.unwrap());
     let b = a.second_handle_for_tests().await.unwrap();
     let client = schema.client().await.unwrap();
     let main = BoardId::main();
-    let head = b.post(new_thread("start")).await.unwrap().event.cursor;
+    let head = b
+        .post(new_thread("start").unwrap())
+        .await
+        .unwrap()
+        .event
+        .cursor;
 
     let waiter = spawn_wait(&a, &main, Some(&head), Duration::from_secs(10));
-    until("the waiter subscribed", || a.waiters_for_tests(&main) == 1).await;
+    assert!(
+        until(|| a.waiters_for_tests(&main) == 1).await,
+        "never reached: the waiter subscribed"
+    );
     let old = kill_listener(&a, &client).await;
-    b.post(new_thread("while the listener is down"))
+    b.post(new_thread("while the listener is down").unwrap())
         .await
         .unwrap();
     assert_eq!(
@@ -169,9 +196,14 @@ async fn listener_reconnect_rereads_the_heads_of_boards_with_waiters() {
 
     // And NOTIFY works again on the new connection.
     let head = a.head(&main).await.unwrap().unwrap();
-    let waiter = spawn_wait(&a, &main, Some(&head), LONG);
-    until("the waiter subscribed", || a.waiters_for_tests(&main) == 1).await;
-    b.post(new_thread("after the reconnect")).await.unwrap();
+    let waiter = spawn_wait(&a, &main, Some(&head), WAIT_TIMEOUT);
+    assert!(
+        until(|| a.waiters_for_tests(&main) == 1).await,
+        "never reached: the waiter subscribed"
+    );
+    b.post(new_thread("after the reconnect").unwrap())
+        .await
+        .unwrap();
     assert_eq!(waiter.await.unwrap(), Ok(true));
 }
 
@@ -181,11 +213,11 @@ async fn no_entry_for_unknown_board() {
         return;
     };
     let schema = TestSchema::create(&url).await.unwrap();
-    let a = store(&schema, HOUR).await;
+    let a = listening_store(&schema, HOURLY_POLL).await.unwrap();
     let client = schema.client().await.unwrap();
 
     let nowhere = BoardId::new("nowhere").unwrap();
-    let result = a.wait_past(&nowhere, None, LONG).await;
+    let result = a.wait_past(&nowhere, None, WAIT_TIMEOUT).await;
     assert!(
         matches!(
             result,
@@ -214,7 +246,10 @@ async fn no_entry_for_unknown_board() {
         )
         .await
         .unwrap();
-    flush_notifications(&a, &client, 3).await;
+    assert!(
+        flush_notifications(&a, &client, 3).await.unwrap(),
+        "the marker notification is handled"
+    );
     assert_eq!(
         a.notifier_entries_for_tests(),
         0,
@@ -237,14 +272,17 @@ async fn archive_drops_the_board_entry() {
         return;
     };
     let schema = TestSchema::create(&url).await.unwrap();
-    let a = Arc::new(store(&schema, HOUR).await);
+    let a = Arc::new(listening_store(&schema, HOURLY_POLL).await.unwrap());
     let short = Duration::from_millis(300);
 
     // Through `Store::archive_board` and through `IdentityStore::archive_board_revoking`.
     for (raw, revoking) in [("old", false), ("gone", true)] {
         let board = create_board(&a, raw).await;
         let waiter = spawn_wait(&a, &board, None, short);
-        until("the waiter subscribed", || a.waiters_for_tests(&board) == 1).await;
+        assert!(
+            until(|| a.waiters_for_tests(&board) == 1).await,
+            "never reached: the waiter subscribed"
+        );
         assert_eq!(a.notifier_entries_for_tests(), 1);
         let archived = audit(SecurityEventKind::BoardArchived);
         if revoking {
@@ -270,17 +308,24 @@ async fn archive_drops_the_board_entry() {
     }
 
     // Archived through another process: this one's safety poll drops the entry.
-    let c = Arc::new(store(&schema, Duration::from_millis(100)).await);
+    let c = Arc::new(
+        store_with_poll(&schema, Duration::from_millis(100))
+            .await
+            .unwrap(),
+    );
     let board = create_board(&c, "elsewhere").await;
-    let waiter = spawn_wait(&c, &board, None, LONG);
-    until("the waiter subscribed", || c.waiters_for_tests(&board) == 1).await;
+    let waiter = spawn_wait(&c, &board, None, WAIT_TIMEOUT);
+    assert!(
+        until(|| c.waiters_for_tests(&board) == 1).await,
+        "never reached: the waiter subscribed"
+    );
     a.archive_board(&board, audit(SecurityEventKind::BoardArchived))
         .await
         .unwrap();
-    until("the safety poll dropped the entry", || {
-        c.notifier_entries_for_tests() == 0
-    })
-    .await;
+    assert!(
+        until(|| { c.notifier_entries_for_tests() == 0 }).await,
+        "never reached: the safety poll dropped the entry"
+    );
     assert!(
         !waiter.is_finished(),
         "an archived board's wait runs out its timeout"
@@ -297,7 +342,7 @@ async fn archive_does_not_drop_a_wake_still_on_its_way() {
     // No safety poll within the test, and the listener is down while the post and the archive
     // commit: only the archive (on this handle) or the reconnect re-read (archived on the
     // other) can deliver the post, and both must deliver it before dropping the entry.
-    let a = Arc::new(store(&schema, HOUR).await);
+    let a = Arc::new(listening_store(&schema, HOURLY_POLL).await.unwrap());
     let b = a.second_handle_for_tests().await.unwrap();
     let client = schema.client().await.unwrap();
 
@@ -308,25 +353,28 @@ async fn archive_does_not_drop_a_wake_still_on_its_way() {
     ] {
         let board = create_board(&a, raw).await;
         let head = b
-            .post(support::new_thread_on(&board, "start"))
+            .post(new_thread_on(&board, "start").unwrap())
             .await
             .unwrap()
             .event
             .cursor;
         let waiter = spawn_wait(&a, &board, Some(&head), Duration::from_secs(10));
-        until("the waiter subscribed", || a.waiters_for_tests(&board) == 1).await;
-        until("the listener is up", || {
-            a.listener_pid_for_tests().is_some()
-        })
-        .await;
+        assert!(
+            until(|| a.waiters_for_tests(&board) == 1).await,
+            "never reached: the waiter subscribed"
+        );
+        assert!(
+            until(|| { a.listener_pid_for_tests().is_some() }).await,
+            "never reached: the listener is up"
+        );
         kill_listener(&a, &client).await;
-        until("the listener is down", || {
-            a.listener_pid_for_tests().is_none()
-        })
-        .await;
+        assert!(
+            until(|| { a.listener_pid_for_tests().is_none() }).await,
+            "never reached: the listener is down"
+        );
 
         let started = Instant::now();
-        b.post(support::new_thread_on(&board, "last"))
+        b.post(new_thread_on(&board, "last").unwrap())
             .await
             .unwrap();
         let archived = audit(SecurityEventKind::BoardArchived);

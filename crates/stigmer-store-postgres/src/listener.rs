@@ -7,7 +7,8 @@
 //! database, so the schema in the payload keeps stores in different schemas of one database
 //! from waking each other: a listener applies only payloads for its own `current_schema()`.
 //!
-//! The listener connection is opened from the store's configuration, not taken from the pool.
+//! The listener connection is opened from the store's configuration, not taken from the pool,
+//! when a wait first has to sleep (see `wakeups`).
 //! When it fails it reconnects with exponential backoff (100 ms doubling to 10 s); after every
 //! (re)connect, once LISTEN is in effect, it re-reads the heads of the boards that have waiters,
 //! so a post that committed while it was down is not lost. Behind it, a safety poll re-reads
@@ -35,7 +36,7 @@ use crate::{pool, tls, PgTls};
 
 /// The one channel every store notifies and listens on.
 const CHANNEL: &str = "stigmer_events";
-const MIN_BACKOFF: Duration = Duration::from_millis(100);
+pub(crate) const MIN_BACKOFF: Duration = Duration::from_millis(100);
 const MAX_BACKOFF: Duration = Duration::from_secs(10);
 /// A session that stayed up this long resets the backoff; a shorter one (a connection that
 /// LISTENs and then drops at once, again and again) keeps backing off.
@@ -165,7 +166,7 @@ fn after_session(backoff: Duration, lasted: Duration) -> Duration {
 }
 
 /// The backoff before the next attempt: doubled, at most `MAX_BACKOFF`.
-fn after_attempt(backoff: Duration) -> Duration {
+pub(crate) fn after_attempt(backoff: Duration) -> Duration {
     backoff.saturating_mul(2).min(MAX_BACKOFF)
 }
 

@@ -154,7 +154,11 @@ impl IdentityStore for PgStore {
         id: &BoardId,
         audit: SecurityEvent,
     ) -> impl Future<Output = Result<BoardInfo, StoreError>> + Send {
-        let (pool, id, notifier) = (self.pool.clone(), id.clone(), Arc::clone(&self.notifier));
+        let (pool, id, notifier) = (
+            self.pool.clone(),
+            id.clone(),
+            Arc::clone(self.wakeups.notifier()),
+        );
         async move {
             let archived = boards::archive_revoking(&pool, &id, &audit).await?;
             // Committed: the head can no longer move. Deliver it first, so a wait for a post

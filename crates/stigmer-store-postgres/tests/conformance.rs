@@ -2,15 +2,11 @@
 //! each store in a schema of its own on the test database (`STIGMER_TEST_DATABASE_URL`).
 
 use std::sync::{Mutex, PoisonError};
-use std::time::Duration;
 
 use stigmer_core::BoardId;
 use stigmer_store_conformance::Fixture;
-use stigmer_store_postgres::testing::{database_url, TestSchema};
+use stigmer_store_postgres::testing::{database_url, TestSchema, HOURLY_POLL};
 use stigmer_store_postgres::PgStore;
-
-/// The safety poll of every store here: far longer than any scenario, so no wake is a poll's.
-const HOUR: Duration = Duration::from_secs(3600);
 
 /// Makes each store on a new schema and owns the schemas for its whole life, so every schema
 /// outlives its stores and is dropped, with everything in it, when the fixture is.
@@ -22,16 +18,17 @@ struct PgFixture {
 impl Fixture for PgFixture {
     type Store = PgStore;
 
-    /// Two handles are two pools, each with its own listener connection and notifier, as two
-    /// server processes would have: a wait on one handle wakes for a post through the other
+    /// Two handles are two pools, each with its own notifier and its own listener connection
+    /// (started by its first wait that sleeps), as two server processes would have: a wait on one handle wakes for a post through the other
     /// only by LISTEN/NOTIFY, since every store here polls the heads once an hour.
     const CROSS_PROCESS_WAKE: bool = true;
 
     async fn fresh(&self) -> PgStore {
         let schema = TestSchema::create(&self.url).await.expect("test schema");
-        let store = PgStore::connect_with_poll_for_tests(schema.url(), schema.options(), HOUR)
-            .await
-            .expect("store connects");
+        let store =
+            PgStore::connect_with_poll_for_tests(schema.url(), schema.options(), HOURLY_POLL)
+                .await
+                .expect("store connects");
         store.migrate().await.expect("schema migrates");
         self.schemas
             .lock()

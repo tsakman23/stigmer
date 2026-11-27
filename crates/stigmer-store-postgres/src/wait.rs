@@ -5,12 +5,14 @@
 //! by it, one that commits after it reaches the subscription through NOTIFY (or, if the
 //! listener is down, through its reconnect re-read or the safety poll). See `listener`.
 //!
+//! The listener starts with the first wait that has to sleep, never for a wait that returns
+//! at once, so a store that never waits opens no connection beyond its pool.
+//!
 //! The head is read on a connection taken from the pool for that one statement and given back
 //! before the wait sleeps: a wait never holds a connection or a transaction while it sleeps, so
 //! waiters cannot starve writers of connections.
 
 use std::future::Future;
-use std::sync::Arc;
 use std::time::Duration;
 
 use deadpool_postgres::Pool;
@@ -18,13 +20,13 @@ use stigmer_core::{BoardId, Cursor};
 use stigmer_store::StoreError;
 
 use crate::events::{cursor_seq, head_state};
-use crate::notify::Notifier;
+use crate::wakeups::Wakeups;
 
 /// Waits up to `timeout` for the head of `board` to pass `after`; see `Store::wait_past`.
 /// `seams` run just before and just after the head read (test seams; no-ops otherwise).
 pub(crate) async fn wait_past(
     pool: &Pool,
-    notifier: &Arc<Notifier>,
+    wakeups: &Wakeups,
     board: &BoardId,
     after: Option<&Cursor>,
     timeout: Duration,
@@ -33,7 +35,7 @@ pub(crate) async fn wait_past(
     let after_seq = cursor_seq(after)?;
     // First: any commit after this point reaches the subscription. Dropped on every return,
     // which removes the board's entry if this was its last waiter.
-    let mut subscription = notifier.subscribe(board);
+    let mut subscription = wakeups.notifier().subscribe(board);
     seams.before_read.await;
     let (head, archived) = head_state(pool, board).await?;
     seams.after_read.await;
@@ -49,6 +51,9 @@ pub(crate) async fn wait_past(
         let _ = tokio::time::timeout(timeout, std::future::pending::<()>()).await;
         return Ok(false);
     }
+    // About to sleep: this is the first point a wait needs the listener. Starting it here,
+    // after the subscription, is safe: its first re-read sees any commit the head read missed.
+    wakeups.ensure_started().await?;
     // No spawned task: dropping this future drops the subscription and the timer with it.
     Ok(
         tokio::time::timeout(timeout, subscription.moved_past(after_seq))

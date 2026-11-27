@@ -12,8 +12,11 @@
 //! instance row, then the board row of its invite; nothing locks them the other way round.
 //!
 //! A post wakes waits on every replica through LISTEN/NOTIFY: each store handle keeps one
-//! listener connection outside the pool, and a slow safety poll covers it while it reconnects
-//! (see `listener` and ADR 0013).
+//! listener connection outside the pool, opened by its first wait that has to sleep, and a slow
+//! safety poll covers it while it reconnects (see `listener`, `wakeups` and ADR 0013).
+//!
+//! Methods named `*_for_tests` on [`PgStore`] are hidden test support, not API, as is the
+//! [`testing`] module.
 //!
 //! A connection string's password never appears in an error, a log line or `Debug` output:
 //! errors name the host, port and database only.
@@ -41,6 +44,7 @@ mod store;
 mod threads;
 mod tls;
 mod wait;
+mod wakeups;
 
 #[doc(hidden)]
 pub mod testing;
@@ -94,17 +98,15 @@ pub const MAX_POLL_INTERVAL: Duration = Duration::from_millis(60_000);
 pub struct PgStore {
     pool: Pool,
     options: PgOptions,
-    /// What the listener needs; also what a second handle in a test is built from.
-    setup: listener::ListenerSetup,
-    notifier: Arc<notify::Notifier>,
-    /// The listener and the safety poll; dropping the store stops them.
-    background: listener::Background,
+    /// The notifier, and the listener and safety poll once a wait has started them; dropping
+    /// the store stops them.
+    wakeups: Arc<wakeups::Wakeups>,
 }
 
 impl fmt::Debug for PgStore {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("PgStore")
-            .field("target", &self.setup.target)
+            .field("target", &self.wakeups.setup().target)
             .field("options", &self.options)
             .finish_non_exhaustive()
     }
@@ -116,9 +118,9 @@ impl PgStore {
     /// password; errors name the host, port and database only. Does not touch the schema: see
     /// [`PgStore::schema_state`] and [`PgStore::migrate`].
     ///
-    /// Also opens the store's listener connection (outside the pool) and starts the safety
-    /// poll; [`PgOptions::poll_interval`] must lie within [`MIN_POLL_INTERVAL`] and
-    /// [`MAX_POLL_INTERVAL`].
+    /// Opens no listener connection: the first wait that has to sleep starts the store's
+    /// listener (outside the pool) and its safety poll. [`PgOptions::poll_interval`] must lie
+    /// within [`MIN_POLL_INTERVAL`] and [`MAX_POLL_INTERVAL`].
     pub async fn connect(url: &str, options: PgOptions) -> Result<PgStore, StoreError> {
         check_poll_interval(options.poll_interval)?;
         PgStore::open(url, options, options.poll_interval).await
@@ -148,24 +150,16 @@ impl PgStore {
             pool: connected.pool.clone(),
             poll_interval,
         };
-        PgStore::with_setup(connected.pool, options, setup).await
+        Ok(PgStore::with_setup(connected.pool, options, setup))
     }
 
-    /// A store on `pool` whose listener is described by `setup`.
-    async fn with_setup(
-        pool: Pool,
-        options: PgOptions,
-        setup: listener::ListenerSetup,
-    ) -> Result<PgStore, StoreError> {
-        let notifier = Arc::default();
-        let background = listener::start(&setup, Arc::clone(&notifier)).await?;
-        Ok(PgStore {
+    /// A store on `pool` whose listener, once a wait starts it, is described by `setup`.
+    fn with_setup(pool: Pool, options: PgOptions, setup: listener::ListenerSetup) -> PgStore {
+        PgStore {
             pool,
             options,
-            setup,
-            notifier,
-            background,
-        })
+            wakeups: Arc::new(wakeups::Wakeups::new(setup)),
+        }
     }
 
     /// Applies every pending migration in one transaction under an advisory lock, records them

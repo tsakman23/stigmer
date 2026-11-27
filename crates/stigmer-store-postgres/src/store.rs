@@ -42,7 +42,11 @@ impl Store for PgStore {
         id: &BoardId,
         audit: SecurityEvent,
     ) -> impl Future<Output = Result<BoardInfo, StoreError>> + Send {
-        let (pool, id, notifier) = (self.pool.clone(), id.clone(), Arc::clone(&self.notifier));
+        let (pool, id, notifier) = (
+            self.pool.clone(),
+            id.clone(),
+            Arc::clone(self.wakeups.notifier()),
+        );
         async move {
             let archived = boards::archive(&pool, &id, &audit).await?;
             // Committed: the head can no longer move. Deliver it first, so a wait for a post
@@ -125,9 +129,9 @@ impl PgStore {
         timeout: Duration,
         seams: wait::Seams<impl Future<Output = ()> + Send, impl Future<Output = ()> + Send>,
     ) -> impl Future<Output = Result<bool, StoreError>> + Send {
-        let (pool, notifier) = (self.pool.clone(), Arc::clone(&self.notifier));
+        let (pool, wakeups) = (self.pool.clone(), Arc::clone(&self.wakeups));
         let (board, after) = (board.clone(), after.cloned());
         // No spawned task: dropping this future ends the wait and drops its subscription.
-        async move { wait::wait_past(&pool, &notifier, &board, after.as_ref(), timeout, seams).await }
+        async move { wait::wait_past(&pool, &wakeups, &board, after.as_ref(), timeout, seams).await }
     }
 }
