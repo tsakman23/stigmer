@@ -1,6 +1,6 @@
 # 0013. Cross-replica wake-ups
 
-Status: Accepted
+Status: Accepted, amended
 Date: 2026-11-27
 
 ## Context
@@ -68,7 +68,7 @@ listener was down loses no wake.
 
 **A slow safety poll.** From the listener's start on, every poll interval (default 2 s, accepted
 from 100 ms to 60 s, an option of `PgStore::connect`; the hidden `--db-poll-interval-ms` server
-flag that sets it comes with backend selection in `stigmerd`), while any board has waiters, each
+flag that sets it comes with backend selection in `stigmerd`, [0012](0012-postgres-backend-and-selection.md)), while any board has waiters, each
 handle re-reads through the pool, in one statement, the heads of the boards that have waiters. It covers a listener that is down or silently cut off: such a wake is
 late by at most the interval, never lost, and a dead listener never wedges a wait.
 
@@ -102,3 +102,7 @@ late by at most the interval, never lost, and a dead listener never wedges a wai
   came through NOTIFY, and terminate the listener's backend to prove a reconnect loses nothing.
   The wake-time assertion in those tests is a generous 5 s: the hourly poll, not the bound, is
   what proves NOTIFY delivered the wake.
+
+## Amendments
+
+- 2026-11-27: link the server flag for the poll interval to [0012](0012-postgres-backend-and-selection.md), which records it.

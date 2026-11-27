@@ -76,10 +76,12 @@ with the new binary, start the new servers. (On SQLite, starting the new server 
   that refuses to start says so.
 - The password can still be read from the server's environment by its own user and root (for
   example `ps e`); `--database-url-file` with mode 0600 avoids even that.
-- A failed safety-poll round of the Postgres wake-ups is reported on stderr at most once a
-  minute; the store itself logs nothing.
-- Each process opens up to `--db-max-connections` pooled connections plus one listener
-  connection; the database's connection limit must cover every replica.
+- A failed safety-poll round of the Postgres wake-ups (the poll starts with the listener) is
+  reported on stderr at most once a minute; the store itself logs nothing.
+- Each server process opens up to `--db-max-connections` pooled connections, plus one listener
+  connection from the first request that waits on ([0013](0013-cross-replica-wake-ups.md));
+  an admin command opens no listener. The database's connection limit must cover every
+  replica.
 - Rate limits and wait caps stay per process, so with N replicas the instance-wide limits are N
   times the flags.
 - Rolling upgrades across a schema change are not supported in M2; the additive rule exists so a
