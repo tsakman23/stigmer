@@ -19,6 +19,8 @@ pub struct TestCa {
     params: CertificateParams,
     key: KeyPair,
     roots: RootCertStore,
+    /// The CA certificate, as PEM.
+    pub pem: String,
 }
 
 /// A leaf certificate and its key, as PEM, plus the certificate's DER for fingerprints.
@@ -39,7 +41,12 @@ impl TestCa {
         let cert = params.self_signed(&key).expect("self-signed ca");
         let mut roots = RootCertStore::empty();
         roots.add(cert.der().clone()).expect("add root");
-        Self { params, key, roots }
+        Self {
+            params,
+            key,
+            roots,
+            pem: cert.pem(),
+        }
     }
 
     pub fn leaf(&self) -> Leaf {

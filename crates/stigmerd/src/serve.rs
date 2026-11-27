@@ -31,18 +31,18 @@ const ACCEPT_BACKOFF: Duration = Duration::from_millis(50);
 const ACCEPT_WARN_EVERY: Duration = Duration::from_secs(10);
 
 /// Lets an event through at most once per period.
-struct Throttle {
+pub(crate) struct Throttle {
     every: Duration,
     last: Option<Instant>,
 }
 
 impl Throttle {
-    fn new(every: Duration) -> Self {
+    pub(crate) fn new(every: Duration) -> Self {
         Self { every, last: None }
     }
 
     /// True (and the period restarts) when nothing was let through in the last period.
-    fn allow(&mut self, now: Instant) -> bool {
+    pub(crate) fn allow(&mut self, now: Instant) -> bool {
         let due = self
             .last
             .is_none_or(|last| now.saturating_duration_since(last) >= self.every);

@@ -1,17 +1,16 @@
 //! `stigmerd admin`: instance administration straight against the stores, no HTTP.
 //!
-//! Every subcommand takes the data directory lock, so none runs while `serve` does.
+//! On SQLite every subcommand takes the data directory lock, so none runs while `serve` does. On
+//! Postgres there is no lock: each command's changes are one store transaction, so it runs safely
+//! next to running servers (which read the instance mode when they start).
 //! Secrets are written to stdout only, once; they never reach stderr, the security log or disk
 //! (only their hashes are stored).
 
-use std::path::PathBuf;
-
-use clap::{Args, Subcommand};
+use clap::Subcommand;
 use stigmer_core::{generate_secret, BoardId, NewSecret, Principal, SecretKind};
 use stigmer_store::{IdentityStore, Mode, SecurityEvent, SecurityEventKind, StoreError};
-use stigmer_store_sqlite::SqliteStore;
 
-use crate::lock::DataDir;
+use crate::backend::{Backend, Plan, StoreArgs};
 use crate::Failure;
 
 mod output;
@@ -28,22 +27,21 @@ const INSTANCE_TOKEN_DAYS: u32 = 90;
 const MAIN_INVITE_HOURS: i64 = 24;
 const MEMBER_TOKEN_DAYS: u32 = 90;
 
-#[derive(Args)]
-pub struct DataDirArg {
-    /// Directory holding the board database.
-    #[arg(long, default_value = "./.stigmer")]
-    data_dir: PathBuf,
-}
-
 #[derive(Subcommand)]
 pub enum AdminCommand {
-    /// Switch the data directory to network mode (one-way) and print the instance token once.
+    /// Bring a Postgres database's schema up to this version (pending migrations in one
+    /// transaction; safe to repeat). SQLite migrates itself when opened: nothing to do.
+    Migrate {
+        #[command(flatten)]
+        store: StoreArgs,
+    },
+    /// Switch the instance to network mode (one-way) and print the instance token once.
     EnableAuth {
         /// Do not mint an admin invite into the main board.
         #[arg(long)]
         no_main_invite: bool,
         #[command(flatten)]
-        dir: DataDirArg,
+        store: StoreArgs,
     },
     /// Issue a replacement instance-admin token and print it once.
     NewInstanceToken {
@@ -59,7 +57,7 @@ pub enum AdminCommand {
         #[arg(long)]
         revoke_others: bool,
         #[command(flatten)]
-        dir: DataDirArg,
+        store: StoreArgs,
     },
     /// Revoke any token, an instance token or a board token, by its id (the 16 hex characters
     /// after stg1_, as token list shows). Revoking a revoked token changes nothing.
@@ -68,7 +66,7 @@ pub enum AdminCommand {
         #[arg(value_name = "ID")]
         id: String,
         #[command(flatten)]
-        dir: DataDirArg,
+        store: StoreArgs,
     },
     /// Issue a token for an existing member of a board (an adopted author, or a lost token) and
     /// print it once.
@@ -87,7 +85,7 @@ pub enum AdminCommand {
         )]
         expires_days: u32,
         #[command(flatten)]
-        dir: DataDirArg,
+        store: StoreArgs,
     },
     /// Turn the local authors of board main into members (dry run unless --apply).
     MapLocalPrincipals {
@@ -104,7 +102,7 @@ pub enum AdminCommand {
         #[arg(long)]
         apply: bool,
         #[command(flatten)]
-        dir: DataDirArg,
+        store: StoreArgs,
     },
     /// Print the security log, newest first.
     SecurityLog {
@@ -112,29 +110,81 @@ pub enum AdminCommand {
         #[arg(long, default_value_t = 50, value_parser = clap::value_parser!(u32).range(1..=1000))]
         limit: u32,
         #[command(flatten)]
-        dir: DataDirArg,
+        store: StoreArgs,
     },
 }
 
 /// Runs one admin subcommand to completion.
 pub async fn run(command: AdminCommand) -> Result<(), Failure> {
-    let dir = match &command {
-        AdminCommand::EnableAuth { dir, .. }
-        | AdminCommand::NewInstanceToken { dir, .. }
-        | AdminCommand::RevokeToken { dir, .. }
-        | AdminCommand::IssueMemberToken { dir, .. }
-        | AdminCommand::MapLocalPrincipals { dir, .. }
-        | AdminCommand::SecurityLog { dir, .. } => &dir.data_dir,
+    let plan = match &command {
+        AdminCommand::Migrate { store }
+        | AdminCommand::EnableAuth { store, .. }
+        | AdminCommand::NewInstanceToken { store, .. }
+        | AdminCommand::RevokeToken { store, .. }
+        | AdminCommand::IssueMemberToken { store, .. }
+        | AdminCommand::MapLocalPrincipals { store, .. }
+        | AdminCommand::SecurityLog { store, .. } => store.plan()?,
     };
-    let data = DataDir::open(dir)?;
-    let db_path = data.db_path();
-    let store = SqliteStore::open(&db_path).await.map_err(|e| {
-        Failure::Runtime(format!("cannot open database {}: {e}", db_path.display()))
-    })?;
+    if let AdminCommand::Migrate { .. } = command {
+        return migrate(plan).await;
+    }
+    let backend = plan.open().await?;
+    backend.check_schema().await?;
+    match backend {
+        Backend::Sqlite { store, lock, .. } => {
+            // The lock is held until the command ends.
+            let _lock = lock;
+            run_on(&store, command).await
+        }
+        Backend::Postgres { store, .. } => {
+            let enabling = matches!(command, AdminCommand::EnableAuth { .. });
+            run_on(&*store, command).await?;
+            if enabling {
+                eprintln!(
+                    "stigmerd: servers already running on this database keep the mode they \
+                     started in; restart them to serve in network mode"
+                );
+            }
+            Ok(())
+        }
+    }
+}
+
+/// `admin migrate`: applies the pending Postgres migrations, or says SQLite needs none.
+async fn migrate(plan: Plan) -> Result<(), Failure> {
+    let plan @ Plan::Postgres(_) = plan else {
+        return print_stdout(
+            "SQLite migrations are automatic: the database is migrated when stigmerd opens it; \
+             nothing to do\n",
+        );
+    };
+    let Backend::Postgres { store, target } = plan.open().await? else {
+        // A Postgres plan opens a Postgres store.
+        return Ok(());
+    };
+    let report = store
+        .migrate()
+        .await
+        .map_err(|e| store_failure("cannot migrate the database", &e))?;
+    let text = if report.applied() == 0 {
+        format!("{target}: schema up to date (version {})\n", report.to)
+    } else {
+        format!(
+            "{target}: migrated the schema from version {} to {}\n",
+            report.from, report.to
+        )
+    };
+    print_stdout(&text)
+}
+
+/// Runs a subcommand other than `migrate` against an open store.
+async fn run_on<S: IdentityStore>(store: &S, command: AdminCommand) -> Result<(), Failure> {
     let now = stigmer_core::now_ms();
     match command {
+        // Handled by `run` before a schema check could refuse it.
+        AdminCommand::Migrate { .. } => Ok(()),
         AdminCommand::EnableAuth { no_main_invite, .. } => {
-            let issued = enable_auth(&store, now, !no_main_invite).await?;
+            let issued = enable_auth(store, now, !no_main_invite).await?;
             let mut out = std::io::stdout().lock();
             let mut lines = format!("instance token: {}\n", issued.token);
             if let Some(invite) = issued.invite {
@@ -147,8 +197,8 @@ pub async fn run(command: AdminCommand) -> Result<(), Failure> {
             revoke_others,
             ..
         } => {
-            require_network(&store).await?;
-            let issued = issue_instance_token(&store, now, expires_days, revoke_others).await?;
+            require_network(store).await?;
+            let issued = issue_instance_token(store, now, expires_days, revoke_others).await?;
             write_once(
                 &mut std::io::stdout().lock(),
                 &format!("instance token: {}\n", issued.token),
@@ -162,8 +212,8 @@ pub async fn run(command: AdminCommand) -> Result<(), Failure> {
             Ok(())
         }
         AdminCommand::RevokeToken { id, .. } => {
-            require_network(&store).await?;
-            let text = revoke_token(&store, now, &id).await?;
+            require_network(store).await?;
+            let text = revoke_token(store, now, &id).await?;
             print_stdout(&text)
         }
         AdminCommand::IssueMemberToken {
@@ -172,8 +222,8 @@ pub async fn run(command: AdminCommand) -> Result<(), Failure> {
             expires_days,
             ..
         } => {
-            require_network(&store).await?;
-            let token = issue_member_token(&store, now, &board, &member, expires_days).await?;
+            require_network(store).await?;
+            let token = issue_member_token(store, now, &board, &member, expires_days).await?;
             write_once(
                 &mut std::io::stdout().lock(),
                 &format!("member token: {token}\n"),
@@ -186,13 +236,13 @@ pub async fn run(command: AdminCommand) -> Result<(), Failure> {
             apply,
             ..
         } => {
-            require_network(&store).await?;
+            require_network(store).await?;
             let names = MappedNames {
                 humans: &humans,
                 admins: &admins,
                 skips: &skips,
             };
-            let text = map_local_principals(&store, now, names, apply).await?;
+            let text = map_local_principals(store, now, names, apply).await?;
             print_stdout(&text)
         }
         AdminCommand::SecurityLog { limit, .. } => {

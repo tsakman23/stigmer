@@ -1686,9 +1686,11 @@ dependencies = [
  "stigmer-api",
  "stigmer-core",
  "stigmer-store",
+ "stigmer-store-postgres",
  "stigmer-store-sqlite",
  "tempfile",
  "tokio",
+ "tokio-postgres",
  "tokio-rustls",
  "tower",
 ]
