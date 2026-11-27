@@ -1,0 +1,79 @@
+# 0013. Cross-replica wake-ups
+
+Status: Accepted
+Date: 2026-11-27
+
+## Context
+
+A wait (`Store::wait_past`, behind the long-poll events route of
+[0005](0005-wait-semantics-and-cursors.md)) must wake when a post commits. SQLite does this with
+an in-process notifier: one `watch` channel per board, bumped after the commit, and a waiter
+that subscribes before it reads the head, so no commit falls between the read and the sleep. With
+Postgres several server processes share one database, and a post through one replica must wake
+waits on every other. Until this change the Postgres backend polled the head every 100 ms: correct,
+but each waiting request cost ten queries a second, and a wake took up to 100 ms.
+
+Options considered: (a) every replica polls the heads of the boards it has waiters on, on a short
+interval; (b) Postgres LISTEN/NOTIFY with a slow poll as a safety net; (c) an external broker. (c)
+adds a service to run for no gain over (b). (a) trades latency against load and never gets both.
+
+## Decision
+
+**NOTIFY inside the post's transaction.** The last statement of a post before its commit is
+`SELECT pg_notify('stigmer_events', '<schema>:<board>:<seq>')`. Postgres delivers a
+notification only when, and after, its transaction commits, so a listener never hears of a post
+that rolled back, and by the time it hears of one the head it names is visible to every reader.
+An idempotent replay writes nothing and notifies nothing.
+
+**The payload names the schema.** NOTIFY channels are per database, not per schema. Stores in
+different schemas of one database (every Postgres test does this, and a shared database could)
+would otherwise wake each other's waits on boards with the same id. So the payload starts with
+the posting connection's `current_schema()`, and a listener applies only payloads for its own
+`current_schema()`; anything else, or anything malformed, is ignored. The channel name stays one
+fixed `stigmer_events` (a channel per schema would run into the 63-byte identifier limit). The
+payload carries the schema, the board id and the sequence number, never message content.
+
+**One listener connection per process.** Each store handle (one per server process) opens a
+dedicated connection, not taken from the pool, that runs `LISTEN stigmer_events` and feeds the
+same per-board `watch` notifier SQLite uses, with the same contract: a wait subscribes, then
+reads the head through the pool (one statement, connection returned at once), then sleeps on its
+subscription. An entry exists only while a wait holds a receiver on it; a notification or poll
+updates existing entries and never creates one, so notifications for unknown boards, archived
+boards and boards nobody waits on leave nothing behind. Archiving a board through a handle drops
+that handle's entry for it; on other handles the safety poll does (it sees the board archived).
+`PgStore::connect` fails if the listener cannot connect and LISTEN, as it fails for a wrong
+address or password.
+
+**Reconnect, then re-read.** When the listener connection fails it reconnects with exponential
+backoff from 100 ms doubling to 10 s. Every (re)connect runs LISTEN first and then re-reads the
+heads of the boards that have waiters: a post that committed before LISTEN took effect is seen by
+the read, any later one is notified, so the gap in which the listener was down loses no wake.
+
+**A slow safety poll.** Every poll interval (default 2 s, accepted from 100 ms to 60 s, an
+option of `PgStore::connect`; the hidden `--db-poll-interval-ms` server flag that sets it comes
+with backend selection in `stigmerd`) each handle re-reads, through the pool and in one statement, the heads of the
+boards that have waiters. It covers a listener that is down or silently cut off: such a wake is
+late by at most the interval, never lost, and a dead listener never wedges a wait.
+
+## Consequences
+
+- A post wakes waits on every replica within one round trip of its commit in the normal case.
+  The Postgres conformance run, whose stores poll only once an hour, went from about 10 s with
+  100 ms polling to about 5 s, and its summary line now reports `cross_process_wake=true`: the
+  cross-handle wake scenarios pass only because NOTIFY works.
+- Idle waits cost nothing on the database; a board with waiters costs one indexed read per handle
+  per poll interval, whatever the number of waiters on it.
+- Each server process holds one extra database connection outside its pool. Connection budgets
+  (`max_connections` on the server, a pooler's limits) must allow for it. A transaction-mode
+  pooler such as PgBouncer in transaction mode does not support LISTEN; the listener needs a
+  direct or session-mode connection.
+- A wait never holds a pooled connection or a transaction while it sleeps, so many waits cannot
+  starve writers of connections (tested with twenty waits on a pool of two).
+- While the listener is down, wakes are late by up to the poll interval plus the reconnect
+  backoff. A half-open TCP connection is noticed only by TCP keepalives; the safety poll bounds
+  the delay meanwhile.
+- NOTIFY payloads are queued in the database until every listener has read them; a listener that
+  stops reading without disconnecting would let that queue grow. The listener reads continuously
+  and forwards to an in-process channel, so this needs a stuck process, not slow waiters.
+- Tests can set the safety poll to an hour (a hidden constructor for tests only) to prove a wake
+  came through NOTIFY, and terminate the listener's backend to prove a reconnect loses nothing.
