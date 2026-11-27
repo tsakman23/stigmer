@@ -44,9 +44,10 @@ impl Fixture for PgFixture {
             .expect("second handle connects")
     }
 
-    /// The receivers on `board`'s entry in the handle's listener-fed notifier.
+    /// The waits on `board` that have read the head and sleep on the handle's notifier, so a
+    /// post after this reaches them only through a wake-up (not their own head read).
     fn waiters(&self, store: &PgStore, board: &BoardId) -> usize {
-        store.waiters_for_tests(board)
+        store.sleeping_waiters_for_tests(board)
     }
 }
 

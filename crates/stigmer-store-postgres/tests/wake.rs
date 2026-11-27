@@ -81,8 +81,9 @@ async fn wait_holds_no_connection_while_sleeping() {
         .map(|_| spawn_wait(&a, &main, Some(&head), WAIT_TIMEOUT))
         .collect();
     assert!(
-        until(|| a.waiters_for_tests(&main) == WAITS && a.pool_in_use_for_tests() == 0).await,
-        "never reached: every wait is subscribed and no connection is in use"
+        until(|| a.sleeping_waiters_for_tests(&main) == WAITS && a.pool_in_use_for_tests() == 0)
+            .await,
+        "never reached: every wait sleeps and no connection is in use"
     );
     assert!(
         waiters.iter().all(|w| !w.is_finished()),
@@ -132,8 +133,8 @@ async fn stores_in_different_schemas_do_not_wake_each_other() {
 
     let waiter = spawn_wait(&a, &main, Some(&head), WAIT_TIMEOUT);
     assert!(
-        until(|| a.waiters_for_tests(&main) == 1).await,
-        "never reached: the waiter subscribed"
+        until(|| a.sleeping_waiters_for_tests(&main) == 1).await,
+        "never reached: the waiter read the head and sleeps"
     );
     // Board `main` exists in both schemas; a post to the other one must not wake this waiter.
     other.post(new_thread("elsewhere").unwrap()).await.unwrap();

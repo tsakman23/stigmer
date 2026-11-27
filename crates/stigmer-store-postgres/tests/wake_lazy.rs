@@ -115,8 +115,11 @@ async fn concurrent_first_waits_start_exactly_one_listener() {
         .map(|_| spawn_wait(&a, &main, Some(&head), WAIT_TIMEOUT))
         .collect();
     assert!(
-        until(|| a.waiters_for_tests(&main) == WAITS && a.listener_pid_for_tests().is_some()).await,
-        "never reached: every wait subscribed and the listener is up"
+        until(
+            || a.sleeping_waiters_for_tests(&main) == WAITS && a.listener_pid_for_tests().is_some()
+        )
+        .await,
+        "never reached: every wait sleeps and the listener is up"
     );
     b.post(new_thread("wake").unwrap()).await.unwrap();
     for waiter in waiters {
