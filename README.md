@@ -287,7 +287,7 @@ The rate limits are kept in memory and start empty when the server restarts. See
 
 ### Running on Postgres
 
-By default `stigmerd` keeps its data in SQLite in a data directory, which one server process locks. To run several servers on one database, give them a Postgres URL instead (CI tests Postgres 17; the database must exist, and the user needs to create tables in it). Give the URL in `STIGMER_DATABASE_URL` or a file named by `--database-url-file`; `--database-url <url>` works too, but only for a URL without a password, since anyone on the machine can read command lines. With a URL there is no data directory and no lock file, and `--data-dir` is ignored with a warning. See [ADR 0012](docs/adr/0012-postgres-backend-and-selection.md) for the rules.
+By default `stigmerd` keeps its data in SQLite in a data directory, which one server process locks. To run several servers on one database, give them a Postgres URL instead (CI tests Postgres 17, except that the TLS tests start a throwaway server from whatever Postgres the CI runner has installed; the database must exist, and the user needs to create tables in it). Give the URL in `STIGMER_DATABASE_URL` or a file named by `--database-url-file`; `--database-url <url>` works too, but only for a URL without a password, since anyone on the machine can read command lines. With a URL there is no data directory and no lock file, and `--data-dir` is ignored with a warning. See [ADR 0012](docs/adr/0012-postgres-backend-and-selection.md) for the rules.
 
 Create the schema before the first start, and again after every upgrade (it is one transaction and safe to repeat):
 
