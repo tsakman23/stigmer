@@ -3,7 +3,8 @@
 //! A post locks its board's row (`SELECT ... FOR UPDATE`), assigns `head_seq + 1` and writes the
 //! message, its labels, its event, the thread summary and finally the new head in one
 //! transaction. Writers on one board queue on that lock, in this process or any other, so the
-//! sequence is gapless; a post that fails anywhere rolls back whole and uses no number.
+//! sequence is gapless; a post that fails anywhere rolls back whole and uses no number. Its last
+//! statement before the commit is the NOTIFY that wakes waits on every replica (`listener`).
 
 use deadpool_postgres::Pool;
 use stigmer_core::{
@@ -16,6 +17,7 @@ use tokio_postgres::Transaction;
 use crate::boards::lock_writable_head;
 use crate::chain::{event_from_row, EVENT_COLUMNS};
 use crate::error::{backend, db, not_found};
+use crate::listener::notify;
 use crate::threads::{insert_thread, record_reply};
 use crate::{hash, pool};
 
@@ -131,6 +133,8 @@ pub(crate) async fn post(pool: &Pool, msg: NewMessage) -> Result<Posted, StoreEr
     )
     .await
     .map_err(db)?;
+    // Inside the transaction: delivered to listeners only if, and once, the post commits.
+    notify(&tx, &msg.board, seq).await?;
     tx.commit().await.map_err(db)?;
 
     let event = Event {

@@ -12,7 +12,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use stigmer_store::StoreError;
 
 use crate::error::{backend, db};
-use crate::{PgOptions, PgTls};
+use crate::{PgOptions, PgTls, DEFAULT_POLL_INTERVAL};
 
 /// The variable that names the test database.
 pub const DATABASE_URL_VAR: &str = "STIGMER_TEST_DATABASE_URL";
@@ -98,6 +98,7 @@ impl TestSchema {
         PgOptions {
             max_connections: 8,
             tls: PgTls::Disable,
+            poll_interval: DEFAULT_POLL_INTERVAL,
         }
     }
 

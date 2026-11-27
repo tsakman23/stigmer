@@ -252,6 +252,7 @@ mod tests {
         let options = PgOptions {
             max_connections: 1,
             tls: PgTls::Disable,
+            poll_interval: crate::DEFAULT_POLL_INTERVAL,
         };
         // Port 1: were the conflict not caught first, this would be a refused connection.
         let url = "postgres://u:hunter2@127.0.0.1:1/db?sslmode=require";
@@ -278,6 +279,7 @@ mod tests {
         let options = PgOptions {
             max_connections: 0,
             tls: PgTls::Disable,
+            poll_interval: crate::DEFAULT_POLL_INTERVAL,
         };
         assert!(matches!(
             build(&config, options),

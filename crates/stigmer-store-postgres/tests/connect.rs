@@ -1,7 +1,7 @@
 //! Connecting: a password in the connection string never shows in an error.
 
 use stigmer_store::StoreError;
-use stigmer_store_postgres::{PgOptions, PgStore, PgTls};
+use stigmer_store_postgres::{PgOptions, PgStore, PgTls, DEFAULT_POLL_INTERVAL};
 
 const PASSWORD: &str = "s3cr3t-Pa55";
 
@@ -9,6 +9,7 @@ fn options(tls: PgTls) -> PgOptions {
     PgOptions {
         max_connections: 2,
         tls,
+        poll_interval: DEFAULT_POLL_INTERVAL,
     }
 }
 

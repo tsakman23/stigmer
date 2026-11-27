@@ -42,8 +42,13 @@ impl Store for PgStore {
         id: &BoardId,
         audit: SecurityEvent,
     ) -> impl Future<Output = Result<BoardInfo, StoreError>> + Send {
-        let (pool, id) = (self.pool.clone(), id.clone());
-        async move { boards::archive(&pool, &id, &audit).await }
+        let (pool, id, notifier) = (self.pool.clone(), id.clone(), Arc::clone(&self.notifier));
+        async move {
+            let info = boards::archive(&pool, &id, &audit).await?;
+            // Committed: the head can no longer move, so drop the board's wake-up entry.
+            notifier.forget(&id);
+            Ok(info)
+        }
     }
 
     fn post(&self, msg: NewMessage) -> impl Future<Output = Result<Posted, StoreError>> + Send {
@@ -104,9 +109,23 @@ impl Store for PgStore {
         after: Option<&Cursor>,
         timeout: Duration,
     ) -> impl Future<Output = Result<bool, StoreError>> + Send {
-        let (pool, waiters) = (self.pool.clone(), Arc::clone(&self.waiters));
+        self.wait_past_between(board, after, timeout, std::future::ready(()))
+    }
+}
+
+impl PgStore {
+    /// `Store::wait_past`, running `between` after the wait subscribes and before it reads the
+    /// head: a seam for tests that commit a post exactly there.
+    pub(crate) fn wait_past_between(
+        &self,
+        board: &BoardId,
+        after: Option<&Cursor>,
+        timeout: Duration,
+        between: impl Future<Output = ()> + Send,
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send {
+        let (pool, notifier) = (self.pool.clone(), Arc::clone(&self.notifier));
         let (board, after) = (board.clone(), after.cloned());
-        // No spawned task: dropping this future ends the wait and uncounts the waiter.
-        async move { wait::wait_past(&pool, &waiters, &board, after.as_ref(), timeout).await }
+        // No spawned task: dropping this future ends the wait and drops its subscription.
+        async move { wait::wait_past(&pool, &notifier, &board, after.as_ref(), timeout, between).await }
     }
 }

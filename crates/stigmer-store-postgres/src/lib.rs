@@ -1,8 +1,5 @@
 //! stigmer-store-postgres: the Postgres backend for `Store` and `IdentityStore`.
 //!
-//! `wait_past` polls the board head every 100 ms for now; Task 6 replaces the polling with
-//! LISTEN/NOTIFY wake-ups.
-//!
 //! A pool of connections (deadpool) to one database, shared by every replica of the server.
 //! Writes to one board serialise on that board's row (`SELECT ... FOR UPDATE`), so its event
 //! sequence stays gapless across processes; different boards proceed in parallel. The schema is
@@ -13,6 +10,10 @@
 //! it, so two such writers queue on the board row. `revoke_credential` and `touch_credential`
 //! lock only their single credential row, which cannot form a cycle. `enable_network` locks the
 //! instance row, then the board row of its invite; nothing locks them the other way round.
+//!
+//! A post wakes waits on every replica through LISTEN/NOTIFY: each store handle keeps one
+//! listener connection outside the pool, and a slow safety poll covers it while it reconnects
+//! (see `listener` and ADR 0013).
 //!
 //! A connection string's password never appears in an error, a log line or `Debug` output:
 //! errors name the host, port and database only.
@@ -28,7 +29,9 @@ mod identity_credentials;
 mod identity_invites;
 mod identity_members;
 mod identity_security;
+mod listener;
 mod migrate;
+mod notify;
 mod pool;
 mod posts;
 mod reads;
@@ -44,6 +47,7 @@ pub mod testing;
 
 use std::fmt;
 use std::sync::Arc;
+use std::time::Duration;
 
 use deadpool_postgres::Pool;
 use stigmer_store::StoreError;
@@ -70,7 +74,21 @@ pub struct PgOptions {
     /// How connections are secured. A connection string's `sslmode` may only repeat it
     /// (`disable` or `require`); one that disagrees is refused by [`PgStore::connect`].
     pub tls: PgTls,
+    /// How often the heads of boards with waiters are re-read, the safety net behind
+    /// LISTEN/NOTIFY wake-ups. [`DEFAULT_POLL_INTERVAL`] unless there is a reason to change it;
+    /// [`PgStore::connect`] refuses anything outside [`MIN_POLL_INTERVAL`] to
+    /// [`MAX_POLL_INTERVAL`].
+    pub poll_interval: Duration,
 }
+
+/// The default [`PgOptions::poll_interval`]: 2 s.
+pub const DEFAULT_POLL_INTERVAL: Duration = Duration::from_millis(2000);
+
+/// The shortest [`PgOptions::poll_interval`] [`PgStore::connect`] accepts: 100 ms.
+pub const MIN_POLL_INTERVAL: Duration = Duration::from_millis(100);
+
+/// The longest [`PgOptions::poll_interval`] [`PgStore::connect`] accepts: 60 s.
+pub const MAX_POLL_INTERVAL: Duration = Duration::from_millis(60_000);
 
 /// A `Store` backed by a Postgres database.
 pub struct PgStore {
@@ -79,7 +97,11 @@ pub struct PgStore {
     config: tokio_postgres::Config,
     options: PgOptions,
     target: String,
-    waiters: Arc<wait::Waiters>,
+    notifier: Arc<notify::Notifier>,
+    /// The listener and the safety poll; dropping the store stops them.
+    background: listener::Background,
+    /// The safety poll's interval, for second handles in tests.
+    poll_interval: Duration,
 }
 
 impl fmt::Debug for PgStore {
@@ -96,14 +118,50 @@ impl PgStore {
     /// checks that one connection opens. Neither this nor any later error contains the URL's
     /// password; errors name the host, port and database only. Does not touch the schema: see
     /// [`PgStore::schema_state`] and [`PgStore::migrate`].
+    ///
+    /// Also opens the store's listener connection (outside the pool) and starts the safety
+    /// poll; [`PgOptions::poll_interval`] must lie within [`MIN_POLL_INTERVAL`] and
+    /// [`MAX_POLL_INTERVAL`].
     pub async fn connect(url: &str, options: PgOptions) -> Result<PgStore, StoreError> {
+        check_poll_interval(options.poll_interval)?;
+        PgStore::open(url, options, options.poll_interval).await
+    }
+
+    /// Test support, not API: [`PgStore::connect`] with a safety poll of `poll_interval`,
+    /// unchecked, so a test can set it to an hour and prove a wake came through NOTIFY.
+    #[doc(hidden)]
+    pub async fn connect_with_poll_for_tests(
+        url: &str,
+        options: PgOptions,
+        poll_interval: Duration,
+    ) -> Result<PgStore, StoreError> {
+        PgStore::open(url, options, poll_interval).await
+    }
+
+    async fn open(
+        url: &str,
+        options: PgOptions,
+        poll_interval: Duration,
+    ) -> Result<PgStore, StoreError> {
         let connected = pool::connect(url, options).await?;
+        let notifier = Arc::default();
+        let background = listener::start(
+            &connected.config,
+            options.tls,
+            &connected.target,
+            connected.pool.clone(),
+            Arc::clone(&notifier),
+            poll_interval,
+        )
+        .await?;
         Ok(PgStore {
             pool: connected.pool,
             config: connected.config,
             options,
             target: connected.target,
-            waiters: Arc::default(),
+            notifier,
+            background,
+            poll_interval,
         })
     }
 
@@ -127,4 +185,17 @@ impl PgStore {
         tx.commit().await.map_err(error::db)?;
         Ok(schema::state(have))
     }
+}
+
+/// Refuses a safety poll interval outside [`MIN_POLL_INTERVAL`]..=[`MAX_POLL_INTERVAL`].
+fn check_poll_interval(interval: Duration) -> Result<(), StoreError> {
+    if (MIN_POLL_INTERVAL..=MAX_POLL_INTERVAL).contains(&interval) {
+        return Ok(());
+    }
+    Err(StoreError::Backend(format!(
+        "the database poll interval must be between {} and {} ms, not {} ms",
+        MIN_POLL_INTERVAL.as_millis(),
+        MAX_POLL_INTERVAL.as_millis(),
+        interval.as_millis()
+    )))
 }

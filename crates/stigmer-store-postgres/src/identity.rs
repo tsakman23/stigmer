@@ -2,6 +2,7 @@
 //! the pool, as the `Store` methods do.
 
 use std::future::Future;
+use std::sync::Arc;
 
 use stigmer_core::{BoardId, BoardInfo, Principal, PrincipalKind, Role, TokenId};
 use stigmer_store::{
@@ -153,8 +154,13 @@ impl IdentityStore for PgStore {
         id: &BoardId,
         audit: SecurityEvent,
     ) -> impl Future<Output = Result<BoardInfo, StoreError>> + Send {
-        let (pool, id) = (self.pool.clone(), id.clone());
-        async move { boards::archive_revoking(&pool, &id, &audit).await }
+        let (pool, id, notifier) = (self.pool.clone(), id.clone(), Arc::clone(&self.notifier));
+        async move {
+            let info = boards::archive_revoking(&pool, &id, &audit).await?;
+            // Committed: the head can no longer move, so drop the board's wake-up entry.
+            notifier.forget(&id);
+            Ok(info)
+        }
     }
 
     fn revoke_instance_credentials_except(
