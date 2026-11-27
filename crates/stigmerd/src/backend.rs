@@ -270,15 +270,24 @@ impl Plan {
                 })
             }
             Plan::Postgres(plan) => {
-                let store = PgStore::connect(&plan.url, plan.options)
-                    .await
-                    .map_err(|e| Failure::Runtime(e.to_string()))?;
+                let (store, target) = plan.connect().await?;
                 Ok(Backend::Postgres {
                     store: Box::new(store),
-                    target: plan.target,
+                    target,
                 })
             }
         }
+    }
+}
+
+impl PgPlan {
+    /// Connects to the database (opening no listener connection) and returns the store with a
+    /// description of its target for messages. Does not check the schema.
+    pub(crate) async fn connect(self) -> Result<(PgStore, String), Failure> {
+        let store = PgStore::connect(&self.url, self.options)
+            .await
+            .map_err(|e| Failure::Runtime(e.to_string()))?;
+        Ok((store, self.target))
     }
 }
 

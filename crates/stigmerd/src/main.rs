@@ -163,21 +163,24 @@ async fn serve(args: ServeArgs) -> Result<(), Failure> {
         Backend::Sqlite { store, lock, .. } => {
             // The lock is held until the server stops.
             let _lock = lock;
-            serve_on(store, &place, &args, tls, signals).await
+            serve_on(store, &place, &args, tls, signals, secured).await
         }
-        Backend::Postgres { store, .. } => serve_on(*store, &place, &args, tls, signals).await,
+        Backend::Postgres { store, .. } => {
+            serve_on(*store, &place, &args, tls, signals, secured).await
+        }
     }
 }
 
-/// Serves `store` until a shutdown signal, then drains; `place` says where the data is.
+/// Serves `store` until a shutdown signal, then drains; `place` says where the data is and
+/// `secured` whether TLS or a trusted proxy is configured.
 async fn serve_on<S: Store + IdentityStore>(
     store: S,
     place: &str,
     args: &ServeArgs,
     tls: Option<TlsAcceptor>,
     signals: Signals,
+    secured: bool,
 ) -> Result<(), Failure> {
-    let secured = args.tls_cert.is_some() || !args.trusted_proxies.is_empty();
     let mode = store
         .mode()
         .await
@@ -249,7 +252,7 @@ async fn serve_on<S: Store + IdentityStore>(
 fn start_tls(files: tls::PairFiles, reload_every: Duration) -> Result<TlsAcceptor, Failure> {
     let provider = tls::provider();
     let pair = tls::load_pair(&files, &provider).map_err(Failure::Runtime)?;
-    tls::warn_if_key_exposed(&files.key);
+    tls::warn_if_exposed(&files.key, "TLS key");
     let current = Arc::new(tls::CurrentPair::new(pair));
     let config = tls::server_config(Arc::clone(&provider), Arc::clone(&current))
         .map_err(Failure::Runtime)?;

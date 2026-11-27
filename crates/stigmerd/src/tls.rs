@@ -70,11 +70,6 @@ fn read(path: &Path, what: &str) -> Result<Vec<u8>, String> {
     std::fs::read(path).map_err(|e| format!("cannot read the TLS {what} {}: {e}", path.display()))
 }
 
-/// Warns on stderr when the key file can be read by anyone but its owner (unix only).
-pub(crate) fn warn_if_key_exposed(key: &Path) {
-    warn_if_exposed(key, "TLS key");
-}
-
 /// Warns on stderr when `file`, a secret named `what`, can be read by anyone but its owner
 /// (unix only).
 pub(crate) fn warn_if_exposed(file: &Path, what: &str) {

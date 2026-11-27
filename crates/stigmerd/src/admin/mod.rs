@@ -35,6 +35,13 @@ pub enum AdminCommand {
         #[command(flatten)]
         store: StoreArgs,
     },
+    #[command(flatten)]
+    Store(StoreCommand),
+}
+
+/// The admin subcommands that work on an open store (all but `migrate`).
+#[derive(Subcommand)]
+pub enum StoreCommand {
     /// Switch the instance to network mode (one-way) and print the instance token once.
     EnableAuth {
         /// Do not mint an admin invite into the main board.
@@ -116,18 +123,22 @@ pub enum AdminCommand {
 
 /// Runs one admin subcommand to completion.
 pub async fn run(command: AdminCommand) -> Result<(), Failure> {
-    let plan = match &command {
-        AdminCommand::Migrate { store }
-        | AdminCommand::EnableAuth { store, .. }
-        | AdminCommand::NewInstanceToken { store, .. }
-        | AdminCommand::RevokeToken { store, .. }
-        | AdminCommand::IssueMemberToken { store, .. }
-        | AdminCommand::MapLocalPrincipals { store, .. }
-        | AdminCommand::SecurityLog { store, .. } => store.plan()?,
-    };
-    if let AdminCommand::Migrate { .. } = command {
-        return migrate(plan).await;
+    match command {
+        AdminCommand::Migrate { store } => migrate(store.plan()?).await,
+        AdminCommand::Store(command) => run_store_command(command).await,
     }
+}
+
+/// Opens the store the command's flags select, checks its schema and runs the command on it.
+async fn run_store_command(command: StoreCommand) -> Result<(), Failure> {
+    let plan = match &command {
+        StoreCommand::EnableAuth { store, .. }
+        | StoreCommand::NewInstanceToken { store, .. }
+        | StoreCommand::RevokeToken { store, .. }
+        | StoreCommand::IssueMemberToken { store, .. }
+        | StoreCommand::MapLocalPrincipals { store, .. }
+        | StoreCommand::SecurityLog { store, .. } => store.plan()?,
+    };
     let backend = plan.open().await?;
     backend.check_schema().await?;
     match backend {
@@ -137,7 +148,7 @@ pub async fn run(command: AdminCommand) -> Result<(), Failure> {
             run_on(&store, command).await
         }
         Backend::Postgres { store, .. } => {
-            let enabling = matches!(command, AdminCommand::EnableAuth { .. });
+            let enabling = matches!(command, StoreCommand::EnableAuth { .. });
             run_on(&*store, command).await?;
             if enabling {
                 eprintln!(
@@ -152,16 +163,16 @@ pub async fn run(command: AdminCommand) -> Result<(), Failure> {
 
 /// `admin migrate`: applies the pending Postgres migrations, or says SQLite needs none.
 async fn migrate(plan: Plan) -> Result<(), Failure> {
-    let plan @ Plan::Postgres(_) = plan else {
-        return print_stdout(
-            "SQLite migrations are automatic: the database is migrated when stigmerd opens it; \
-             nothing to do\n",
-        );
+    let postgres = match plan {
+        Plan::Sqlite { .. } => {
+            return print_stdout(
+                "SQLite migrations are automatic: the database is migrated when stigmerd opens \
+                 it; nothing to do\n",
+            );
+        }
+        Plan::Postgres(postgres) => postgres,
     };
-    let Backend::Postgres { store, target } = plan.open().await? else {
-        // A Postgres plan opens a Postgres store.
-        return Ok(());
-    };
+    let (store, target) = postgres.connect().await?;
     let report = store
         .migrate()
         .await
@@ -177,13 +188,11 @@ async fn migrate(plan: Plan) -> Result<(), Failure> {
     print_stdout(&text)
 }
 
-/// Runs a subcommand other than `migrate` against an open store.
-async fn run_on<S: IdentityStore>(store: &S, command: AdminCommand) -> Result<(), Failure> {
+/// Runs a subcommand against an open store.
+async fn run_on<S: IdentityStore>(store: &S, command: StoreCommand) -> Result<(), Failure> {
     let now = stigmer_core::now_ms();
     match command {
-        // Handled by `run` before a schema check could refuse it.
-        AdminCommand::Migrate { .. } => Ok(()),
-        AdminCommand::EnableAuth { no_main_invite, .. } => {
+        StoreCommand::EnableAuth { no_main_invite, .. } => {
             let issued = enable_auth(store, now, !no_main_invite).await?;
             let mut out = std::io::stdout().lock();
             let mut lines = format!("instance token: {}\n", issued.token);
@@ -192,7 +201,7 @@ async fn run_on<S: IdentityStore>(store: &S, command: AdminCommand) -> Result<()
             }
             write_once(&mut out, &lines)
         }
-        AdminCommand::NewInstanceToken {
+        StoreCommand::NewInstanceToken {
             expires_days,
             revoke_others,
             ..
@@ -211,12 +220,12 @@ async fn run_on<S: IdentityStore>(store: &S, command: AdminCommand) -> Result<()
             }
             Ok(())
         }
-        AdminCommand::RevokeToken { id, .. } => {
+        StoreCommand::RevokeToken { id, .. } => {
             require_network(store).await?;
             let text = revoke_token(store, now, &id).await?;
             print_stdout(&text)
         }
-        AdminCommand::IssueMemberToken {
+        StoreCommand::IssueMemberToken {
             board,
             member,
             expires_days,
@@ -229,7 +238,7 @@ async fn run_on<S: IdentityStore>(store: &S, command: AdminCommand) -> Result<()
                 &format!("member token: {token}\n"),
             )
         }
-        AdminCommand::MapLocalPrincipals {
+        StoreCommand::MapLocalPrincipals {
             humans,
             admins,
             skips,
@@ -245,7 +254,7 @@ async fn run_on<S: IdentityStore>(store: &S, command: AdminCommand) -> Result<()
             let text = map_local_principals(store, now, names, apply).await?;
             print_stdout(&text)
         }
-        AdminCommand::SecurityLog { limit, .. } => {
+        StoreCommand::SecurityLog { limit, .. } => {
             let events = store
                 .security_log(limit)
                 .await
