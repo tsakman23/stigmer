@@ -25,7 +25,7 @@ use stigmer_core::BoardId;
 use stigmer_store::StoreError;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
-use tokio::time::MissedTickBehavior;
+use tokio::time::{Instant, MissedTickBehavior};
 use tokio_postgres::tls::MakeTlsConnect;
 use tokio_postgres::{AsyncMessage, Client, Config, NoTls, Socket, Transaction};
 
@@ -37,6 +37,12 @@ use crate::{pool, tls, PgTls};
 const CHANNEL: &str = "stigmer_events";
 const MIN_BACKOFF: Duration = Duration::from_millis(100);
 const MAX_BACKOFF: Duration = Duration::from_secs(10);
+/// A session that stayed up this long resets the backoff; a shorter one (a connection that
+/// LISTENs and then drops at once, again and again) keeps backing off.
+const STABLE_SESSION: Duration = Duration::from_secs(10);
+/// How long opening the listener (connect, LISTEN and the head re-read) may take, so an
+/// address that swallows packets cannot stall the reconnect loop for ever.
+const OPEN_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Inside a post's transaction, before its commit: tells every listener on this database that
 /// `board`'s head reached `seq`, once (and only if) the transaction commits.
@@ -113,15 +119,31 @@ async fn listen(link: Link, first: Session) {
     let mut backoff = MIN_BACKOFF;
     loop {
         if let Some(open) = session.take() {
-            backoff = MIN_BACKOFF;
+            let started = Instant::now();
             open.run(&link.notifier).await;
             link.pid.store(0, Ordering::SeqCst);
+            backoff = after_session(backoff, started.elapsed());
         }
         tokio::time::sleep(backoff).await;
-        backoff = backoff.saturating_mul(2).min(MAX_BACKOFF);
+        backoff = after_attempt(backoff);
         // A failure here is retried after the next backoff; the safety poll covers the gap.
         session = Session::open(&link).await.ok();
     }
+}
+
+/// The backoff once a session has ended after `lasted`: back to the minimum only if it was
+/// stable, else unchanged.
+fn after_session(backoff: Duration, lasted: Duration) -> Duration {
+    if lasted >= STABLE_SESSION {
+        MIN_BACKOFF
+    } else {
+        backoff
+    }
+}
+
+/// The backoff before the next attempt: doubled, at most `MAX_BACKOFF`.
+fn after_attempt(backoff: Duration) -> Duration {
+    backoff.saturating_mul(2).min(MAX_BACKOFF)
 }
 
 /// Every `every`, re-reads the heads of the boards with waiters through the pool.
@@ -185,6 +207,17 @@ impl Session {
     /// Connects, LISTENs, then re-reads the heads of the boards with waiters: a commit before
     /// LISTEN took effect is seen by that read, any later one is notified.
     async fn open(link: &Link) -> Result<Session, StoreError> {
+        tokio::time::timeout(OPEN_TIMEOUT, Session::open_now(link))
+            .await
+            .map_err(|_| {
+                StoreError::Backend(format!(
+                    "timed out after {} s opening the listener connection",
+                    OPEN_TIMEOUT.as_secs()
+                ))
+            })?
+    }
+
+    async fn open_now(link: &Link) -> Result<Session, StoreError> {
         let (client, payloads, driver) = match tls::connector(link.tls)? {
             None => connect(&link.config, NoTls).await?,
             Some(tls) => connect(&link.config, tls).await?,
@@ -275,6 +308,28 @@ fn parse(payload: &str) -> Option<(&str, BoardId, u64)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn backoff_doubles_to_ten_seconds_and_resets_only_after_a_stable_session() {
+        let mut backoff = MIN_BACKOFF;
+        let mut seen = Vec::new();
+        for _ in 0..10 {
+            seen.push(backoff.as_millis());
+            backoff = after_attempt(backoff);
+        }
+        assert_eq!(
+            seen,
+            [100, 200, 400, 800, 1600, 3200, 6400, 10_000, 10_000, 10_000]
+        );
+        // A session that drops at once keeps the backoff where it was.
+        let short = STABLE_SESSION - Duration::from_millis(1);
+        assert_eq!(after_session(MAX_BACKOFF, short), MAX_BACKOFF);
+        assert_eq!(after_session(MAX_BACKOFF, Duration::ZERO), MAX_BACKOFF);
+        // A session that stayed up resets it.
+        assert_eq!(after_session(MAX_BACKOFF, STABLE_SESSION), MIN_BACKOFF);
+        assert_eq!(STABLE_SESSION, Duration::from_secs(10));
+        assert_eq!(OPEN_TIMEOUT, Duration::from_secs(10));
+    }
 
     #[test]
     fn payloads_name_schema_board_and_sequence() {
