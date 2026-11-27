@@ -93,21 +93,18 @@ pub const MAX_POLL_INTERVAL: Duration = Duration::from_millis(60_000);
 /// A `Store` backed by a Postgres database.
 pub struct PgStore {
     pool: Pool,
-    /// Kept for second handles in tests; never printed.
-    config: tokio_postgres::Config,
     options: PgOptions,
-    target: String,
+    /// What the listener needs; also what a second handle in a test is built from.
+    setup: listener::ListenerSetup,
     notifier: Arc<notify::Notifier>,
     /// The listener and the safety poll; dropping the store stops them.
     background: listener::Background,
-    /// The safety poll's interval, for second handles in tests.
-    poll_interval: Duration,
 }
 
 impl fmt::Debug for PgStore {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("PgStore")
-            .field("target", &self.target)
+            .field("target", &self.setup.target)
             .field("options", &self.options)
             .finish_non_exhaustive()
     }
@@ -144,24 +141,30 @@ impl PgStore {
         poll_interval: Duration,
     ) -> Result<PgStore, StoreError> {
         let connected = pool::connect(url, options).await?;
-        let notifier = Arc::default();
-        let background = listener::start(
-            &connected.config,
-            options.tls,
-            &connected.target,
-            connected.pool.clone(),
-            Arc::clone(&notifier),
-            poll_interval,
-        )
-        .await?;
-        Ok(PgStore {
-            pool: connected.pool,
+        let setup = listener::ListenerSetup {
             config: connected.config,
-            options,
+            tls: options.tls,
             target: connected.target,
+            pool: connected.pool.clone(),
+            poll_interval,
+        };
+        PgStore::with_setup(connected.pool, options, setup).await
+    }
+
+    /// A store on `pool` whose listener is described by `setup`.
+    async fn with_setup(
+        pool: Pool,
+        options: PgOptions,
+        setup: listener::ListenerSetup,
+    ) -> Result<PgStore, StoreError> {
+        let notifier = Arc::default();
+        let background = listener::start(&setup, Arc::clone(&notifier)).await?;
+        Ok(PgStore {
+            pool,
+            options,
+            setup,
             notifier,
             background,
-            poll_interval,
         })
     }
 

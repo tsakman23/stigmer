@@ -51,13 +51,17 @@ pub(crate) async fn notify(
     board: &BoardId,
     seq: u64,
 ) -> Result<(), StoreError> {
-    tx.execute(
-        "SELECT pg_notify('stigmer_events', coalesce(current_schema(), '') || ':' || $1::text || ':' || $2::text)",
-        &[&board.as_str(), &seq.to_string()],
-    )
-    .await
-    .map_err(db)?;
+    tx.execute(&notify_sql(), &[&board.as_str(), &seq.to_string()])
+        .await
+        .map_err(db)?;
     Ok(())
+}
+
+/// The statement [`notify`] runs: `$1` is the board id, `$2` the sequence number.
+fn notify_sql() -> String {
+    format!(
+        "SELECT pg_notify('{CHANNEL}', coalesce(current_schema(), '') || ':' || $1::text || ':' || $2::text)"
+    )
 }
 
 /// A store handle's listener and safety poll; dropping it stops both.
@@ -83,30 +87,49 @@ struct Link {
     pid: Arc<AtomicI32>,
 }
 
-/// Opens the listener connection (failing if it cannot LISTEN, as a wrong address or password
-/// fails `PgStore::connect`) and starts the listener and the safety poll on `pool`.
+/// Everything a store handle needs to start its listener and safety poll, built once per handle.
+pub(crate) struct ListenerSetup {
+    /// The store's connection configuration; never printed.
+    pub(crate) config: Config,
+    pub(crate) tls: PgTls,
+    /// Host, port and database, for messages.
+    pub(crate) target: String,
+    /// The handle's pool, which the safety poll reads through.
+    pub(crate) pool: Pool,
+    pub(crate) poll_interval: Duration,
+}
+
+/// The `application_name` of listener connections, so operators can tell them apart.
+const APPLICATION_NAME: &str = "stigmer-listener";
+
+/// Opens the listener connection (failing if it cannot LISTEN) and starts the listener and the
+/// safety poll.
 pub(crate) async fn start(
-    config: &Config,
-    tls: PgTls,
-    target: &str,
-    pool: Pool,
+    setup: &ListenerSetup,
     notifier: Arc<Notifier>,
-    poll_interval: Duration,
 ) -> Result<Background, StoreError> {
+    let mut config = setup.config.clone();
+    config.application_name(APPLICATION_NAME);
     let link = Link {
-        config: config.clone(),
-        tls,
+        config,
+        tls: setup.tls,
         notifier: Arc::clone(&notifier),
         pid: Arc::default(),
     };
     let first = Session::open(&link).await.map_err(|e| {
         StoreError::Backend(format!(
-            "cannot open the listener connection to {target}: {e}"
+            "cannot open the listener connection to {}: {e} (LISTEN needs a direct or \
+             session-pooled connection)",
+            setup.target
         ))
     })?;
     let pid = Arc::clone(&link.pid);
     let listener = tokio::spawn(listen(link, first));
-    let poller = tokio::spawn(poll_heads(pool, notifier, poll_interval));
+    let poller = tokio::spawn(poll_heads(
+        setup.pool.clone(),
+        notifier,
+        setup.poll_interval,
+    ));
     Ok(Background {
         _tasks: [AbortOnDrop(listener), AbortOnDrop(poller)],
         pid,
@@ -308,6 +331,13 @@ fn parse(payload: &str) -> Option<(&str, BoardId, u64)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_notify_statement_uses_the_channel_listened_on() {
+        let sql = notify_sql();
+        assert!(sql.contains(&format!("pg_notify('{CHANNEL}',")), "{sql}");
+        assert_eq!(CHANNEL, "stigmer_events");
+    }
 
     #[test]
     fn backoff_doubles_to_ten_seconds_and_resets_only_after_a_stable_session() {

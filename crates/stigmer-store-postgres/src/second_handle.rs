@@ -1,8 +1,6 @@
 //! Test support for the conformance suites and the wake-up tests: a second handle on a store's
 //! database, and a view of the handle's notifier, listener and pool.
 
-use std::sync::Arc;
-
 use stigmer_core::BoardId;
 use stigmer_store::StoreError;
 
@@ -15,27 +13,16 @@ impl PgStore {
     /// Opens one connection to check it, as [`PgStore::connect`] does.
     #[doc(hidden)]
     pub async fn second_handle_for_tests(&self) -> Result<PgStore, StoreError> {
-        let pool = pool::build(&self.config, self.options)?;
+        let pool = pool::build(&self.setup.config, self.options)?;
         drop(pool.get().await.map_err(backend)?);
-        let notifier = Arc::default();
-        let background = listener::start(
-            &self.config,
-            self.options.tls,
-            &self.target,
-            pool.clone(),
-            Arc::clone(&notifier),
-            self.poll_interval,
-        )
-        .await?;
-        Ok(PgStore {
-            pool,
-            config: self.config.clone(),
-            options: self.options,
-            target: self.target.clone(),
-            notifier,
-            background,
-            poll_interval: self.poll_interval,
-        })
+        let setup = listener::ListenerSetup {
+            config: self.setup.config.clone(),
+            tls: self.setup.tls,
+            target: self.setup.target.clone(),
+            pool: pool.clone(),
+            poll_interval: self.setup.poll_interval,
+        };
+        PgStore::with_setup(pool, self.options, setup).await
     }
 
     /// Test support, not API: the number of `wait_past` callers currently subscribed to

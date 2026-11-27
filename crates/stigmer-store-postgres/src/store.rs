@@ -44,12 +44,12 @@ impl Store for PgStore {
     ) -> impl Future<Output = Result<BoardInfo, StoreError>> + Send {
         let (pool, id, notifier) = (self.pool.clone(), id.clone(), Arc::clone(&self.notifier));
         async move {
-            let (info, head) = boards::archive(&pool, &id, &audit).await?;
+            let archived = boards::archive(&pool, &id, &audit).await?;
             // Committed: the head can no longer move. Deliver it first, so a wait for a post
             // whose notification is still on its way wakes, then drop the board's entry.
-            notifier.bump(&id, head);
+            notifier.bump(&id, archived.head);
             notifier.forget(&id);
-            Ok(info)
+            Ok(archived.board)
         }
     }
 
