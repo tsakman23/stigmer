@@ -52,6 +52,7 @@ pub struct PgDb {
 impl PgDb {
     /// The database for `test`, or `None` (after a loud skip line) without a test database.
     pub fn create(test: &str) -> Option<PgDb> {
+        require_with_postgres_module(test);
         let base = database_url(test).unwrap_or_else(|message| panic!("{message}"))?;
         let config: tokio_postgres::Config = base.parse().expect("test database URL");
         let host = match config.get_hosts().first() {
@@ -150,6 +151,19 @@ impl Drop for PgDb {
     }
 }
 
+/// Fails the calling test unless it runs inside a module named `with_postgres`. CI's check job,
+/// which has no database, skips tests by that name and its postgres job runs only them, so a
+/// Postgres test anywhere else would fail the one and never run in the other. libtest runs each
+/// test on a thread named after its path, so this holds with or without a database.
+fn require_with_postgres_module(test: &str) {
+    let name = std::thread::current().name().unwrap_or_default().to_owned();
+    assert!(
+        name.contains("with_postgres::"),
+        "{test}: a test that needs Postgres must live in a module named with_postgres \
+         (this one runs as {name:?}); see CONTRIBUTING.md"
+    );
+}
+
 /// `<pid>_<nanos>`: unique across test processes and calls.
 fn unique() -> String {
     let nanos = SystemTime::now()
@@ -163,6 +177,7 @@ fn unique() -> String {
 /// Homebrew's Postgres 17. `None` after a loud skip line; with `CI` set, a missing pair fails
 /// the test instead.
 pub fn pg_bin(test: &str) -> Option<PathBuf> {
+    require_with_postgres_module(test);
     let has_both = |dir: &Path| dir.join("initdb").is_file() && dir.join("pg_ctl").is_file();
     if let Some(dir) = std::env::var_os(PG_BIN_VAR).filter(|v| !v.is_empty()) {
         let dir = PathBuf::from(dir);
