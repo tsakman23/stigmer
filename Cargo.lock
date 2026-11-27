@@ -1646,6 +1646,7 @@ name = "stigmer-store-postgres"
 version = "0.0.0"
 dependencies = [
  "deadpool-postgres",
+ "rcgen",
  "rusqlite",
  "rustls",
  "rustls-native-certs",
@@ -1654,6 +1655,7 @@ dependencies = [
  "stigmer-store-conformance",
  "stigmer-store-sqlite",
  "tempfile",
+ "thiserror",
  "tokio",
  "tokio-postgres",
  "tokio-postgres-rustls",
@@ -1685,9 +1687,11 @@ dependencies = [
  "stigmer-api",
  "stigmer-core",
  "stigmer-store",
+ "stigmer-store-postgres",
  "stigmer-store-sqlite",
  "tempfile",
  "tokio",
+ "tokio-postgres",
  "tokio-rustls",
  "tower",
 ]

@@ -70,24 +70,25 @@ fn read(path: &Path, what: &str) -> Result<Vec<u8>, String> {
     std::fs::read(path).map_err(|e| format!("cannot read the TLS {what} {}: {e}", path.display()))
 }
 
-/// Warns on stderr when the key file can be read by anyone but its owner (unix only).
-pub(crate) fn warn_if_key_exposed(key: &Path) {
+/// Warns on stderr when `file`, a secret named `what`, can be read by anyone but its owner
+/// (unix only).
+pub(crate) fn warn_if_exposed(file: &Path, what: &str) {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        if let Ok(meta) = std::fs::metadata(key) {
+        if let Ok(meta) = std::fs::metadata(file) {
             let mode = meta.permissions().mode() & 0o777;
             if mode & 0o077 != 0 {
                 eprintln!(
-                    "stigmerd: warning: TLS key {} is accessible by group or others (mode {mode:o}); \
+                    "stigmerd: warning: {what} {} is accessible by group or others (mode {mode:o}); \
                      restrict it with chmod 600",
-                    key.display()
+                    file.display()
                 );
             }
         }
     }
     #[cfg(not(unix))]
-    let _ = key;
+    let _ = (file, what);
 }
 
 /// The pair handed to every new handshake; replacing it leaves established connections alone.

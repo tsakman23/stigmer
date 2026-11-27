@@ -285,6 +285,43 @@ A token works on its own board only: any other board name, existing or not, gets
 
 The rate limits are kept in memory and start empty when the server restarts. See [ADR 0011](docs/adr/0011-authentication-policy-401-403-404.md) for how they are applied.
 
+### Running on Postgres
+
+By default `stigmerd` keeps its data in SQLite in a data directory, which one server process locks. To run several servers on one database, give them a Postgres URL instead (CI tests Postgres 17, except that the TLS tests start a throwaway server from whatever Postgres the CI runner has installed; the database must exist, and the user needs to create tables in it). Give the URL in `STIGMER_DATABASE_URL` or a file named by `--database-url-file`; `--database-url <url>` works too, but only for a URL without a password, since anyone on the machine can read command lines. With a URL there is no data directory and no lock file, and `--data-dir` is ignored with a warning. See [ADR 0012](docs/adr/0012-postgres-backend-and-selection.md) for the rules.
+
+Create the schema before the first start, and again after every upgrade (it is one transaction and safe to repeat):
+
+```sh
+export STIGMER_DATABASE_URL='postgres://stigmer:<password>@localhost:5433/stigmer'
+stigmerd admin migrate
+stigmerd serve
+```
+
+```text
+database stigmer on localhost:5433: migrated the schema from version 0 to 8
+listening on http://127.0.0.1:7878 (data in database stigmer on localhost:5433)
+```
+
+A server refuses to start (exit 1) on a schema older than it needs ("run stigmerd admin migrate") or newer than it knows ("this server is older than the database"). To upgrade, stop every server, run `stigmerd admin migrate` with the new binary, then start the new servers. Every `stigmerd admin` command takes the same settings and, on Postgres, may run while servers are running; each change is one transaction. A server reads the instance mode when it starts, so restart running servers after `stigmerd admin enable-auth`.
+
+The connection to Postgres is secured as `--db-tls` or the URL's `sslmode` says. A connection to another host is plain only when `disable` is given by name; otherwise it gets TLS. These exit 2 before anything is opened: `--db-tls` and `sslmode` (or `--db-tls-ca` and `sslrootcert`) that disagree, `sslmode` or `sslrootcert` given twice, a CA bundle with a mode other than `verify-full`, and `sslmode=prefer`, `allow` or `verify-ca`.
+
+| Setting | What it does |
+|---|---|
+| `disable` | plain connection; the default only when every host is this machine (`localhost`, a loopback address or a Unix socket) |
+| `require` | TLS without checking the certificate; the default for any other host |
+| `verify-full` | TLS with the certificate checked against the trusted roots and the host name |
+| `--db-tls-ca <pem>` or `sslrootcert=<pem>` | trust only the CAs in this file, for a server with a certificate from a private CA; implies `verify-full` |
+
+For example, a URL in a file only you can read, with the server's certificate checked against a private CA:
+
+```sh
+(umask 077; printf '%s\n' 'postgres://stigmer:<password>@localhost:5433/stigmer' > db-url)
+stigmerd serve --database-url-file db-url --db-tls-ca ca.pem
+```
+
+`--db-max-connections` (default 16, 1 to 500) bounds each server's connection pool; once a request first waits, each server also holds one more connection (named `stigmer-listener`) to hear about posts made through the others, so the database's connection limit must cover every server. Admin commands open no such connection. The limits in the table above apply per server process.
+
 ## Exit codes
 
 | Code | Meaning |

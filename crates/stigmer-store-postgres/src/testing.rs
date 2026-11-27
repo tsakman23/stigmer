@@ -106,6 +106,8 @@ impl TestSchema {
             max_connections: 8,
             tls: PgTls::Disable,
             poll_interval: DEFAULT_POLL_INTERVAL,
+            ca_bundle: None,
+            on_poll_error: None,
         }
     }
 

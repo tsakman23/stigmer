@@ -32,7 +32,7 @@ use tokio_postgres::{AsyncMessage, Client, Config, NoTls, Socket, Transaction};
 
 use crate::error::{backend, db};
 use crate::notify::Notifier;
-use crate::{pool, tls, PgTls};
+use crate::{pool, tls, CaBundle, PgTls, PollErrorHook};
 
 /// The one channel every store notifies and listens on.
 const CHANNEL: &str = "stigmer_events";
@@ -84,6 +84,7 @@ impl Background {
 struct Link {
     config: Config,
     tls: PgTls,
+    ca_bundle: Option<CaBundle>,
     notifier: Arc<Notifier>,
     pid: Arc<AtomicI32>,
 }
@@ -93,11 +94,15 @@ pub(crate) struct ListenerSetup {
     /// The store's connection configuration; never printed.
     pub(crate) config: Config,
     pub(crate) tls: PgTls,
+    /// The roots for `PgTls::VerifyFull`, when not the platform's.
+    pub(crate) ca_bundle: Option<CaBundle>,
     /// Host, port and database, for messages.
     pub(crate) target: String,
     /// The handle's pool, which the safety poll reads through.
     pub(crate) pool: Pool,
     pub(crate) poll_interval: Duration,
+    /// Told about each failed safety-poll round.
+    pub(crate) on_poll_error: Option<PollErrorHook>,
 }
 
 /// The `application_name` of listener connections, so operators can tell them apart.
@@ -114,6 +119,7 @@ pub(crate) async fn start(
     let link = Link {
         config,
         tls: setup.tls,
+        ca_bundle: setup.ca_bundle.clone(),
         notifier: Arc::clone(&notifier),
         pid: Arc::default(),
     };
@@ -130,6 +136,7 @@ pub(crate) async fn start(
         setup.pool.clone(),
         notifier,
         setup.poll_interval,
+        setup.on_poll_error.clone(),
     ));
     Ok(Background {
         _tasks: [AbortOnDrop(listener), AbortOnDrop(poller)],
@@ -170,8 +177,14 @@ pub(crate) fn after_attempt(backoff: Duration) -> Duration {
     backoff.saturating_mul(2).min(MAX_BACKOFF)
 }
 
-/// Every `every`, re-reads the heads of the boards with waiters through the pool.
-async fn poll_heads(pool: Pool, notifier: Arc<Notifier>, every: Duration) {
+/// Every `every`, re-reads the heads of the boards with waiters through the pool, telling
+/// `on_error` about each round that fails.
+async fn poll_heads(
+    pool: Pool,
+    notifier: Arc<Notifier>,
+    every: Duration,
+    on_error: Option<PollErrorHook>,
+) {
     // `interval` refuses a zero period; `PgStore::connect` never passes one anyway.
     let mut ticks = tokio::time::interval(every.max(Duration::from_millis(1)));
     ticks.set_missed_tick_behavior(MissedTickBehavior::Delay);
@@ -183,8 +196,12 @@ async fn poll_heads(pool: Pool, notifier: Arc<Notifier>, every: Duration) {
         }
         // A failed round is retried at the next tick. Meanwhile the listener still wakes the
         // waits, and each is bounded by its own timeout.
-        if let Ok(client) = pool::client(&pool).await {
-            let _ = refresh(&client, &notifier).await;
+        let round = match pool::client(&pool).await {
+            Ok(client) => refresh(&client, &notifier).await,
+            Err(e) => Err(e),
+        };
+        if let (Err(e), Some(report)) = (round, &on_error) {
+            report(&e);
         }
     }
 }
@@ -242,7 +259,7 @@ impl Session {
     }
 
     async fn open_now(link: &Link) -> Result<Session, StoreError> {
-        let (client, payloads, driver) = match tls::connector(link.tls)? {
+        let (client, payloads, driver) = match tls::connector(link.tls, link.ca_bundle.as_ref())? {
             None => connect(&link.config, NoTls).await?,
             Some(tls) => connect(&link.config, tls).await?,
         };

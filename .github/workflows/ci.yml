@@ -36,15 +36,19 @@ jobs:
           node-version: 20
       - run: cargo fmt --check
       - run: cargo clippy --locked --workspace --all-targets -- -D warnings
-      # The Postgres crate needs a database, which only the `postgres` job below provides.
-      - run: cargo test --locked --workspace --exclude stigmer-store-postgres
+      # The Postgres crate needs a database, which only the `postgres` job below provides; so do
+      # stigmerd's tests in modules named `with_postgres`, which that job runs.
+      - run: "cargo test --locked --workspace --exclude stigmer-store-postgres -- --skip with_postgres::"
       - run: cargo deny --locked check
 
-  # Runs the Postgres store against a real Postgres 17. Without STIGMER_TEST_DATABASE_URL these
-  # tests fail on CI by design, so they never pass by silently skipping.
+  # Runs the Postgres store, and stigmerd on Postgres, against a real Postgres 17. Without
+  # STIGMER_TEST_DATABASE_URL (or, for the TLS tests, STIGMER_TEST_PG_BIN) these tests fail on CI
+  # by design, so they never pass by silently skipping.
   postgres:
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    env:
+      STIGMER_TEST_DATABASE_URL: postgres://stigmer:stigmer@localhost:5432/stigmer_test
     services:
       postgres:
         image: postgres:17
@@ -64,9 +68,26 @@ jobs:
       # Installs the exact toolchain and components pinned in rust-toolchain.toml.
       - run: rustup toolchain install
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      # stigmerd's TLS tests start a throwaway Postgres of their own with TLS on, so they need the
+      # server binaries (initdb, pg_ctl) on the runner: the image's newest Postgres, or the distro
+      # package installed without a cluster (which would clash with the service on port 5432).
+      # That server is whatever major version the runner has (not pinned, unlike the service
+      # container): those tests check the TLS handshake, which every supported major speaks alike.
+      - name: Provide Postgres server binaries
+        run: |
+          bin=$(ls -d /usr/lib/postgresql/*/bin 2>/dev/null | sort -V | tail -n 1)
+          if [ -z "$bin" ] || [ ! -x "$bin/initdb" ]; then
+            sudo mkdir -p /etc/postgresql-common/createcluster.d
+            echo 'create_main_cluster = false' | sudo tee /etc/postgresql-common/createcluster.d/no-main.conf
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends postgresql
+            bin=$(ls -d /usr/lib/postgresql/*/bin | sort -V | tail -n 1)
+          fi
+          test -x "$bin/initdb" && test -x "$bin/pg_ctl"
+          echo "STIGMER_TEST_PG_BIN=$bin" >> "$GITHUB_ENV"
       - run: cargo test --locked -p stigmer-store-postgres
-        env:
-          STIGMER_TEST_DATABASE_URL: postgres://stigmer:stigmer@localhost:5432/stigmer_test
+      # Every crate's with_postgres tests (the check job skips them), so a new one anywhere runs here.
+      - run: "cargo test --locked --workspace --exclude stigmer-store-postgres -- with_postgres::"
 
   sdk:
     runs-on: ubuntu-latest

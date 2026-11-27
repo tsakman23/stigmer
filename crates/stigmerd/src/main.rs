@@ -8,15 +8,15 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use admin::AdminCommand;
+use backend::{Backend, Plan, StoreArgs};
 use clap::{Args, Parser, Subcommand};
-use lock::DataDir;
 use stigmer_api::{router, AllowAll, ApiConfig, IpNet, RoleAuthorize};
-use stigmer_store::{IdentityStore, Mode};
-use stigmer_store_sqlite::SqliteStore;
+use stigmer_store::{IdentityStore, Mode, Store};
 use tokio::sync::watch;
 use tokio_rustls::TlsAcceptor;
 
 mod admin;
+mod backend;
 mod lock;
 mod serve;
 mod tls;
@@ -35,7 +35,8 @@ struct Cli {
 enum Command {
     /// Serve the board over HTTP.
     Serve(ServeArgs),
-    /// Administer a data directory directly (the server must not be running).
+    /// Administer the instance straight against its database (with SQLite, the server must not
+    /// be running; with Postgres it may be).
     Admin {
         #[command(subcommand)]
         command: AdminCommand,
@@ -44,9 +45,8 @@ enum Command {
 
 #[derive(Args)]
 struct ServeArgs {
-    /// Directory holding the board database (created if missing).
-    #[arg(long, default_value = "./.stigmer")]
-    data_dir: PathBuf,
+    #[command(flatten)]
+    store: StoreArgs,
     /// Address to listen on. A non-loopback address needs network mode (stigmerd admin
     /// enable-auth) and either --tls-cert/--tls-key or --trusted-proxy.
     #[arg(long, default_value = "127.0.0.1:7878")]
@@ -127,62 +127,69 @@ async fn main() -> ExitCode {
 }
 
 async fn serve(args: ServeArgs) -> Result<(), Failure> {
-    let ServeArgs {
-        data_dir,
-        bind,
-        max_connections,
-        max_connections_per_source,
-        max_waits,
-        auth_failures_per_minute,
-        join_per_minute,
-        header_read_timeout_ms,
-        body_read_timeout_ms,
-        tls_cert,
-        tls_key,
-        tls_reload_interval_ms,
-        trusted_proxies,
-        allowed_hosts,
-    } = args;
+    // Settings first: a wrong one exits 2 before anything is opened.
+    let plan = args.store.plan()?;
     let signals = Signals::install()
         .map_err(|e| Failure::Runtime(format!("cannot register signal handlers: {e}")))?;
 
-    if trusted_proxies.iter().any(IpNet::covers_every_address) {
+    if args.trusted_proxies.iter().any(IpNet::covers_every_address) {
         eprintln!(
             "stigmerd: warning: trusted proxy range covers every address: \
              X-Forwarded-For can be forged by anyone, and no address has a per-source \
              connection cap"
         );
     }
-    let secured = tls_cert.is_some() || !trusted_proxies.is_empty();
+    let secured = args.tls_cert.is_some() || !args.trusted_proxies.is_empty();
     // A missing data dir means local mode, so refuse before creating anything.
-    if !data_dir.exists() {
-        check_bind(bind, Mode::Local, secured)?;
+    if let Plan::Sqlite { data_dir } = &plan {
+        if !data_dir.exists() {
+            check_bind(args.bind, Mode::Local, secured)?;
+        }
     }
     // Clap guarantees the two flags come together.
-    let tls_files = match (tls_cert, tls_key) {
+    let tls_files = match (args.tls_cert.clone(), args.tls_key.clone()) {
         (Some(cert), Some(key)) => Some(tls::PairFiles { cert, key }),
         _ => None,
     };
-    // A bad pair is refused before the data dir is touched.
-    let reload_every = Duration::from_millis(tls_reload_interval_ms);
+    // A bad pair is refused before the store is touched.
+    let reload_every = Duration::from_millis(args.tls_reload_interval_ms);
     let tls = tls_files
         .map(|files| start_tls(files, reload_every))
         .transpose()?;
-    let data = DataDir::open(&data_dir)?;
-    let db_path = data.db_path();
-    let store = SqliteStore::open(&db_path).await.map_err(|e| {
-        Failure::Runtime(format!("cannot open database {}: {e}", db_path.display()))
-    })?;
+    let backend = plan.open().await?;
+    backend.check_schema().await?;
+    let place = backend.describe();
+    match backend {
+        Backend::Sqlite { store, lock, .. } => {
+            // The lock is held until the server stops.
+            let _lock = lock;
+            serve_on(store, &place, &args, tls, signals, secured).await
+        }
+        Backend::Postgres { store, .. } => {
+            serve_on(*store, &place, &args, tls, signals, secured).await
+        }
+    }
+}
 
+/// Serves `store` until a shutdown signal, then drains; `place` says where the data is and
+/// `secured` whether TLS or a trusted proxy is configured.
+async fn serve_on<S: Store + IdentityStore>(
+    store: S,
+    place: &str,
+    args: &ServeArgs,
+    tls: Option<TlsAcceptor>,
+    signals: Signals,
+    secured: bool,
+) -> Result<(), Failure> {
     let mode = store
         .mode()
         .await
         .map_err(|e| Failure::Runtime(format!("cannot read instance mode: {e}")))?;
-    check_bind(bind, mode, secured)?;
+    check_bind(args.bind, mode, secured)?;
 
-    let listener = tokio::net::TcpListener::bind(bind)
+    let listener = tokio::net::TcpListener::bind(args.bind)
         .await
-        .map_err(|e| Failure::Runtime(format!("cannot bind {bind}: {e}")))?;
+        .map_err(|e| Failure::Runtime(format!("cannot bind {}: {e}", args.bind)))?;
     let local = listener
         .local_addr()
         .map_err(|e| Failure::Runtime(format!("cannot read bound address: {e}")))?;
@@ -193,40 +200,37 @@ async fn serve(args: ServeArgs) -> Result<(), Failure> {
         Mode::Local => ApiConfig::local(),
         Mode::Network => ApiConfig::network(),
     };
-    config.allowed_hosts = allowed_hosts;
-    config.limits.body_read_timeout = Duration::from_millis(body_read_timeout_ms);
+    config.allowed_hosts.clone_from(&args.allowed_hosts);
+    config.limits.body_read_timeout = Duration::from_millis(args.body_read_timeout_ms);
     // u32 always fits a usize on the platforms Rust supports for this server.
-    config.limits.max_waits = usize::try_from(max_waits).unwrap_or(usize::MAX);
-    config.limits.auth_failures_per_minute = auth_failures_per_minute;
-    config.limits.join_per_minute = join_per_minute;
-    config.trusted_proxies.clone_from(&trusted_proxies);
+    config.limits.max_waits = usize::try_from(args.max_waits).unwrap_or(usize::MAX);
+    config.limits.auth_failures_per_minute = args.auth_failures_per_minute;
+    config.limits.join_per_minute = args.join_per_minute;
+    config.trusted_proxies.clone_from(&args.trusted_proxies);
     let app = match mode {
         Mode::Local => router(store, AllowAll, shutdown_rx.clone(), config),
         Mode::Network => router(store, RoleAuthorize, shutdown_rx.clone(), config),
     };
 
     let scheme = if tls.is_some() { "https" } else { "http" };
-    println!(
-        "listening on {scheme}://{local} (data in {})",
-        data_dir.display()
-    );
+    println!("listening on {scheme}://{local} (data in {place})");
     std::io::stdout()
         .flush()
         .map_err(|e| Failure::Runtime(format!("cannot write to stdout: {e}")))?;
 
     let listen = serve::Listen {
         // u32 always fits a usize on the platforms Rust supports for this server.
-        max_connections: usize::try_from(max_connections).unwrap_or(usize::MAX),
-        max_connections_per_source: usize::try_from(max_connections_per_source)
+        max_connections: usize::try_from(args.max_connections).unwrap_or(usize::MAX),
+        max_connections_per_source: usize::try_from(args.max_connections_per_source)
             .unwrap_or(usize::MAX),
-        header_read_timeout: Duration::from_millis(header_read_timeout_ms),
+        header_read_timeout: Duration::from_millis(args.header_read_timeout_ms),
         // Every proxied client arrives from the proxy's address, TLS or not.
-        per_source_exempt: trusted_proxies.clone(),
+        per_source_exempt: args.trusted_proxies.clone(),
         // With TLS any peer may connect; without it, only the proxies (when any are listed).
         plain_from: if tls.is_some() {
             Vec::new()
         } else {
-            trusted_proxies
+            args.trusted_proxies.clone()
         },
         tls,
     };
@@ -248,7 +252,7 @@ async fn serve(args: ServeArgs) -> Result<(), Failure> {
 fn start_tls(files: tls::PairFiles, reload_every: Duration) -> Result<TlsAcceptor, Failure> {
     let provider = tls::provider();
     let pair = tls::load_pair(&files, &provider).map_err(Failure::Runtime)?;
-    tls::warn_if_key_exposed(&files.key);
+    tls::warn_if_exposed(&files.key, "TLS key");
     let current = Arc::new(tls::CurrentPair::new(pair));
     let config = tls::server_config(Arc::clone(&provider), Arc::clone(&current))
         .map_err(Failure::Runtime)?;

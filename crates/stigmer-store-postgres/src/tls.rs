@@ -3,12 +3,15 @@
 //! `Require` encrypts without checking who answers, as libpq's `sslmode=require` does: the
 //! certificate is not verified, only the handshake signatures. `VerifyFull` checks the chain
 //! against the platform's trusted roots and the certificate against the host name, as libpq's
-//! `sslmode=verify-full` does.
+//! `sslmode=verify-full` does; with a [`CaBundle`] it trusts that bundle's certificates instead
+//! of the platform's roots (libpq's `sslrootcert`).
 
+use std::fmt;
 use std::sync::Arc;
 
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::crypto::{verify_tls12_signature, verify_tls13_signature, CryptoProvider};
+use rustls::pki_types::pem::PemObject;
 use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
 use rustls::{ClientConfig, DigitallySignedStruct, RootCertStore, SignatureScheme};
 use stigmer_store::StoreError;
@@ -17,8 +20,66 @@ use tokio_postgres_rustls::MakeRustlsConnect;
 use crate::error::backend;
 use crate::PgTls;
 
-/// The connector for `tls`, or `None` for plain connections.
-pub(crate) fn connector(tls: PgTls) -> Result<Option<MakeRustlsConnect>, StoreError> {
+/// Why a PEM bundle cannot be used as a [`CaBundle`]. The messages name the bundle, never quote
+/// it.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum CaBundleError {
+    /// The text is not valid PEM.
+    #[error("the CA bundle is not valid PEM")]
+    NotPem,
+    /// The PEM holds no `CERTIFICATE` block.
+    #[error("the CA bundle holds no certificate")]
+    NoCertificate,
+    /// A certificate (`index` counts from 1) cannot serve as a trust anchor.
+    #[error("certificate {index} of the CA bundle is not a usable CA certificate: {reason}")]
+    Unusable { index: usize, reason: String },
+}
+
+/// The CA certificates trusted with [`PgTls::VerifyFull`] instead of the platform's roots, for
+/// a Postgres server whose certificate comes from a private CA. Checked once, when parsed.
+#[derive(Clone)]
+pub struct CaBundle {
+    roots: Arc<RootCertStore>,
+}
+
+impl CaBundle {
+    /// The certificates of a PEM bundle (one or more `CERTIFICATE` blocks; anything else in
+    /// the text is skipped). A bundle with no certificate, or one that cannot serve as a trust
+    /// anchor, is refused.
+    pub fn from_pem(pem: &[u8]) -> Result<CaBundle, CaBundleError> {
+        let certs = CertificateDer::pem_slice_iter(pem)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|_| CaBundleError::NotPem)?;
+        if certs.is_empty() {
+            return Err(CaBundleError::NoCertificate);
+        }
+        let mut roots = RootCertStore::empty();
+        for (index, cert) in (1..).zip(certs) {
+            roots.add(cert).map_err(|e| CaBundleError::Unusable {
+                index,
+                reason: e.to_string(),
+            })?;
+        }
+        Ok(CaBundle {
+            roots: Arc::new(roots),
+        })
+    }
+}
+
+impl fmt::Debug for CaBundle {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CaBundle")
+            .field("certificates", &self.roots.len())
+            .finish()
+    }
+}
+
+/// The connector for `tls` (with `ca_bundle` as the roots for verify-full, when given), or
+/// `None` for plain connections.
+pub(crate) fn connector(
+    tls: PgTls,
+    ca_bundle: Option<&CaBundle>,
+) -> Result<Option<MakeRustlsConnect>, StoreError> {
     let provider = Arc::new(rustls::crypto::ring::default_provider());
     let builder = ClientConfig::builder_with_provider(Arc::clone(&provider))
         .with_safe_default_protocol_versions()
@@ -30,7 +91,10 @@ pub(crate) fn connector(tls: PgTls) -> Result<Option<MakeRustlsConnect>, StoreEr
             .with_custom_certificate_verifier(Arc::new(EncryptOnly(provider)))
             .with_no_client_auth(),
         PgTls::VerifyFull => builder
-            .with_root_certificates(platform_roots()?)
+            .with_root_certificates(match ca_bundle {
+                Some(bundle) => RootCertStore::clone(&bundle.roots),
+                None => platform_roots()?,
+            })
             .with_no_client_auth(),
     };
     Ok(Some(MakeRustlsConnect::new(config)))
@@ -104,7 +168,7 @@ mod tests {
 
     #[test]
     fn disable_has_no_connector_and_require_builds_one() {
-        assert!(connector(PgTls::Disable).unwrap().is_none());
-        assert!(connector(PgTls::Require).unwrap().is_some());
+        assert!(connector(PgTls::Disable, None).unwrap().is_none());
+        assert!(connector(PgTls::Require, None).unwrap().is_some());
     }
 }

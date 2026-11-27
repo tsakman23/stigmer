@@ -31,7 +31,7 @@ cargo deny --locked check
 scripts/ci/check-commit-messages.sh main HEAD
 ```
 
-- Postgres tests need a local Postgres 17 (see CONTRIBUTING). Without `STIGMER_TEST_DATABASE_URL` they skip loudly; with `CI` set they fail. That is deliberate.
+- Postgres tests need a local Postgres 17 (see CONTRIBUTING). Without `STIGMER_TEST_DATABASE_URL` they skip loudly; with `CI` set they fail. That is deliberate. Outside `stigmer-store-postgres`, put them in a module named `with_postgres` (CONTRIBUTING says why).
 - Run one `cargo` at a time in a checkout. Two cargo processes sharing a target directory can make the CLI end-to-end tests fail with "spawn child: not found".
 - A flaky test is a bug. Run it many times (30 is the habit), find the cause, fix the cause. Do not add a retry, a longer sleep or an `#[ignore]`.
 - Do not synchronise tests with sleeps. Wait on a condition, or loop the scenario over every interleaving (see the wake scenarios in `stigmer-store-conformance`). Timeouts are only upper bounds.

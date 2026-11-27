@@ -161,13 +161,17 @@ mod tests {
             max_connections: 1,
             tls: PgTls::Disable,
             poll_interval: DEFAULT_POLL_INTERVAL,
+            ca_bundle: None,
+            on_poll_error: None,
         };
         let wakeups = Wakeups::new(ListenerSetup {
-            pool: pool::build(&config, options).unwrap(),
+            pool: pool::build(&config, &options).unwrap(),
             config,
             tls: PgTls::Disable,
+            ca_bundle: None,
             target: "database stigmer_test on 127.0.0.1:1".into(),
             poll_interval: DEFAULT_POLL_INTERVAL,
+            on_poll_error: None,
         });
         let Err(StoreError::Backend(text)) = wakeups.ensure_started().await else {
             panic!("nothing listens on port 1");

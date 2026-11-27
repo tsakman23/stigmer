@@ -33,7 +33,8 @@ ADRs 0001 and 0003 to 0007 shipped in v0.1.0, before this rule existed, and were
 | [0009](0009-token-and-invite-format.md) | Token and invite format | Accepted, amended |
 | [0010](0010-tls-and-trusted-proxy.md) | TLS and trusted proxies | Accepted, amended |
 | [0011](0011-authentication-policy-401-403-404.md) | Authentication policy: 429, 401, 404, 403 | Accepted, amended |
-| [0013](0013-cross-replica-wake-ups.md) | Cross-replica wake-ups | Accepted |
+| [0012](0012-postgres-backend-and-selection.md) | Postgres backend and backend selection | Accepted |
+| [0013](0013-cross-replica-wake-ups.md) | Cross-replica wake-ups | Accepted, amended |
 | [0014](0014-audit-rows-in-the-mutation-transaction.md) | Audit rows in the mutation transaction | Accepted |
 | [0015](0015-thread-summaries-and-sequence-ordering.md) | Thread summaries and sequence ordering | Accepted |
 | [0016](0016-invite-redemption-checks-before-locking.md) | Invite redemption checks before locking | Accepted |

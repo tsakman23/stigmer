@@ -57,6 +57,7 @@ use deadpool_postgres::Pool;
 use stigmer_store::StoreError;
 
 pub use schema::{MigrationReport, SchemaState};
+pub use tls::{CaBundle, CaBundleError};
 
 /// How to secure connections to Postgres.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -65,13 +66,17 @@ pub enum PgTls {
     Disable,
     /// TLS without checking the server's certificate (`sslmode=require`).
     Require,
-    /// TLS with the certificate checked against the platform's trusted roots and the host name
-    /// (`sslmode=verify-full`).
+    /// TLS with the certificate checked against the trusted roots and the host name
+    /// (`sslmode=verify-full`). The roots are [`PgOptions::ca_bundle`] when set, else the
+    /// platform's.
     VerifyFull,
 }
 
+/// Called with the error of each failed safety-poll round (see [`PgOptions::on_poll_error`]).
+pub type PollErrorHook = Arc<dyn Fn(&StoreError) + Send + Sync>;
+
 /// Connection options for [`PgStore::connect`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone)]
 pub struct PgOptions {
     /// The most connections the pool opens (at least 1).
     pub max_connections: usize,
@@ -83,6 +88,27 @@ pub struct PgOptions {
     /// [`PgStore::connect`] refuses anything outside [`MIN_POLL_INTERVAL`] to
     /// [`MAX_POLL_INTERVAL`].
     pub poll_interval: Duration,
+    /// The only roots trusted with [`PgTls::VerifyFull`], for a server certificate from a private
+    /// CA; `None` trusts the platform's roots. [`PgStore::connect`] refuses a bundle with any
+    /// other TLS mode.
+    pub ca_bundle: Option<CaBundle>,
+    /// Told about every safety-poll round that fails (the round is retried at the next
+    /// interval). The safety poll starts with the listener, on the first wait that sleeps. The
+    /// store logs nothing itself; the server decides how to report it. The error never contains
+    /// the connection string's password.
+    pub on_poll_error: Option<PollErrorHook>,
+}
+
+impl fmt::Debug for PgOptions {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PgOptions")
+            .field("max_connections", &self.max_connections)
+            .field("tls", &self.tls)
+            .field("poll_interval", &self.poll_interval)
+            .field("ca_bundle", &self.ca_bundle)
+            .field("on_poll_error", &self.on_poll_error.is_some())
+            .finish()
+    }
 }
 
 /// The default [`PgOptions::poll_interval`]: 2 s.
@@ -122,8 +148,9 @@ impl PgStore {
     /// listener (outside the pool) and its safety poll. [`PgOptions::poll_interval`] must lie
     /// within [`MIN_POLL_INTERVAL`] and [`MAX_POLL_INTERVAL`].
     pub async fn connect(url: &str, options: PgOptions) -> Result<PgStore, StoreError> {
-        check_poll_interval(options.poll_interval)?;
-        PgStore::open(url, options, options.poll_interval).await
+        let poll_interval = options.poll_interval;
+        check_poll_interval(poll_interval)?;
+        PgStore::open(url, options, poll_interval).await
     }
 
     /// Test support, not API: [`PgStore::connect`] with a safety poll of `poll_interval`,
@@ -142,13 +169,15 @@ impl PgStore {
         options: PgOptions,
         poll_interval: Duration,
     ) -> Result<PgStore, StoreError> {
-        let connected = pool::connect(url, options).await?;
+        let connected = pool::connect(url, &options).await?;
         let setup = listener::ListenerSetup {
             config: connected.config,
             tls: options.tls,
+            ca_bundle: options.ca_bundle.clone(),
             target: connected.target,
             pool: connected.pool.clone(),
             poll_interval,
+            on_poll_error: options.on_poll_error.clone(),
         };
         Ok(PgStore::with_setup(connected.pool, options, setup))
     }

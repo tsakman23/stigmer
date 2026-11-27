@@ -29,7 +29,7 @@ pub(crate) struct Connected {
 
 /// Parses `url`, builds the pool and opens one connection, so a wrong address, password or TLS
 /// setting fails here rather than on the first request.
-pub(crate) async fn connect(url: &str, options: PgOptions) -> Result<Connected, StoreError> {
+pub(crate) async fn connect(url: &str, options: &PgOptions) -> Result<Connected, StoreError> {
     let mut secrets = Redactor::from_url(url);
     let mut config: Config = url.parse().map_err(|e| {
         let hint = if url.contains("sslmode=verify") {
@@ -46,6 +46,12 @@ pub(crate) async fn connect(url: &str, options: PgOptions) -> Result<Connected, 
         secrets.add(String::from_utf8_lossy(password).into_owned());
     }
     check_ssl_mode(config.get_ssl_mode(), options.tls)?;
+    if options.ca_bundle.is_some() && options.tls != PgTls::VerifyFull {
+        return Err(StoreError::Backend(format!(
+            "a CA bundle is used only with TLS verify-full, not with {:?}",
+            options.tls
+        )));
+    }
     config.ssl_mode(match options.tls {
         PgTls::Disable => SslMode::Disable,
         PgTls::Require | PgTls::VerifyFull => SslMode::Require,
@@ -87,7 +93,7 @@ fn check_ssl_mode(in_url: SslMode, tls: PgTls) -> Result<(), StoreError> {
 }
 
 /// A pool of up to `options.max_connections` connections made from `config`.
-pub(crate) fn build(config: &Config, options: PgOptions) -> Result<Pool, StoreError> {
+pub(crate) fn build(config: &Config, options: &PgOptions) -> Result<Pool, StoreError> {
     if options.max_connections == 0 {
         return Err(StoreError::Backend(
             "max_connections must be at least 1".into(),
@@ -96,7 +102,7 @@ pub(crate) fn build(config: &Config, options: PgOptions) -> Result<Pool, StoreEr
     let manager_config = ManagerConfig {
         recycling_method: RecyclingMethod::Fast,
     };
-    let manager = match tls::connector(options.tls)? {
+    let manager = match tls::connector(options.tls, options.ca_bundle.as_ref())? {
         None => Manager::from_config(config.clone(), NoTls, manager_config),
         Some(tls) => Manager::from_config(config.clone(), tls, manager_config),
     };
@@ -253,17 +259,19 @@ mod tests {
             max_connections: 1,
             tls: PgTls::Disable,
             poll_interval: crate::DEFAULT_POLL_INTERVAL,
+            ca_bundle: None,
+            on_poll_error: None,
         };
         // Port 1: were the conflict not caught first, this would be a refused connection.
         let url = "postgres://u:hunter2@127.0.0.1:1/db?sslmode=require";
-        let Err(StoreError::Backend(text)) = connect(url, options).await else {
+        let Err(StoreError::Backend(text)) = connect(url, &options).await else {
             panic!("a conflicting sslmode is refused");
         };
         assert!(text.contains("sslmode=require conflicts"), "{text}");
         assert!(!text.contains("hunter2"), "{text}");
 
         let url = "postgres://u:hunter2@127.0.0.1:1/db?sslmode=verify-full";
-        let Err(StoreError::Backend(text)) = connect(url, options).await else {
+        let Err(StoreError::Backend(text)) = connect(url, &options).await else {
             panic!("verify-full in the URL is refused");
         };
         assert!(
@@ -280,9 +288,11 @@ mod tests {
             max_connections: 0,
             tls: PgTls::Disable,
             poll_interval: crate::DEFAULT_POLL_INTERVAL,
+            ca_bundle: None,
+            on_poll_error: None,
         };
         assert!(matches!(
-            build(&config, options),
+            build(&config, &options),
             Err(StoreError::Backend(_))
         ));
     }

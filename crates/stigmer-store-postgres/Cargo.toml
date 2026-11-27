@@ -15,11 +15,14 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "std"
 rustls-native-certs = "0.8.5"
 stigmer-core = { path = "../stigmer-core", version = "0.0.0" }
 stigmer-store = { path = "../stigmer-store", version = "0.0.0" }
+thiserror = "2.0.21"
 tokio = { version = "1.54.1", features = ["rt", "sync", "time"] }
 tokio-postgres = "0.7.18"
 tokio-postgres-rustls = { version = "0.14.0", default-features = false, features = ["ring"] }
 
 [dev-dependencies]
+# Only to make CA certificates for the CA bundle tests.
+rcgen = { version = "0.14.10", default-features = false, features = ["crypto", "pem", "ring"] }
 rusqlite = { version = "0.43.0", features = ["bundled"] }
 stigmer-store-conformance = { path = "../stigmer-store-conformance", version = "0.0.0" }
 stigmer-store-sqlite = { path = "../stigmer-store-sqlite", version = "0.0.0" }

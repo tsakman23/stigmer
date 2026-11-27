@@ -77,3 +77,5 @@ STIGMER_TEST_DATABASE_URL=postgres://localhost/stigmer_test cargo test -p stigme
 ```
 
 Each test creates its own schema and drops it afterwards. Without `STIGMER_TEST_DATABASE_URL` the Postgres tests print `SKIPPED` and pass locally, but fail when the `CI` variable is set: that is deliberate, so CI never goes green without running them. CI provides its own Postgres 17 container (see the `postgres` job in `.github/workflows/ci.yml`).
+
+Outside `stigmer-store-postgres`, a test that needs Postgres (a database, or the Postgres binaries for a throwaway server) lives in a module named `with_postgres`. CI's `check` job, which has no database, skips tests by that name, and its `postgres` job runs exactly those, for the whole workspace. stigmerd's Postgres test helpers (`crates/stigmerd/tests/common/pg.rs`) fail any test that calls them from another module, so a misnamed test fails on the first run instead of breaking the `check` job.

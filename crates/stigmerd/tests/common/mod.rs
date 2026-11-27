@@ -1,6 +1,7 @@
 //! Helpers shared by the stigmerd end-to-end tests.
 #![allow(dead_code)] // each test crate uses a different subset
 
+pub mod pg;
 pub mod tls;
 
 use std::io::{BufRead, BufReader, Read, Write};
@@ -70,7 +71,11 @@ impl Stderr {
 
 /// Like `start_with`, but stderr is captured instead of inherited.
 pub fn start_capturing(data_dir: &Path, extra: &[&str]) -> (Server, Stderr) {
-    let mut cmd = serve_cmd(data_dir, extra);
+    spawn_capturing(serve_cmd(data_dir, extra))
+}
+
+/// `spawn_guarded` with the child's stderr captured instead of inherited.
+pub fn spawn_capturing(mut cmd: Command) -> (Server, Stderr) {
     cmd.stderr(Stdio::piped());
     let mut server = spawn_guarded(cmd, STARTUP_TIMEOUT);
     let stderr = Stderr::default();
@@ -219,10 +224,15 @@ pub struct Bounded {
 /// Runs `stigmerd <args> --data-dir <data>` to completion. The child sits under the Drop
 /// guard, so if it has not exited within `RUN_TIMEOUT` the test fails and the child is killed.
 pub fn run_bounded(args: &[&str], data: &Path) -> Bounded {
-    let child = Command::new(env!("CARGO_BIN_EXE_stigmerd"))
-        .args(args)
-        .arg("--data-dir")
-        .arg(data)
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_stigmerd"));
+    cmd.args(args).arg("--data-dir").arg(data);
+    run_guarded(cmd)
+}
+
+/// Runs `cmd` to completion under the Drop guard; not exiting within `RUN_TIMEOUT` fails the
+/// test and kills the child.
+pub fn run_guarded(mut cmd: Command) -> Bounded {
+    let child = cmd
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -238,7 +248,7 @@ pub fn run_bounded(args: &[&str], data: &Path) -> Bounded {
         }
         assert!(
             Instant::now() < deadline,
-            "stigmerd {args:?} did not exit within {RUN_TIMEOUT:?}"
+            "{cmd:?} did not exit within {RUN_TIMEOUT:?}"
         );
         std::thread::sleep(Duration::from_millis(20));
     };
