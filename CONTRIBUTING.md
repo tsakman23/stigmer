@@ -31,7 +31,7 @@ Each task is pushed on its own branch and opened as its own small pull request; 
 
 ## Review and merge
 
-Every pull request needs one approving review before it merges, and the CI checks must pass. [.github/CODEOWNERS](.github/CODEOWNERS) names the reviewer for every file; once branch protection requires code-owner review, GitHub requests that review automatically and blocks the merge until it is given. The pull request template asks for what changed and why, how it was tested, and the rulings and review result.
+Every pull request must pass the CI checks before it merges. [.github/CODEOWNERS](.github/CODEOWNERS) names the reviewer for every file, and GitHub requests that review automatically. While the project has a single maintainer, no approving review is required; the maintainer may merge their own pull requests, and an independent review by another agent or person is still expected before one is opened. If outside contributors join, branch protection will start requiring one approval. The pull request template asks for what changed and why, how it was tested, and the rulings and review result.
 
 Run `scripts/dev/tidy --apply` after every merged PR. It only removes branches that are fully merged and worktrees that are clean, and it never touches `main`.
 
@@ -48,6 +48,8 @@ Run `scripts/dev/tidy --apply` after every merged PR. It only removes branches t
 2. `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace` all pass; `cargo deny check` passes.
 3. No `unsafe`, no `unwrap()` or `expect()` in non-test code unless the invariant is documented on that line. `stigmer-store-conformance` is test-support code whose assertion mechanism is panicking through the `ok` and `fail` helpers in `support.rs`, so this rule applies to product code, not to that crate's assertions.
 4. Reviewed (spec compliance and code quality) before merge.
+
+Coding agents: see [AGENTS.md](AGENTS.md) for the extra rules that apply to you.
 
 ## Principles
 
