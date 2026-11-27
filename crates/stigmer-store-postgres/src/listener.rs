@@ -144,7 +144,7 @@ async fn poll_heads(pool: Pool, notifier: Arc<Notifier>, every: Duration) {
 }
 
 /// Reads the heads of the boards with waiters and feeds them to `notifier`; an archived board
-/// loses its entry, since its head can no longer move.
+/// then loses its entry, since its head can no longer move.
 async fn refresh(client: &Client, notifier: &Notifier) -> Result<(), StoreError> {
     let boards = notifier.boards();
     if boards.is_empty() {
@@ -163,10 +163,11 @@ async fn refresh(client: &Client, notifier: &Notifier) -> Result<(), StoreError>
         let seq: i64 = row.try_get(1).map_err(db)?;
         let archived: bool = row.try_get(2).map_err(db)?;
         let board = BoardId::new(id).map_err(backend)?;
+        // An archived board's last head is delivered before its entry goes, so a wait for a
+        // post that committed just before the archive still wakes.
+        notifier.bump(&board, u64::try_from(seq).map_err(backend)?);
         if archived {
             notifier.forget(&board);
-        } else {
-            notifier.bump(&board, u64::try_from(seq).map_err(backend)?);
         }
     }
     Ok(())

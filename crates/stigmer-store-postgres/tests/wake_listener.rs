@@ -287,3 +287,65 @@ async fn archive_drops_the_board_entry() {
     );
     waiter.abort();
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn archive_does_not_drop_a_wake_still_on_its_way() {
+    let Some(url) = database_url("archive_does_not_drop_a_wake_still_on_its_way").unwrap() else {
+        return;
+    };
+    let schema = TestSchema::create(&url).await.unwrap();
+    // No safety poll within the test, and the listener is down while the post and the archive
+    // commit: only the archive (on this handle) or the reconnect re-read (archived on the
+    // other) can deliver the post, and both must deliver it before dropping the entry.
+    let a = Arc::new(store(&schema, HOUR).await);
+    let b = a.second_handle_for_tests().await.unwrap();
+    let client = schema.client().await.unwrap();
+
+    for (raw, how) in [
+        ("one", "here"),
+        ("two", "here, revoking"),
+        ("three", "elsewhere"),
+    ] {
+        let board = create_board(&a, raw).await;
+        let head = b
+            .post(support::new_thread_on(&board, "start"))
+            .await
+            .unwrap()
+            .event
+            .cursor;
+        let waiter = spawn_wait(&a, &board, Some(&head), Duration::from_secs(10));
+        until("the waiter subscribed", || a.waiters_for_tests(&board) == 1).await;
+        until("the listener is up", || {
+            a.listener_pid_for_tests().is_some()
+        })
+        .await;
+        kill_listener(&a, &client).await;
+        until("the listener is down", || {
+            a.listener_pid_for_tests().is_none()
+        })
+        .await;
+
+        let started = Instant::now();
+        b.post(support::new_thread_on(&board, "last"))
+            .await
+            .unwrap();
+        let archived = audit(SecurityEventKind::BoardArchived);
+        match how {
+            "here" => drop(a.archive_board(&board, archived).await.unwrap()),
+            "here, revoking" => drop(a.archive_board_revoking(&board, archived).await.unwrap()),
+            _ => drop(b.archive_board(&board, archived).await.unwrap()),
+        }
+        assert_eq!(
+            waiter.await.unwrap(),
+            Ok(true),
+            "{how}: the last post wakes the wait"
+        );
+        let took = started.elapsed();
+        assert!(took < Duration::from_secs(5), "{how}: woken after {took:?}");
+        assert_eq!(
+            a.notifier_entries_for_tests(),
+            0,
+            "{how}: and the entry is gone"
+        );
+    }
+}
