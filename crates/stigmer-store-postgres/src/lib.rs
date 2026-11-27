@@ -57,7 +57,7 @@ use deadpool_postgres::Pool;
 use stigmer_store::StoreError;
 
 pub use schema::{MigrationReport, SchemaState};
-pub use tls::CaBundle;
+pub use tls::{CaBundle, CaBundleError};
 
 /// How to secure connections to Postgres.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

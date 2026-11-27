@@ -4,7 +4,6 @@
 use std::path::{Path, PathBuf};
 
 use clap::ValueEnum;
-use stigmer_store::StoreError;
 use stigmer_store_postgres::{CaBundle, PgTls};
 
 use crate::Failure;
@@ -106,14 +105,7 @@ pub(crate) fn read_ca_bundle(path: &Path) -> Result<CaBundle, Failure> {
     let pem = std::fs::read(path).map_err(|e| {
         Failure::Config(format!("cannot read the CA bundle {}: {e}", path.display()))
     })?;
-    CaBundle::from_pem(&pem).map_err(|e| {
-        // The store's message already names the CA bundle; show it without the error's prefix.
-        let reason = match e {
-            StoreError::Backend(reason) => reason,
-            other => other.to_string(),
-        };
-        Failure::Config(format!("{}: {reason}", path.display()))
-    })
+    CaBundle::from_pem(&pem).map_err(|e| Failure::Config(format!("{}: {e}", path.display())))
 }
 
 #[cfg(test)]

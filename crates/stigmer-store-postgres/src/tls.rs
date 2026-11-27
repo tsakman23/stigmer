@@ -20,55 +20,57 @@ use tokio_postgres_rustls::MakeRustlsConnect;
 use crate::error::backend;
 use crate::PgTls;
 
+/// Why a PEM bundle cannot be used as a [`CaBundle`]. The messages name the bundle, never quote
+/// it.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum CaBundleError {
+    /// The text is not valid PEM.
+    #[error("the CA bundle is not valid PEM")]
+    NotPem,
+    /// The PEM holds no `CERTIFICATE` block.
+    #[error("the CA bundle holds no certificate")]
+    NoCertificate,
+    /// A certificate (`index` counts from 1) cannot serve as a trust anchor.
+    #[error("certificate {index} of the CA bundle is not a usable CA certificate: {reason}")]
+    Unusable { index: usize, reason: String },
+}
+
 /// The CA certificates trusted with [`PgTls::VerifyFull`] instead of the platform's roots, for
-/// a Postgres server whose certificate comes from a private CA.
-#[derive(Clone, PartialEq, Eq)]
-pub struct CaBundle(Arc<[CertificateDer<'static>]>);
+/// a Postgres server whose certificate comes from a private CA. Checked once, when parsed.
+#[derive(Clone)]
+pub struct CaBundle {
+    roots: Arc<RootCertStore>,
+}
 
 impl CaBundle {
     /// The certificates of a PEM bundle (one or more `CERTIFICATE` blocks; anything else in
     /// the text is skipped). A bundle with no certificate, or one that cannot serve as a trust
     /// anchor, is refused.
-    pub fn from_pem(pem: &[u8]) -> Result<CaBundle, StoreError> {
+    pub fn from_pem(pem: &[u8]) -> Result<CaBundle, CaBundleError> {
         let certs = CertificateDer::pem_slice_iter(pem)
             .collect::<Result<Vec<_>, _>>()
-            .map_err(|_| StoreError::Backend("the CA bundle is not valid PEM".into()))?;
+            .map_err(|_| CaBundleError::NotPem)?;
         if certs.is_empty() {
-            return Err(StoreError::Backend(
-                "the CA bundle holds no certificate".into(),
-            ));
+            return Err(CaBundleError::NoCertificate);
         }
-        let bundle = CaBundle(certs.into());
-        bundle.roots()?;
-        Ok(bundle)
-    }
-
-    /// The number of certificates in the bundle.
-    pub fn len(&self) -> usize {
-        self.0.len()
-    }
-
-    /// Always false: a bundle holds at least one certificate.
-    pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
-    }
-
-    fn roots(&self) -> Result<RootCertStore, StoreError> {
         let mut roots = RootCertStore::empty();
-        for (n, cert) in (1..).zip(self.0.iter()) {
-            roots.add(cert.clone()).map_err(|e| {
-                StoreError::Backend(format!(
-                    "certificate {n} of the CA bundle is not a usable CA certificate: {e}"
-                ))
+        for (index, cert) in (1..).zip(certs) {
+            roots.add(cert).map_err(|e| CaBundleError::Unusable {
+                index,
+                reason: e.to_string(),
             })?;
         }
-        Ok(roots)
+        Ok(CaBundle {
+            roots: Arc::new(roots),
+        })
     }
 }
 
 impl fmt::Debug for CaBundle {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "CaBundle({} certificates)", self.0.len())
+        f.debug_struct("CaBundle")
+            .field("certificates", &self.roots.len())
+            .finish()
     }
 }
 
@@ -90,7 +92,7 @@ pub(crate) fn connector(
             .with_no_client_auth(),
         PgTls::VerifyFull => builder
             .with_root_certificates(match ca_bundle {
-                Some(bundle) => bundle.roots()?,
+                Some(bundle) => RootCertStore::clone(&bundle.roots),
                 None => platform_roots()?,
             })
             .with_no_client_auth(),

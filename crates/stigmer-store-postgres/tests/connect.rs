@@ -1,7 +1,9 @@
 //! Connecting: a password in the connection string never shows in an error.
 
 use stigmer_store::StoreError;
-use stigmer_store_postgres::{CaBundle, PgOptions, PgStore, PgTls, DEFAULT_POLL_INTERVAL};
+use stigmer_store_postgres::{
+    CaBundle, CaBundleError, PgOptions, PgStore, PgTls, DEFAULT_POLL_INTERVAL,
+};
 
 const PASSWORD: &str = "s3cr3t-Pa55";
 
@@ -29,29 +31,37 @@ fn ca_pem(name: &str) -> String {
 #[test]
 fn a_ca_bundle_holds_one_or_more_pem_certificates() {
     let one = CaBundle::from_pem(ca_pem("one").as_bytes()).unwrap();
-    assert_eq!(one.len(), 1);
+    assert_eq!(format!("{one:?}"), "CaBundle { certificates: 1 }");
     let two = format!("{}{}", ca_pem("one"), ca_pem("two"));
     let two = CaBundle::from_pem(two.as_bytes()).unwrap();
-    assert_eq!(two.len(), 2);
-    assert_eq!(format!("{two:?}"), "CaBundle(2 certificates)");
+    assert_eq!(format!("{two:?}"), "CaBundle { certificates: 2 }");
 
-    for (bad, what) in [
-        (String::new(), "no certificate"),
-        ("not pem at all".to_owned(), "no certificate"),
-        (
-            "-----BEGIN CERTIFICATE-----\n!!!!\n-----END CERTIFICATE-----\n".to_owned(),
-            "not valid PEM",
-        ),
-        (
-            "-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\n".to_owned(),
-            "not a usable CA certificate",
-        ),
-    ] {
-        let Err(StoreError::Backend(text)) = CaBundle::from_pem(bad.as_bytes()) else {
-            panic!("{bad:?} is refused");
-        };
-        assert!(text.contains(what), "{bad:?}: {text}");
-    }
+    assert_eq!(
+        CaBundle::from_pem(b"").err(),
+        Some(CaBundleError::NoCertificate)
+    );
+    assert_eq!(
+        CaBundle::from_pem(b"not pem at all").err(),
+        Some(CaBundleError::NoCertificate)
+    );
+    assert_eq!(
+        CaBundle::from_pem(b"-----BEGIN CERTIFICATE-----\n!!!!\n-----END CERTIFICATE-----\n").err(),
+        Some(CaBundleError::NotPem)
+    );
+    let unusable =
+        CaBundle::from_pem(b"-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\n");
+    let Err(err @ CaBundleError::Unusable { index: 1, .. }) = unusable else {
+        panic!("a certificate that is not one is refused: {unusable:?}");
+    };
+    assert!(
+        err.to_string()
+            .starts_with("certificate 1 of the CA bundle is not a usable CA certificate"),
+        "{err}"
+    );
+    assert_eq!(
+        CaBundleError::NoCertificate.to_string(),
+        "the CA bundle holds no certificate"
+    );
 }
 
 #[tokio::test]
