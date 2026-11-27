@@ -102,6 +102,14 @@ impl PgDb {
         )
     }
 
+    /// The single `bigint` that `sql` returns, read on this schema.
+    pub fn query_i64(&self, sql: &str) -> i64 {
+        runtime().block_on(async {
+            let client = self.schema.client().await.expect("client");
+            client.query_one(sql, &[]).await.expect("query").get(0)
+        })
+    }
+
     /// Runs `sql` on this schema as the test database's own user.
     pub fn execute(&self, sql: &str) {
         runtime().block_on(async {

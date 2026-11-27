@@ -25,7 +25,7 @@ pub(crate) struct ParsedUrl {
 
 /// Reads `raw`, a `postgres://` URL or a key-value connection string.
 pub(crate) fn parse(raw: &str) -> Result<ParsedUrl, String> {
-    let split = split_tls(raw);
+    let split = split_tls(raw)?;
     let config: tokio_postgres::Config = split.rest.parse().map_err(|e| {
         let message = format!("invalid database URL: {e}");
         split
@@ -55,7 +55,10 @@ struct Split {
 /// Parameters stigmerd takes out of the connection string.
 const TLS_KEYS: [&str; 2] = ["sslmode", "sslrootcert"];
 
-fn split_tls(raw: &str) -> Split {
+/// Splits `raw`, refusing what the driver would read wrongly: an unencoded '@' in the user info
+/// (part of the password would become the host, and show in messages) and a TLS parameter
+/// given twice. The refusals never quote the URL.
+fn split_tls(raw: &str) -> Result<Split, String> {
     let mut split = Split {
         rest: String::new(),
         sslmode: None,
@@ -74,20 +77,32 @@ fn split_tls(raw: &str) -> Split {
                 split.passwords.push(pair.raw.to_owned());
             }
             if TLS_KEYS.contains(&pair.key) {
-                take(&mut split, pair.key, pair.value);
+                take(&mut split, pair.key, pair.value)?;
             } else {
                 kept.push(pair.raw);
             }
         }
         split.rest = kept.join(" ");
         split.passwords.retain(|p| !p.is_empty());
-        return split;
+        return Ok(split);
     };
     let scheme_len = raw.len() - after_scheme.len();
     // As the driver reads it: the user info runs to the FIRST '@', the parameters start at the
     // first '?' after it.
     let creds_end = after_scheme.find('@');
     if let Some(end) = creds_end {
+        // What the driver takes for the host list: up to the path or the parameters.
+        let hosts = after_scheme[end + 1..]
+            .split(['/', '?'])
+            .next()
+            .unwrap_or("");
+        if hosts.contains('@') {
+            return Err(
+                "the database URL has more than one '@' before its path: percent-encode '@' in \
+                 the user name or password as %40 (the URL is not shown)"
+                    .into(),
+            );
+        }
         if let Some((_, password)) = after_scheme[..end].split_once(':') {
             split.passwords.push(password.to_owned());
             split.passwords.push(percent_decode(password));
@@ -100,7 +115,7 @@ fn split_tls(raw: &str) -> Split {
     else {
         split.rest = raw.to_owned();
         split.passwords.retain(|p| !p.is_empty());
-        return split;
+        return Ok(split);
     };
     let mut kept = Vec::new();
     for param in raw[query_at + 1..].split('&') {
@@ -111,7 +126,7 @@ fn split_tls(raw: &str) -> Split {
             split.passwords.push(percent_decode(value));
         }
         if TLS_KEYS.contains(&key.as_str()) {
-            take(&mut split, &key, percent_decode(value));
+            take(&mut split, &key, percent_decode(value))?;
         } else {
             kept.push(param);
         }
@@ -122,15 +137,23 @@ fn split_tls(raw: &str) -> Split {
         format!("{}?{}", &raw[..query_at], kept.join("&"))
     };
     split.passwords.retain(|p| !p.is_empty());
-    split
+    Ok(split)
 }
 
-/// Keeps the value of the TLS parameter `key`.
-fn take(split: &mut Split, key: &str, value: String) {
-    match key {
-        "sslmode" => split.sslmode = Some(value),
-        _ => split.sslrootcert = Some(value),
+/// Keeps the value of the TLS parameter `key`; a second one is refused rather than letting
+/// either win silently.
+fn take(split: &mut Split, key: &str, value: String) -> Result<(), String> {
+    let slot = match key {
+        "sslmode" => &mut split.sslmode,
+        _ => &mut split.sslrootcert,
+    };
+    if slot.is_some() {
+        return Err(format!(
+            "{key} is given more than once in the database URL; give it once"
+        ));
     }
+    *slot = Some(value);
+    Ok(())
 }
 
 /// One `key = value` of a key-value connection string: its key, its unescaped value and the
@@ -351,11 +374,16 @@ mod tests {
             ),
             ("host=db.example password=hunter2 nonsense=1", "hunter2"),
             ("host=db.example password='hunter 2' bogus", "hunter 2"),
+            ("postgres://u:p@ssw0rdX@127.0.0.1:1/db", "ssw0rdX"),
+            ("postgres://u:a/b@ssw0rdX@127.0.0.1:1/db", "ssw0rdX"),
         ] {
             let err = parse(url)
                 .err()
                 .unwrap_or_else(|| panic!("{url} is refused"));
-            assert!(err.starts_with("invalid database URL"), "{err}");
+            assert!(
+                err.starts_with("invalid database URL") || err.contains("percent-encode"),
+                "{err}"
+            );
             assert!(!err.contains(secret), "{url}: {err}");
         }
     }
@@ -383,5 +411,25 @@ mod tests {
         ] {
             assert!(!parse(url).unwrap().loopback, "{url}");
         }
+    }
+
+    #[test]
+    fn a_tls_parameter_given_twice_is_refused() {
+        for url in [
+            "postgres://db.example/app?sslmode=require&sslmode=disable",
+            "postgres://db.example/app?sslrootcert=a.pem&sslrootcert=b.pem",
+            "host=db.example sslmode=require sslmode=disable",
+        ] {
+            let err = parse(url)
+                .err()
+                .unwrap_or_else(|| panic!("{url} is refused"));
+            assert!(err.contains("more than once"), "{url}: {err}");
+        }
+    }
+
+    #[test]
+    fn an_at_sign_after_the_host_is_not_mistaken_for_a_second_one() {
+        let parsed = parse("postgres://u@db.example/app?application_name=a@b").unwrap();
+        assert_eq!(parsed.target, "database app on db.example:5432");
     }
 }

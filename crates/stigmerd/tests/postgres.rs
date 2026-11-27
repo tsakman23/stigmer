@@ -67,6 +67,45 @@ fn password_in_the_url_argument_is_refused_with_exit_2() {
 }
 
 #[test]
+fn an_unencoded_at_sign_in_the_user_info_is_refused_without_showing_the_url() {
+    for url in [
+        "postgres://u:p@ssw0rdX@127.0.0.1:1/db",
+        "postgresql://u:a/b@ssw0rdX@127.0.0.1:1/db?sslmode=require",
+    ] {
+        for out in [
+            run_with_url(&["admin", "migrate"], url),
+            run_with_url(&["serve"], url),
+            run(&["admin", "migrate", "--database-url", url]),
+        ] {
+            assert_usage_error(&out, "percent-encode");
+            for text in [&out.stdout, &out.stderr] {
+                assert!(!text.contains("ssw0rdX"), "{text}");
+            }
+        }
+    }
+}
+
+#[test]
+fn an_empty_database_url_from_any_source_exits_2() {
+    for value in ["", "   "] {
+        let out = run_with_url(&["admin", "security-log"], value);
+        assert_usage_error(&out, "set but empty");
+        let out = run(&["admin", "security-log", "--database-url", value]);
+        assert_usage_error(&out, "--database-url is empty");
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("database-url");
+        std::fs::write(&file, value).unwrap();
+        let out = run(&[
+            "admin",
+            "security-log",
+            "--database-url-file",
+            file.to_str().unwrap(),
+        ]);
+        assert_usage_error(&out, "is empty");
+    }
+}
+
+#[test]
 fn out_of_range_database_flags_exit_2() {
     for (flag, value) in [
         ("--db-max-connections", "0"),
@@ -138,6 +177,24 @@ fn tls_settings_that_disagree_or_are_unsupported_exit_2() {
 }
 
 #[test]
+fn a_ca_bundle_without_certificates_is_named_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let ca = dir.path().join("ca.pem");
+    std::fs::write(&ca, "not a certificate\n").unwrap();
+    let out = run_with_url(
+        &["admin", "migrate", "--db-tls-ca", ca.to_str().unwrap()],
+        CLOSED,
+    );
+    assert_usage_error(&out, "the CA bundle holds no certificate");
+    assert_eq!(out.stderr.matches("CA bundle").count(), 1, "{}", out.stderr);
+    assert!(
+        !out.stderr.contains("storage backend error"),
+        "{}",
+        out.stderr
+    );
+}
+
+#[test]
 fn database_flags_without_a_database_url_exit_2() {
     let data = tempfile::tempdir().unwrap();
     let dir = data.path().join("d");
@@ -164,7 +221,13 @@ fn a_database_url_file_that_cannot_be_used_exits_2() {
     let empty = dir.path().join("empty");
     std::fs::write(&empty, "\n").unwrap();
     let missing = dir.path().join("missing");
-    for (path, needle) in [(&empty, "empty"), (&missing, "cannot read")] {
+    let directory = dir.path().join("a-directory");
+    std::fs::create_dir(&directory).unwrap();
+    for (path, needle) in [
+        (&empty, "empty"),
+        (&missing, "cannot read"),
+        (&directory, "is a directory"),
+    ] {
         let out = run(&[
             "admin",
             "migrate",
@@ -172,6 +235,9 @@ fn a_database_url_file_that_cannot_be_used_exits_2() {
             path.to_str().unwrap(),
         ]);
         assert_usage_error(&out, needle);
+        if path == &directory {
+            assert!(!out.stderr.contains("warning"), "{needle}: {}", out.stderr);
+        }
     }
     let out = run(&[
         "admin",
@@ -253,6 +319,51 @@ mod with_postgres {
         // Admin commands work on the migrated schema.
         let log = run_with_url(&["admin", "security-log"], &db.url());
         assert_eq!(log.code, Some(0), "{}", log.stderr);
+    }
+
+    #[test]
+    fn two_concurrent_migrations_both_succeed_and_apply_once() {
+        let Some(db) = PgDb::create("two_concurrent_migrations_both_succeed_and_apply_once") else {
+            return;
+        };
+        let url = db.url();
+        let runs: Vec<thread::JoinHandle<Bounded>> = (0..2)
+            .map(|_| {
+                let url = url.clone();
+                thread::spawn(move || run_with_url(&["admin", "migrate"], &url))
+            })
+            .collect();
+        let outs: Vec<Bounded> = runs.into_iter().map(|r| r.join().unwrap()).collect();
+        for out in &outs {
+            assert_eq!(out.code, Some(0), "{}", out.stderr);
+        }
+        // The advisory lock serialises them: one applies everything, the other finds it done.
+        let applied = outs
+            .iter()
+            .filter(|o| o.stdout.contains("from version 0 to 8"))
+            .count();
+        assert_eq!(
+            applied,
+            1,
+            "{:?}",
+            outs.iter().map(|o| &o.stdout).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            db.query_i64("SELECT count(*) FROM schema_version"),
+            8,
+            "each migration recorded once"
+        );
+        assert_eq!(
+            db.query_i64("SELECT max(version)::bigint FROM schema_version"),
+            8
+        );
+        assert_eq!(
+            db.query_i64("SELECT count(*) FROM boards WHERE id = 'main'"),
+            1,
+            "one board main"
+        );
+        let out = run_with_url(&["admin", "security-log"], &url);
+        assert_eq!(out.code, Some(0), "{}", out.stderr);
     }
 
     #[test]
