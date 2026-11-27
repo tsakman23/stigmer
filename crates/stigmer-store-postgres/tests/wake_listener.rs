@@ -110,8 +110,10 @@ async fn kill_listener(store: &PgStore, client: &tokio_postgres::Client) -> i32 
     let pid = store
         .listener_pid_for_tests()
         .expect("the listener is connected");
+    // With a timeout, pg_terminate_backend returns only once the backend has exited, so the
+    // old session can no longer receive a notification (and deliver a wake) after this.
     let killed: bool = client
-        .query_one("SELECT pg_terminate_backend($1)", &[&pid])
+        .query_one("SELECT pg_terminate_backend($1, 10000)", &[&pid])
         .await
         .unwrap()
         .get(0);
@@ -192,7 +194,12 @@ async fn listener_reconnect_rereads_the_heads_of_boards_with_waiters() {
         Ok(true),
         "the reconnect finds the post"
     );
-    assert!(a.listener_pid_for_tests().is_some_and(|pid| pid != old));
+    // The new session published its pid before its re-read delivered the wake.
+    let now = a.listener_pid_for_tests();
+    assert!(
+        now.is_some_and(|pid| pid != old),
+        "woken by the new session, whose pid is published: {now:?} (old {old})"
+    );
 
     // And NOTIFY works again on the new connection.
     let head = a.head(&main).await.unwrap().unwrap();
