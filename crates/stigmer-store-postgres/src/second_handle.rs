@@ -33,6 +33,15 @@ impl PgStore {
         self.wakeups.notifier().receiver_count(board)
     }
 
+    /// Test support, not API: the number of `wait_past` callers on `board` through this handle
+    /// that have read the head and are sleeping, so only a wake-up can end them before their
+    /// timeout. Wait for this, not for [`PgStore::waiters_for_tests`], before a post that must
+    /// reach a waiter through the notifier: a subscribed wait may still read the head.
+    #[doc(hidden)]
+    pub fn sleeping_waiters_for_tests(&self, board: &BoardId) -> usize {
+        self.wakeups.notifier().sleeping(board)
+    }
+
     /// Test support, not API: the number of boards with a wake-up entry on this handle.
     #[doc(hidden)]
     pub fn notifier_entries_for_tests(&self) -> usize {

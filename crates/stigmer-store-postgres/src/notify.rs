@@ -24,6 +24,8 @@ pub(crate) struct Notifier {
     boards: Mutex<HashMap<BoardId, watch::Sender<u64>>>,
     /// Notifications for this store's schema the listener has handled, applied or not.
     handled: AtomicU64,
+    /// Waits per board that have read the head and are now sleeping on their subscription.
+    sleeping: Mutex<HashMap<BoardId, usize>>,
 }
 
 impl Notifier {
@@ -39,6 +41,7 @@ impl Notifier {
             notifier: Arc::clone(self),
             board: board.clone(),
             rx: Some(rx),
+            asleep: false,
         }
     }
 
@@ -89,6 +92,17 @@ impl Notifier {
         self.handled.load(Ordering::SeqCst)
     }
 
+    /// Number of waits on `board` that have read the head and are sleeping on their
+    /// subscription: they can now be woken only through the notifier.
+    pub(crate) fn sleeping(&self, board: &BoardId) -> usize {
+        self.lock_sleeping().get(board).copied().unwrap_or(0)
+    }
+
+    fn lock_sleeping(&self) -> MutexGuard<'_, HashMap<BoardId, usize>> {
+        // Every update is one statement, so a poisoned lock is still consistent.
+        self.sleeping.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
     fn lock(&self) -> MutexGuard<'_, HashMap<BoardId, watch::Sender<u64>>> {
         // The map stays consistent even if a holder panicked, so a poisoned lock is still usable.
         self.boards.lock().unwrap_or_else(PoisonError::into_inner)
@@ -100,12 +114,23 @@ pub(crate) struct Subscription {
     notifier: Arc<Notifier>,
     board: BoardId,
     rx: Option<watch::Receiver<u64>>,
+    /// Counted in the notifier's `sleeping` (from the first poll of [`Self::moved_past`]).
+    asleep: bool,
 }
 
 impl Subscription {
     /// Resolves to `true` once the board's head is past `after`. Never resolves once the entry
-    /// is dropped (the board was archived): the caller's timeout ends the wait.
+    /// is dropped (the board was archived): the caller's timeout ends the wait. From its first
+    /// poll on, the wait counts as sleeping until the subscription is dropped.
     pub(crate) async fn moved_past(&mut self, after: u64) -> bool {
+        if !self.asleep {
+            self.asleep = true;
+            *self
+                .notifier
+                .lock_sleeping()
+                .entry(self.board.clone())
+                .or_default() += 1;
+        }
         let Some(rx) = self.rx.as_mut() else {
             return std::future::pending().await;
         };
@@ -122,6 +147,15 @@ impl Subscription {
 
 impl Drop for Subscription {
     fn drop(&mut self) {
+        if self.asleep {
+            let mut sleeping = self.notifier.lock_sleeping();
+            if let Some(count) = sleeping.get_mut(&self.board) {
+                *count = count.saturating_sub(1);
+                if *count == 0 {
+                    sleeping.remove(&self.board);
+                }
+            }
+        }
         // Under the map's lock, so no subscribe can slip in between the count and the removal.
         let mut boards = self.notifier.lock();
         drop(self.rx.take());
@@ -153,6 +187,24 @@ mod tests {
         assert_eq!(*rx.borrow(), 5, "a lower seq never moves the head back");
         let later = notifier.subscribe(&main);
         assert_eq!(*later.rx.as_ref().unwrap().borrow(), 5);
+    }
+
+    #[tokio::test]
+    async fn a_wait_counts_as_sleeping_from_its_first_poll_until_it_ends() {
+        let notifier = notifier();
+        let main = BoardId::main();
+        let mut sub = notifier.subscribe(&main);
+        assert_eq!(
+            notifier.sleeping(&main),
+            0,
+            "subscribed is not yet sleeping"
+        );
+        let slept = tokio::time::timeout(std::time::Duration::from_millis(10), sub.moved_past(0));
+        assert!(slept.await.is_err());
+        assert_eq!(notifier.sleeping(&main), 1);
+        assert_eq!(notifier.sleeping(&BoardId::new("other").unwrap()), 0);
+        drop(sub);
+        assert_eq!(notifier.sleeping(&main), 0);
     }
 
     #[test]

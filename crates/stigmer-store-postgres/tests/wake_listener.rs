@@ -63,8 +63,8 @@ async fn notification_for_an_uncommitted_post_is_never_delivered() {
         .unwrap();
     let waiter = spawn_wait(&a, &main, Some(&head), WAIT_TIMEOUT);
     assert!(
-        until(|| a.waiters_for_tests(&main) == 1).await,
-        "never reached: the waiter subscribed"
+        until(|| a.sleeping_waiters_for_tests(&main) == 1).await,
+        "never reached: the waiter read the head and sleeps"
     );
     let failed = b.post(new_thread("never committed").unwrap()).await;
     let Err(StoreError::Backend(text)) = failed else {
@@ -110,8 +110,10 @@ async fn kill_listener(store: &PgStore, client: &tokio_postgres::Client) -> i32 
     let pid = store
         .listener_pid_for_tests()
         .expect("the listener is connected");
+    // With a timeout, pg_terminate_backend returns only once the backend has exited, so the
+    // old session can no longer receive a notification (and deliver a wake) after this.
     let killed: bool = client
-        .query_one("SELECT pg_terminate_backend($1)", &[&pid])
+        .query_one("SELECT pg_terminate_backend($1, 10000)", &[&pid])
         .await
         .unwrap()
         .get(0);
@@ -139,8 +141,8 @@ async fn listener_reconnect_does_not_lose_a_wake() {
 
     let waiter = spawn_wait(&a, &main, Some(&head), WAIT_TIMEOUT);
     assert!(
-        until(|| a.waiters_for_tests(&main) == 1).await,
-        "never reached: the waiter subscribed"
+        until(|| a.sleeping_waiters_for_tests(&main) == 1).await,
+        "never reached: the waiter read the head and sleeps"
     );
     let old = kill_listener(&a, &client).await;
     let posted_at = Instant::now();
@@ -180,8 +182,8 @@ async fn listener_reconnect_rereads_the_heads_of_boards_with_waiters() {
 
     let waiter = spawn_wait(&a, &main, Some(&head), Duration::from_secs(10));
     assert!(
-        until(|| a.waiters_for_tests(&main) == 1).await,
-        "never reached: the waiter subscribed"
+        until(|| a.sleeping_waiters_for_tests(&main) == 1).await,
+        "never reached: the waiter read the head and sleeps"
     );
     let old = kill_listener(&a, &client).await;
     b.post(new_thread("while the listener is down").unwrap())
@@ -192,14 +194,19 @@ async fn listener_reconnect_rereads_the_heads_of_boards_with_waiters() {
         Ok(true),
         "the reconnect finds the post"
     );
-    assert!(a.listener_pid_for_tests().is_some_and(|pid| pid != old));
+    // The new session published its pid before its re-read delivered the wake.
+    let now = a.listener_pid_for_tests();
+    assert!(
+        now.is_some_and(|pid| pid != old),
+        "woken by the new session, whose pid is published: {now:?} (old {old})"
+    );
 
     // And NOTIFY works again on the new connection.
     let head = a.head(&main).await.unwrap().unwrap();
     let waiter = spawn_wait(&a, &main, Some(&head), WAIT_TIMEOUT);
     assert!(
-        until(|| a.waiters_for_tests(&main) == 1).await,
-        "never reached: the waiter subscribed"
+        until(|| a.sleeping_waiters_for_tests(&main) == 1).await,
+        "never reached: the waiter read the head and sleeps"
     );
     b.post(new_thread("after the reconnect").unwrap())
         .await
@@ -280,8 +287,8 @@ async fn archive_drops_the_board_entry() {
         let board = create_board(&a, raw).await;
         let waiter = spawn_wait(&a, &board, None, short);
         assert!(
-            until(|| a.waiters_for_tests(&board) == 1).await,
-            "never reached: the waiter subscribed"
+            until(|| a.sleeping_waiters_for_tests(&board) == 1).await,
+            "never reached: the waiter read the head and sleeps"
         );
         assert_eq!(a.notifier_entries_for_tests(), 1);
         let archived = audit(SecurityEventKind::BoardArchived);
@@ -316,8 +323,8 @@ async fn archive_drops_the_board_entry() {
     let board = create_board(&c, "elsewhere").await;
     let waiter = spawn_wait(&c, &board, None, WAIT_TIMEOUT);
     assert!(
-        until(|| c.waiters_for_tests(&board) == 1).await,
-        "never reached: the waiter subscribed"
+        until(|| c.sleeping_waiters_for_tests(&board) == 1).await,
+        "never reached: the waiter read the head and sleeps"
     );
     a.archive_board(&board, audit(SecurityEventKind::BoardArchived))
         .await
@@ -360,17 +367,21 @@ async fn archive_does_not_drop_a_wake_still_on_its_way() {
             .cursor;
         let waiter = spawn_wait(&a, &board, Some(&head), Duration::from_secs(10));
         assert!(
-            until(|| a.waiters_for_tests(&board) == 1).await,
-            "never reached: the waiter subscribed"
+            until(|| a.sleeping_waiters_for_tests(&board) == 1).await,
+            "never reached: the waiter read the head and sleeps"
         );
         assert!(
             until(|| { a.listener_pid_for_tests().is_some() }).await,
             "never reached: the listener is up"
         );
-        kill_listener(&a, &client).await;
+        let old = kill_listener(&a, &client).await;
+        // The old backend is gone (kill_listener waits for it), so it can deliver nothing more.
+        // Its session may already have been replaced by the time this runs (the reconnect waits
+        // only 100 ms), so require only that the old one is no longer current, not that the
+        // listener is down: under load a check for "down" can miss that short window.
         assert!(
-            until(|| { a.listener_pid_for_tests().is_none() }).await,
-            "never reached: the listener is down"
+            until(|| a.listener_pid_for_tests() != Some(old)).await,
+            "never reached: the old listener session ended"
         );
 
         let started = Instant::now();

@@ -230,15 +230,23 @@ struct Session {
 impl Session {
     /// Connects, LISTENs, then re-reads the heads of the boards with waiters: a commit before
     /// LISTEN took effect is seen by that read, any later one is notified.
+    ///
+    /// The session's backend pid is published once LISTEN is in effect and BEFORE the re-read,
+    /// so every wake this session delivers (the re-read's included) happens after it: a woken
+    /// waiter never observes the previous session's state. A failed open unpublishes it.
     async fn open(link: &Link) -> Result<Session, StoreError> {
-        tokio::time::timeout(OPEN_TIMEOUT, Session::open_now(link))
+        let opened = tokio::time::timeout(OPEN_TIMEOUT, Session::open_now(link))
             .await
-            .map_err(|_| {
-                StoreError::Backend(format!(
+            .unwrap_or_else(|_| {
+                Err(StoreError::Backend(format!(
                     "timed out after {} s opening the listener connection",
                     OPEN_TIMEOUT.as_secs()
-                ))
-            })?
+                )))
+            });
+        if opened.is_err() {
+            link.pid.store(0, Ordering::SeqCst);
+        }
+        opened
     }
 
     async fn open_now(link: &Link) -> Result<Session, StoreError> {
@@ -259,8 +267,8 @@ impl Session {
             .batch_execute(&format!("LISTEN {CHANNEL}"))
             .await
             .map_err(db)?;
-        refresh(&client, &link.notifier).await?;
         link.pid.store(pid, Ordering::SeqCst);
+        refresh(&client, &link.notifier).await?;
         Ok(Session {
             _client: client,
             payloads,
