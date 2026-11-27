@@ -1,9 +1,13 @@
 //! Invites: storing them and redeeming one (the join). Only secret hashes are stored.
 //!
-//! A join is checked first without any lock, so a refused attempt never waits on (or reveals
-//! anything through) the board's locks. A join that passes then locks the invite's board row and
-//! the invite row (`FOR UPDATE`), the same order as every other write on a board, so
-//! concurrent redemptions of one invite queue and exactly one of them finds it unused.
+//! A join is checked before anything is locked (ADR 0016): one unlocked read and a
+//! constant-time hash comparison (against a dummy hash for an unknown id) refuse every unusable
+//! invite with the same `NotFound`. So a refused attempt never takes or waits on a lock: its
+//! timing cannot tell an unauthenticated caller whether the invite exists or how busy its board
+//! is, and a caller without a valid secret cannot stall the board. A join that passes then locks
+//! the invite's board row and the invite row (`FOR UPDATE`), the order of every multi-row
+//! write on a board, and re-checks under the locks, so concurrent redemptions of one invite
+//! queue and exactly one of them finds it unused.
 
 use deadpool_postgres::Pool;
 use stigmer_core::{hashes_match, BoardId, Principal, PrincipalKind, Role, TokenId};
@@ -91,7 +95,7 @@ impl Candidate {
 /// secret cost the same single round trip and never wait behind a lock, whatever else is
 /// happening on the board, and their timing tells a caller nothing. Only a matching invite that
 /// looks usable goes on to one transaction: lock the board row, then the invite row (`FOR
-/// UPDATE`), the lock order of every write on a board; re-check use, expiry and archive under
+/// UPDATE`), the order of every multi-row write on a board; re-check use, expiry and archive under
 /// the locks (another join or an archive may have committed since the read); then the member
 /// insert, the member's credential, the used mark and the `Join` log row.
 pub(crate) async fn consume_invite(
