@@ -18,6 +18,20 @@ use crate::{hash, pool};
 
 const BOARD_COLUMNS: &str = "SELECT id, created_at_ms, created_by, archived_at_ms FROM boards";
 
+/// An archived board as stored, and its head when it was archived, which can no longer move.
+pub(crate) struct ArchiveOutcome {
+    pub(crate) board: BoardInfo,
+    /// The board's final head sequence (0 for a board with no events).
+    pub(crate) head: u64,
+}
+
+/// What [`set_archived`] found and did.
+pub(crate) struct SetArchived {
+    pub(crate) outcome: ArchiveOutcome,
+    /// Whether this call archived the board (false: it was archived already).
+    pub(crate) changed: bool,
+}
+
 /// Creates an empty board at the genesis hash and writes its audit row in one transaction. An id
 /// that is taken is `BoardExists` (the primary key's uniqueness violation, so two concurrent
 /// creates cannot both win) and writes nothing.
@@ -76,51 +90,51 @@ pub(crate) async fn list(pool: &Pool) -> Result<Vec<BoardInfo>, StoreError> {
 }
 
 /// Sets the board's archive time and writes the audit row, under the board's row lock, unless
-/// it is already archived; returns the board as stored. `main` is refused with
-/// `BoardProtected`.
+/// it is already archived; returns the board as stored and its final head. `main` is refused
+/// with `BoardProtected`.
 pub(crate) async fn archive(
     pool: &Pool,
     id: &BoardId,
     audit: &SecurityEvent,
-) -> Result<BoardInfo, StoreError> {
+) -> Result<ArchiveOutcome, StoreError> {
     if *id == BoardId::main() {
         return Err(StoreError::Conflict(ConflictKind::BoardProtected));
     }
     let mut client = pool::client(pool).await?;
     let tx = client.transaction().await.map_err(db)?;
-    let (info, archived) = set_archived(&tx, id, audit.at_ms).await?;
-    if archived {
+    let set = set_archived(&tx, id, audit.at_ms).await?;
+    if set.changed {
         log_in_tx(&tx, audit).await?;
     }
     tx.commit().await.map_err(db)?;
-    Ok(info)
+    Ok(set.outcome)
 }
 
 /// Archives the board and revokes every live non-admin credential on it in one transaction,
 /// writing the audit row when anything changed. The board's row lock comes first, as in every
 /// multi-row write on a board, so a join or a credential issue on the board either commits before the
 /// archive (and is revoked by it) or waits and then finds the board archived: nothing escapes
-/// the revocation.
+/// the revocation. Returns the board and its final head sequence.
 pub(crate) async fn archive_revoking(
     pool: &Pool,
     id: &BoardId,
     audit: &SecurityEvent,
-) -> Result<BoardInfo, StoreError> {
+) -> Result<ArchiveOutcome, StoreError> {
     if *id == BoardId::main() {
         return Err(StoreError::Conflict(ConflictKind::BoardProtected));
     }
     let mut client = pool::client(pool).await?;
     let tx = client.transaction().await.map_err(db)?;
-    let (info, archived) = set_archived(&tx, id, audit.at_ms).await?;
+    let set = set_archived(&tx, id, audit.at_ms).await?;
     let revoked = revoke_board_in_tx(&tx, id, true, audit.at_ms).await?;
-    if archived || revoked > 0 {
+    if set.changed || revoked > 0 {
         log_in_tx(&tx, audit).await?;
         tx.commit().await.map_err(db)?;
     } else {
         // Archived already and nothing left to revoke: no change, so no row.
         tx.rollback().await.map_err(db)?;
     }
-    Ok(info)
+    Ok(set.outcome)
 }
 
 /// Locks board `id`, archived or not, before a write to its dependent rows: `NotFound` for an
@@ -142,27 +156,29 @@ pub(crate) async fn lock_writable(tx: &Transaction<'_>, id: &BoardId) -> Result<
     lock_writable_head(tx, id).await.map(drop)
 }
 
-/// Locks board `id` and sets its archive time unless it is archived already. Returns the board
-/// as it now is and whether this call archived it.
+/// Locks board `id` and sets its archive time unless it is archived already.
 pub(crate) async fn set_archived(
     tx: &Transaction<'_>,
     id: &BoardId,
     now_ms: i64,
-) -> Result<(BoardInfo, bool), StoreError> {
+) -> Result<SetArchived, StoreError> {
     let row = tx
         .query_opt(
-            &format!("{BOARD_COLUMNS} WHERE id = $1 FOR UPDATE"),
+            "SELECT id, created_at_ms, created_by, archived_at_ms, head_seq
+               FROM boards WHERE id = $1 FOR UPDATE",
             &[&id.as_str()],
         )
         .await
-        .map_err(db)?;
-    let mut info = row
-        .as_ref()
-        .map(board_from_row)
-        .transpose()?
+        .map_err(db)?
         .ok_or_else(|| not_found(Entity::Board, id))?;
+    let mut info = board_from_row(&row)?;
+    let head: i64 = row.try_get(4).map_err(db)?;
+    let head = u64::try_from(head).map_err(backend)?;
     if info.archived_at_ms.is_some() {
-        return Ok((info, false));
+        return Ok(SetArchived {
+            outcome: ArchiveOutcome { board: info, head },
+            changed: false,
+        });
     }
     tx.execute(
         "UPDATE boards SET archived_at_ms = $1 WHERE id = $2",
@@ -171,7 +187,10 @@ pub(crate) async fn set_archived(
     .await
     .map_err(db)?;
     info.archived_at_ms = Some(now_ms);
-    Ok((info, true))
+    Ok(SetArchived {
+        outcome: ArchiveOutcome { board: info, head },
+        changed: true,
+    })
 }
 
 /// Locks board `id` for a write and returns its head `(seq, hash)`: `NotFound` for an unknown

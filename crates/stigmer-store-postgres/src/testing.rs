@@ -5,6 +5,13 @@
 //! its own schema, created here and dropped when its [`TestSchema`] is dropped, so tests run in
 //! parallel and leave nothing behind.
 
+mod waits;
+
+pub use waits::{
+    flush_notifications, listening_store, new_thread, new_thread_on, spawn_wait, store_with_poll,
+    until, yield_times, CONDITION_BOUND, HOURLY_POLL, WAIT_TIMEOUT, YIELDS,
+};
+
 use std::io::Write;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -12,7 +19,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use stigmer_store::StoreError;
 
 use crate::error::{backend, db};
-use crate::{PgOptions, PgTls};
+use crate::{PgOptions, PgTls, DEFAULT_POLL_INTERVAL};
 
 /// The variable that names the test database.
 pub const DATABASE_URL_VAR: &str = "STIGMER_TEST_DATABASE_URL";
@@ -98,6 +105,7 @@ impl TestSchema {
         PgOptions {
             max_connections: 8,
             tls: PgTls::Disable,
+            poll_interval: DEFAULT_POLL_INTERVAL,
         }
     }
 
