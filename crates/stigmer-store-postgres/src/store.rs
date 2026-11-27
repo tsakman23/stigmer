@@ -109,23 +109,23 @@ impl Store for PgStore {
         after: Option<&Cursor>,
         timeout: Duration,
     ) -> impl Future<Output = Result<bool, StoreError>> + Send {
-        self.wait_past_between(board, after, timeout, std::future::ready(()))
+        self.wait_past_with_seams(board, after, timeout, wait::no_seams())
     }
 }
 
 impl PgStore {
-    /// `Store::wait_past`, running `between` after the wait subscribes and before it reads the
-    /// head: a seam for tests that commit a post exactly there.
-    pub(crate) fn wait_past_between(
+    /// `Store::wait_past`, running `seams` just before and just after the head read: a seam
+    /// for tests that commit a post exactly there.
+    pub(crate) fn wait_past_with_seams(
         &self,
         board: &BoardId,
         after: Option<&Cursor>,
         timeout: Duration,
-        between: impl Future<Output = ()> + Send,
+        seams: wait::Seams<impl Future<Output = ()> + Send, impl Future<Output = ()> + Send>,
     ) -> impl Future<Output = Result<bool, StoreError>> + Send {
         let (pool, notifier) = (self.pool.clone(), Arc::clone(&self.notifier));
         let (board, after) = (board.clone(), after.cloned());
         // No spawned task: dropping this future ends the wait and drops its subscription.
-        async move { wait::wait_past(&pool, &notifier, &board, after.as_ref(), timeout, between).await }
+        async move { wait::wait_past(&pool, &notifier, &board, after.as_ref(), timeout, seams).await }
     }
 }

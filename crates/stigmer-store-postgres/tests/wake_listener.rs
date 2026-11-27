@@ -130,7 +130,7 @@ async fn listener_reconnect_does_not_lose_a_wake() {
         .unwrap();
     assert_eq!(waiter.await.unwrap(), Ok(true), "the wake is not lost");
     let took = posted_at.elapsed();
-    // The poll interval plus the first reconnect backoff (100 ms), with room for a slow machine.
+    // Within the poll interval, which does not depend on the listener; room for a slow machine.
     assert!(took < POLL + Duration::from_secs(2), "woken after {took:?}");
     until("the listener reconnected on a new backend", || {
         a.listener_pid_for_tests().is_some_and(|pid| pid != old)

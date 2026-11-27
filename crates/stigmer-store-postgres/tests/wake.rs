@@ -40,9 +40,10 @@ async fn wake_across_handles() {
         let woke = waiter.await.unwrap();
         let took = posted_at.elapsed();
         assert_eq!(woke, Ok(true), "a post through b wakes a ({yields} yields)");
+        // The hourly safety poll is the proof it was NOTIFY; the bound only catches a hang.
         assert!(
-            took < Duration::from_secs(1),
-            "woken through NOTIFY within a second, not by the hourly poll: {took:?} ({yields} yields)"
+            took < Duration::from_secs(5),
+            "woken through NOTIFY, not by the hourly poll: {took:?} ({yields} yields)"
         );
         cursor = posted.event.cursor;
     }

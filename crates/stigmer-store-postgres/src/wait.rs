@@ -21,21 +21,22 @@ use crate::events::{cursor_seq, head_state};
 use crate::notify::Notifier;
 
 /// Waits up to `timeout` for the head of `board` to pass `after`; see `Store::wait_past`.
-/// `between` runs after the subscription and before the head read (a seam for tests).
+/// `seams` run just before and just after the head read (test seams; no-ops otherwise).
 pub(crate) async fn wait_past(
     pool: &Pool,
     notifier: &Arc<Notifier>,
     board: &BoardId,
     after: Option<&Cursor>,
     timeout: Duration,
-    between: impl Future<Output = ()>,
+    seams: Seams<impl Future<Output = ()>, impl Future<Output = ()>>,
 ) -> Result<bool, StoreError> {
     let after_seq = cursor_seq(after)?;
     // First: any commit after this point reaches the subscription. Dropped on every return,
     // which removes the board's entry if this was its last waiter.
     let mut subscription = notifier.subscribe(board);
-    between.await;
+    seams.before_read.await;
     let (head, archived) = head_state(pool, board).await?;
+    seams.after_read.await;
     if after_seq > head {
         return Err(StoreError::InvalidCursor);
     }
@@ -54,6 +55,21 @@ pub(crate) async fn wait_past(
             .await
             .unwrap_or(false),
     )
+}
+
+/// Futures a wait runs just before and just after it reads the head, so a test can commit a
+/// post at exactly those points.
+pub(crate) struct Seams<B, A> {
+    pub(crate) before_read: B,
+    pub(crate) after_read: A,
+}
+
+/// No seams: what every real wait uses.
+pub(crate) fn no_seams() -> Seams<std::future::Ready<()>, std::future::Ready<()>> {
+    Seams {
+        before_read: std::future::ready(()),
+        after_read: std::future::ready(()),
+    }
 }
 
 #[cfg(test)]
