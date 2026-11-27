@@ -1,9 +1,10 @@
 //! Board lifecycle: creating, reading, listing and archiving boards.
 //!
-//! Every write takes the board's row lock, the same lock a post takes, so an archive and a post
-//! on one board are ordered and never interleave. The lock order everywhere is the board row
-//! first, then its dependent rows (members, credentials, invites, messages): two writers on one
-//! board queue on the board row and cannot deadlock on the rows behind it.
+//! Every board write here takes the board's row lock, the same lock a post takes, so an archive
+//! and a post on one board are ordered and never interleave. Multi-row writes on a board lock
+//! the board row first, then its dependent rows (members, credentials, invites, messages), so
+//! they queue on the board row instead of deadlocking on the rows behind it; the exceptions
+//! that lock a single row are listed in the crate documentation.
 
 use deadpool_postgres::Pool;
 use stigmer_core::{BoardId, BoardInfo, Principal, GENESIS_HASH};
@@ -97,7 +98,7 @@ pub(crate) async fn archive(
 
 /// Archives the board and revokes every live non-admin credential on it in one transaction,
 /// writing the audit row when anything changed. The board's row lock comes first, as in every
-/// write on a board, so a join or a credential issue on the board either commits before the
+/// multi-row write on a board, so a join or a credential issue on the board either commits before the
 /// archive (and is revoked by it) or waits and then finds the board archived: nothing escapes
 /// the revocation.
 pub(crate) async fn archive_revoking(

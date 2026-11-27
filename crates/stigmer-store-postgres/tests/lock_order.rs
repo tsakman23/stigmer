@@ -1,13 +1,20 @@
-//! Every write on a board takes the board's row first and only then its dependent rows
-//! (members, credentials, invites, messages), so mixed writers on one board queue on that row
-//! and never deadlock.
+//! Multi-row writes on a board lock the board row first and only then its dependent rows
+//! (members, credentials, invites, messages), and single-credential writes lock only their own
+//! row, so mixed writers on one board never deadlock.
 //!
-//! For about five seconds, rounds of 50 concurrent operations (posts, joins, credential
-//! creation and revocation, member removal and archive-with-revocation) run through two
-//! handles against one board per round (an archive is one-way, so each round needs a board that
-//! is still writable). Every operation must succeed or return its documented conflict; a
-//! deadlock (SQLSTATE 40P01) surfaces as a backend error and fails the test. The time bound
-//! only decides how many rounds run: nothing waits on a timer.
+//! The test runs rounds until about five seconds have passed in total (at least two rounds).
+//! Each round uses a fresh board, because an archive is irreversible: after the first archive a
+//! board refuses posts, joins and new credentials, so reusing one would leave nothing to contend
+//! for. A round first prepares its board one step at a time (an admin with a credential, and the
+//! invites, members and credentials its operations need), then starts 50 concurrent operations
+//! on that board, alternating between two handles (two pools, as two replicas would have).
+//! Every round mixes all six kinds: posts, joins, credential revocations, member removals,
+//! credential issues and archives with revocation (about eight archives per round, the repeats
+//! idempotent). Every operation must succeed or return its documented conflict; a deadlock
+//! (SQLSTATE 40P01) surfaces as a backend error and fails the test. After each round the board
+//! is archived, no credential but the admin's is live, every join that succeeded left a member,
+//! and the chain is valid and counts exactly the posts that succeeded. The time bound only
+//! decides how many rounds run: nothing waits on a timer.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};

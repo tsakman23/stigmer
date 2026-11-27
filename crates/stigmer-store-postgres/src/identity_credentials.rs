@@ -2,9 +2,9 @@
 //! length), never secrets.
 //!
 //! A write that touches a board's credentials together with other rows of the board locks the
-//! board row first (see `boards`). Revoking or touching one credential locks only that row:
-//! holding a single row it cannot be part of a lock cycle, and the hot path (`touch`, on every
-//! authenticated request) stays off the board's lock.
+//! board row first (see `boards`). `revoke_credential` and `touch_credential` lock only
+//! their single credential row: holding one row they cannot form a lock cycle, and the hot path
+//! (`touch`, on every authenticated request) stays off the board's lock.
 
 use deadpool_postgres::Pool;
 use stigmer_core::{BoardId, Principal, Role, TokenId};

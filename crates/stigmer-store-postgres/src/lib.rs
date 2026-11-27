@@ -5,10 +5,14 @@
 //!
 //! A pool of connections (deadpool) to one database, shared by every replica of the server.
 //! Writes to one board serialise on that board's row (`SELECT ... FOR UPDATE`), so its event
-//! sequence stays gapless across processes; different boards proceed in parallel. Identity
-//! writes on a board take the same row lock before touching its members, credentials or
-//! invites, so the lock order is always the board row, then the rows that depend on it. The
-//! schema is migrated explicitly ([`PgStore::migrate`]), never on connect.
+//! sequence stays gapless across processes; different boards proceed in parallel. The schema is
+//! migrated explicitly ([`PgStore::migrate`]), never on connect.
+//!
+//! Lock order: a write that touches more than one row of a board (a post, an archive, a member,
+//! invite or credential change, a join) locks the board row first and only then the rows behind
+//! it, so two such writers queue on the board row. `revoke_credential` and `touch_credential`
+//! lock only their single credential row, which cannot form a cycle. `enable_network` locks the
+//! instance row, then the board row of its invite; nothing locks them the other way round.
 //!
 //! A connection string's password never appears in an error, a log line or `Debug` output:
 //! errors name the host, port and database only.
