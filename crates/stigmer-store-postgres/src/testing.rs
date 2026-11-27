@@ -136,6 +136,39 @@ impl Drop for TestSchema {
     }
 }
 
+/// The backend process id of `client`'s connection.
+pub async fn backend_pid(client: &tokio_postgres::Client) -> Result<i32, StoreError> {
+    client
+        .query_one("SELECT pg_backend_pid()", &[])
+        .await
+        .map_err(db)?
+        .try_get(0)
+        .map_err(db)
+}
+
+/// How many backends are waiting, directly or behind another waiting backend, on a lock that
+/// backend `blocker` holds. Lets a test hold a lock, start callers, and act only once they
+/// are known to be queued: a condition to wait for, never a sleep.
+pub async fn queued_behind(
+    client: &tokio_postgres::Client,
+    blocker: i32,
+) -> Result<i64, StoreError> {
+    client
+        .query_one(
+            "SELECT count(*) FROM pg_stat_activity w
+              WHERE w.pid <> $1 AND (
+                    $1 = ANY (pg_blocking_pids(w.pid))
+                 OR EXISTS (SELECT 1 FROM pg_stat_activity v
+                             WHERE $1 = ANY (pg_blocking_pids(v.pid))
+                               AND v.pid = ANY (pg_blocking_pids(w.pid))))",
+            &[&blocker],
+        )
+        .await
+        .map_err(db)?
+        .try_get(0)
+        .map_err(db)
+}
+
 /// A plain connection to the test database, driven on the current runtime.
 async fn connect(url: &str) -> Result<tokio_postgres::Client, StoreError> {
     let (client, connection) = tokio_postgres::connect(url, tokio_postgres::NoTls)
